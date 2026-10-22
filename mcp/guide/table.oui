@@ -1,0 +1,3 @@
+root = Stack([header, tbl])
+header = CardHeader("待处理工单")
+tbl = Table([Col("编号", ["T-101", "T-102", "T-103"]), Col("标题", ["登录超时", "导出乱码", "页面空白"]), Col("天数", [3, 1, 5], "number")])

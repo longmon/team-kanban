@@ -1,0 +1,582 @@
+//! 页面管理、查看（view / 临时链接）、临时链接管理
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+};
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use sqlx::{FromRow, PgPool};
+use uuid::Uuid;
+
+use super::{brief, list, require_any};
+use crate::{
+    AppState, audit,
+    auth::Caller,
+    authz::{
+        ANY_SCOPE, PUBLISH, PageAccess, ProjectRole, Target, issue_grant, page_access, require_page_manage, require_project,
+        require_share_link_manage, require_user, role_expr, share_by_token,
+    },
+    error::{AppError, AppResult, JsonBody, P, Q},
+    notify::Event,
+    ratelimit::MIN15,
+    util::{PageQuery, hash_password, hmac_sign, new_id, paginate, random_token, sha256, text_field, ts, ts_opt, verify_password},
+};
+
+type J = AppResult<Json<Value>>;
+
+#[derive(FromRow)]
+struct PageListRow {
+    id: Uuid,
+    org_id: Uuid,
+    project_id: Uuid,
+    title: String,
+    kind: String,
+    version: i32,
+    visibility: String,
+    accept_responses: bool,
+    results_visible_to: String,
+    response_seq: i64,
+    created_by: Uuid,
+    creator_name: String,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    group_ids: Vec<Uuid>,
+    role: Option<String>,
+}
+
+/// $1 = 调用者 user_id
+fn page_select() -> String {
+    format!(
+        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.version, p.visibility, p.accept_responses, p.results_visible_to,
+                p.response_seq, p.created_by, u.display_name AS creator_name, p.created_at, p.updated_at,
+                COALESCE((SELECT array_agg(pg.group_id ORDER BY pg.group_id) FROM page_groups pg
+                           WHERE pg.org_id = p.org_id AND pg.page_id = p.id), '{{}}') AS group_ids,
+                {} AS role,
+                EXISTS (SELECT 1 FROM page_groups pg JOIN group_members gm ON gm.org_id = pg.org_id AND gm.group_id = pg.group_id
+                         WHERE pg.org_id = p.org_id AND pg.page_id = p.id AND gm.user_id = $1) AS in_group
+           FROM pages p
+           JOIN projects pr ON pr.org_id = p.org_id AND pr.id = p.project_id AND pr.deleted_at IS NULL
+           JOIN orgs o ON o.id = p.org_id AND o.deleted_at IS NULL
+           JOIN users u ON u.id = p.created_by
+           LEFT JOIN memberships m ON m.org_id = p.org_id AND m.user_id = $1",
+        role_expr("p.org_id", "p.project_id", "$1", "m.role")
+    )
+}
+
+impl PageListRow {
+    fn json(&self, public_url: &str) -> Value {
+        json!({
+            "id": self.id, "org_id": self.org_id, "project_id": self.project_id,
+            "title": self.title, "kind": self.kind, "version": self.version,
+            "visibility": self.visibility, "group_ids": self.group_ids,
+            "accept_responses": self.accept_responses, "results_visible_to": self.results_visible_to,
+            "response_count": self.response_seq,
+            "url": format!("{public_url}/pages/{}", self.id),
+            "created_by": brief(self.created_by, &self.creator_name),
+            "created_at": ts(&self.created_at), "updated_at": ts(&self.updated_at),
+            "can_manage": matches!(self.role.as_deref(), Some("admin" | "editor")),
+        })
+    }
+}
+
+async fn page_by_id(st: &AppState, org_id: Uuid, page_id: Uuid, uid: Uuid) -> AppResult<Value> {
+    let row: PageListRow = sqlx::query_as(&format!("{} WHERE p.org_id = $2 AND p.id = $3 AND p.deleted_at IS NULL", page_select()))
+        .bind(uid)
+        .bind(org_id)
+        .bind(page_id)
+        .fetch_one(&st.db)
+        .await?;
+    Ok(row.json(&st.cfg.public_url))
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    project_id: Option<Uuid>,
+}
+
+pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQuery>, Q(q): Q<ListQuery>) -> J {
+    let uid = require_user(&c, ANY_SCOPE)?;
+    let pat = c.p.pat();
+    // ponytail: 跨所有项目扫描再按角色过滤；单用户页面数很大时给 project_id 走索引
+    let sql = format!(
+        "SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
+             AND ($2::uuid IS NULL OR p.org_id = $2) AND ($3::uuid IS NULL OR p.project_id = $3)
+             AND ($4::uuid IS NULL OR p.project_id = $4) AND ($5::uuid IS NULL OR p.id < $5)) x
+          WHERE role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group))
+          ORDER BY id DESC LIMIT $6",
+        page_select()
+    );
+    let rows: Vec<PageListRow> = sqlx::query_as(&sql)
+        .bind(uid)
+        .bind(pat.and_then(|p| p.org_id))
+        .bind(pat.and_then(|p| p.project_id))
+        .bind(q.project_id)
+        .bind(page.cursor_id()?)
+        .bind(page.limit() + 1)
+        .fetch_all(&st.db)
+        .await?;
+    let (rows, next) = paginate(rows, page.limit(), |r| r.id.to_string());
+    Ok(Json(list(rows.iter().map(|r| r.json(&st.cfg.public_url)).collect(), next)))
+}
+
+// ---------------------------------------------------------------- 校验
+
+fn check_kind(kind: &str) -> AppResult<()> {
+    if matches!(kind, "openui" | "html") { Ok(()) } else { Err(AppError::field("kind", "取值必须是 openui/html")) }
+}
+
+fn check_content(kind: &str, content: &str) -> AppResult<()> {
+    let max = if kind == "html" { 5 * 1024 * 1024 } else { 512 * 1024 };
+    if content.is_empty() || content.len() > max {
+        return Err(AppError::field("content", &format!("不能为空且不超过 {} KiB", max / 1024)));
+    }
+    Ok(())
+}
+
+fn check_visibility(v: &str) -> AppResult<()> {
+    if matches!(v, "public" | "org" | "project" | "groups") {
+        Ok(())
+    } else {
+        Err(AppError::field("visibility", "取值必须是 public/org/project/groups"))
+    }
+}
+
+fn check_results(v: &str) -> AppResult<()> {
+    if matches!(v, "managers" | "viewers") { Ok(()) } else { Err(AppError::field("results_visible_to", "取值必须是 managers/viewers")) }
+}
+
+/// visibility=groups 时 group_ids 非空且都属于本组织；否则必须为空
+async fn check_groups(db: &mut sqlx::PgConnection, org_id: Uuid, visibility: &str, ids: Option<&[Uuid]>) -> AppResult<Vec<Uuid>> {
+    let mut ids = ids.unwrap_or_default().to_vec();
+    ids.sort();
+    ids.dedup();
+    if visibility != "groups" {
+        return if ids.is_empty() { Ok(ids) } else { Err(AppError::field("group_ids", "仅 visibility=groups 时可指定")) };
+    }
+    if ids.is_empty() {
+        return Err(AppError::field("group_ids", "visibility=groups 时必须指定至少一个群组"));
+    }
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM groups WHERE org_id = $1 AND id = ANY($2)").bind(org_id).bind(&ids).fetch_one(db).await?;
+    if n as usize != ids.len() {
+        return Err(AppError::field("group_ids", "群组不存在或不属于该组织"));
+    }
+    Ok(ids)
+}
+
+async fn set_groups(db: &mut sqlx::PgConnection, org_id: Uuid, page_id: Uuid, ids: &[Uuid]) -> AppResult<()> {
+    sqlx::query("DELETE FROM page_groups WHERE org_id = $1 AND page_id = $2").bind(org_id).bind(page_id).execute(&mut *db).await?;
+    sqlx::query("INSERT INTO page_groups (org_id, page_id, group_id) SELECT $1, $2, unnest($3::uuid[])")
+        .bind(org_id)
+        .bind(page_id)
+        .bind(ids)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------- CRUD
+
+#[derive(Deserialize)]
+pub struct CreateReq {
+    project_id: Uuid,
+    title: String,
+    kind: String,
+    content: String,
+    visibility: String,
+    group_ids: Option<Vec<Uuid>>,
+    accept_responses: Option<bool>,
+    results_visible_to: Option<String>,
+}
+
+pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): JsonBody<CreateReq>) -> AppResult<(StatusCode, Json<Value>)> {
+    let ctx = require_project(&st.db, &c, r.project_id, ProjectRole::Editor, PUBLISH).await?;
+    let title = text_field("title", &r.title, 1, 200)?;
+    check_kind(&r.kind)?;
+    check_content(&r.kind, &r.content)?;
+    check_visibility(&r.visibility)?;
+    let results = r.results_visible_to.unwrap_or_else(|| "managers".into());
+    check_results(&results)?;
+    let id = new_id();
+    let mut tx = st.db.begin().await?;
+    let groups = check_groups(&mut tx, ctx.org_id(), &r.visibility, r.group_ids.as_deref()).await?;
+    sqlx::query(
+        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(id)
+    .bind(ctx.org_id())
+    .bind(ctx.project_id())
+    .bind(&title)
+    .bind(&r.kind)
+    .bind(&r.content)
+    .bind(&r.visibility)
+    .bind(r.accept_responses.unwrap_or(true))
+    .bind(&results)
+    .bind(ctx.user_id())
+    .bind(c.p.pat().map(|p| p.id))
+    .execute(&mut *tx)
+    .await?;
+    set_groups(&mut tx, ctx.org_id(), id, &groups).await?;
+    audit::log(
+        &mut tx,
+        Some(ctx.org_id()),
+        &c.actor(),
+        "page.publish",
+        "page",
+        Some(id),
+        json!({ "project_id": ctx.project_id(), "kind": r.kind, "visibility": r.visibility, "group_ids": groups }),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(page_by_id(&st, ctx.org_id(), id, ctx.user_id()).await?)))
+}
+
+pub async fn get_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
+    let ctx = require_page_manage(&st.db, &c, id, ANY_SCOPE).await?;
+    let mut v = page_by_id(&st, ctx.org_id(), ctx.page_id(), ctx.user_id()).await?;
+    let content: String =
+        sqlx::query_scalar("SELECT content FROM pages WHERE org_id = $1 AND id = $2").bind(ctx.org_id()).bind(ctx.page_id()).fetch_one(&st.db).await?;
+    v["content"] = json!(content);
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateReq {
+    title: Option<String>,
+    content: Option<String>,
+    visibility: Option<String>,
+    group_ids: Option<Vec<Uuid>>,
+    accept_responses: Option<bool>,
+    results_visible_to: Option<String>,
+}
+
+pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<UpdateReq>) -> J {
+    let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
+    require_any(&[
+        r.title.is_some(),
+        r.content.is_some(),
+        r.visibility.is_some(),
+        r.group_ids.is_some(),
+        r.accept_responses.is_some(),
+        r.results_visible_to.is_some(),
+    ])?;
+    let title = r.title.as_deref().map(|t| text_field("title", t, 1, 200)).transpose()?;
+    if let Some(v) = &r.visibility {
+        check_visibility(v)?;
+    }
+    if let Some(v) = &r.results_visible_to {
+        check_results(v)?;
+    }
+    let mut tx = st.db.begin().await?;
+    let (kind, old_content, old_vis, old_accept): (String, String, String, bool) = sqlx::query_as(
+        "SELECT kind, content, visibility, accept_responses FROM pages WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(ctx.org_id())
+    .bind(ctx.page_id())
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(AppError::not_found)?;
+    let old_groups = ctx.page_group_ids(&mut tx).await?;
+    let new_vis = r.visibility.clone().unwrap_or_else(|| old_vis.clone());
+    let new_groups = match (&r.group_ids, new_vis == old_vis) {
+        (None, true) => old_groups.clone(),
+        (ids, _) => check_groups(&mut tx, ctx.org_id(), &new_vis, ids.as_deref()).await?,
+    };
+    let content = match &r.content {
+        Some(cnt) => {
+            check_content(&kind, cnt)?;
+            (cnt != &old_content).then_some(cnt)
+        }
+        None => None,
+    };
+    sqlx::query(
+        "UPDATE pages SET title = COALESCE($3, title), content = COALESCE($4, content),
+                version = version + CASE WHEN $4::text IS NULL THEN 0 ELSE 1 END,
+                visibility = $5, accept_responses = COALESCE($6, accept_responses),
+                results_visible_to = COALESCE($7, results_visible_to), updated_at = now()
+          WHERE org_id = $1 AND id = $2",
+    )
+    .bind(ctx.org_id())
+    .bind(ctx.page_id())
+    .bind(&title)
+    .bind(content)
+    .bind(&new_vis)
+    .bind(r.accept_responses)
+    .bind(&r.results_visible_to)
+    .execute(&mut *tx)
+    .await?;
+    if new_groups != old_groups {
+        set_groups(&mut tx, ctx.org_id(), ctx.page_id(), &new_groups).await?;
+    }
+    let mut fields = vec![];
+    for (name, present) in [
+        ("title", title.is_some()),
+        ("content", content.is_some()),
+        ("visibility", new_vis != old_vis),
+        ("group_ids", new_groups != old_groups),
+        ("accept_responses", r.accept_responses.is_some()),
+        ("results_visible_to", r.results_visible_to.is_some()),
+    ] {
+        if present {
+            fields.push(name);
+        }
+    }
+    let mut meta = json!({ "fields": fields });
+    if new_vis != old_vis {
+        meta["visibility"] = json!({ "old": old_vis, "new": new_vis });
+    }
+    if new_groups != old_groups {
+        meta["group_ids"] = json!({ "old": old_groups, "new": new_groups });
+    }
+    audit::log(&mut tx, Some(ctx.org_id()), &c.actor(), "page.update", "page", Some(ctx.page_id()), meta).await?;
+    tx.commit().await?;
+    if content.is_some() || r.accept_responses.is_some_and(|a| a != old_accept) {
+        st.notify.send(ctx.page_id(), Event::Page);
+    }
+    Ok(Json(page_by_id(&st, ctx.org_id(), ctx.page_id(), ctx.user_id()).await?))
+}
+
+impl crate::authz::PageCtx {
+    async fn page_group_ids(&self, db: &mut sqlx::PgConnection) -> AppResult<Vec<Uuid>> {
+        Ok(sqlx::query_scalar("SELECT group_id FROM page_groups WHERE org_id = $1 AND page_id = $2 ORDER BY group_id")
+            .bind(self.org_id())
+            .bind(self.page_id())
+            .fetch_all(db)
+            .await?)
+    }
+}
+
+pub async fn delete_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> AppResult<StatusCode> {
+    let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
+    let mut tx = st.db.begin().await?;
+    sqlx::query("UPDATE pages SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL")
+        .bind(ctx.org_id())
+        .bind(ctx.page_id())
+        .execute(&mut *tx)
+        .await?;
+    audit::log(&mut tx, Some(ctx.org_id()), &c.actor(), "page.delete", "page", Some(ctx.page_id()), json!({})).await?;
+    tx.commit().await?;
+    st.notify.send(ctx.page_id(), Event::Deleted);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------- 查看
+
+pub const FRAME_TTL: i64 = 600;
+
+pub fn frame_url(st: &AppState, page_id: Uuid, version: i32) -> String {
+    let exp = Utc::now().timestamp() + FRAME_TTL;
+    let sig = hmac_sign(&st.cfg.secret_key, &format!("h|{page_id}|{version}|{exp}"));
+    format!("{}/h/{page_id}/{version}?exp={exp}&sig={sig}", st.cfg.frame_origin())
+}
+
+async fn page_view(st: &AppState, a: &PageAccess) -> J {
+    let p = a.page();
+    let content = if p.kind == "html" {
+        json!({ "kind": "html", "frame_url": frame_url(st, p.id, p.version), "frame_origin": st.cfg.frame_origin() })
+    } else {
+        let spec: String =
+            sqlx::query_scalar("SELECT content FROM pages WHERE org_id = $1 AND id = $2").bind(a.org_id()).bind(a.page_id()).fetch_one(&st.db).await?;
+        json!({ "kind": "openui", "spec": spec })
+    };
+    let viewer = match a.user_id() {
+        Some(uid) => {
+            let name: String = sqlx::query_scalar("SELECT display_name FROM users WHERE id = $1").bind(uid).fetch_one(&st.db).await?;
+            json!({ "type": "user", "user_id": uid, "display_name": name })
+        }
+        None => json!({ "type": "anonymous" }),
+    };
+    let share = a.share().map(|l| {
+        json!({ "id": l.id, "label": l.label, "expires_at": ts(&l.expires_at), "remaining_uses": l.max_uses.map(|m| (m - l.use_count).max(0)) })
+    });
+    Ok(Json(json!({
+        "page": {
+            "id": p.id, "title": p.title, "kind": p.kind, "version": p.version,
+            "accept_responses": p.accept_responses, "results_visible_to": p.results_visible_to, "updated_at": ts(&p.updated_at),
+            "project": { "id": p.project_id, "name": p.project_name }, "org": { "id": p.org_id, "name": p.org_name },
+        },
+        "content": content,
+        "viewer": viewer,
+        "can_submit": a.can_submit(),
+        "submit_block_reason": a.block_reason(),
+        "can_view_results": a.can_view_results(),
+        "can_manage": a.can_manage(),
+        "share_link": share,
+    })))
+}
+
+pub fn grant_header(h: &HeaderMap) -> Option<&str> {
+    h.get("x-share-grant").and_then(|v| v.to_str().ok())
+}
+
+pub async fn view_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
+    let a = page_access(&st.db, &st.cfg, &c, Target::Page(id)).await?;
+    if c.p.is_pat() {
+        return Err(AppError::forbidden());
+    }
+    page_view(&st, &a).await
+}
+
+pub async fn view_share(State(st): State<AppState>, c: Caller, h: HeaderMap, P(token): P<String>) -> J {
+    let a = page_access(&st.db, &st.cfg, &c, Target::Share { token: &token, grant: grant_header(&h) }).await?;
+    if c.p.is_pat() {
+        return Err(AppError::forbidden());
+    }
+    page_view(&st, &a).await
+}
+
+#[derive(Deserialize)]
+pub struct UnlockReq {
+    password: String,
+}
+
+pub async fn unlock_share(State(st): State<AppState>, c: Caller, P(token): P<String>, JsonBody(r): JsonBody<UnlockReq>) -> J {
+    let link = share_by_token(&st.db, &token).await?;
+    st.rl.hit(&format!("unlock:{}:{}", link.id, c.ip), 10, MIN15)?;
+    if link.password_hash.is_some() && !verify_password(r.password, link.password_hash.clone()).await {
+        return Err(AppError::new(StatusCode::UNAUTHORIZED, "share_password_invalid", "访问密码错误"));
+    }
+    let (grant, exp) = issue_grant(&st.cfg, link.id);
+    Ok(Json(json!({ "grant": grant, "expires_at": ts(&exp) })))
+}
+
+// ---------------------------------------------------------------- 临时链接管理
+
+#[derive(FromRow)]
+struct ShareLinkRow {
+    id: Uuid,
+    page_id: Uuid,
+    label: String,
+    token_prefix: String,
+    expires_at: DateTime<Utc>,
+    max_uses: Option<i32>,
+    use_count: i32,
+    has_password: bool,
+    created_by: Uuid,
+    creator_name: String,
+    created_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+const LINK_SELECT: &str = "SELECT s.id, s.page_id, s.label, s.token_prefix, s.expires_at, s.max_uses, s.use_count,
+        (s.password_hash IS NOT NULL) AS has_password, s.created_by, u.display_name AS creator_name, s.created_at, s.revoked_at
+   FROM share_links s JOIN users u ON u.id = s.created_by";
+
+impl ShareLinkRow {
+    fn json(&self) -> Value {
+        let status = if self.revoked_at.is_some() {
+            "revoked"
+        } else if self.expires_at <= Utc::now() {
+            "expired"
+        } else if self.max_uses.is_some_and(|m| self.use_count >= m) {
+            "exhausted"
+        } else {
+            "active"
+        };
+        json!({
+            "id": self.id, "page_id": self.page_id, "label": self.label, "token_prefix": self.token_prefix,
+            "expires_at": ts(&self.expires_at), "max_uses": self.max_uses, "use_count": self.use_count,
+            "has_password": self.has_password, "created_by": brief(self.created_by, &self.creator_name),
+            "created_at": ts(&self.created_at), "revoked_at": ts_opt(&self.revoked_at), "status": status,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LinksQuery {
+    include_inactive: Option<bool>,
+}
+
+pub async fn list_share_links(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q): Q<LinksQuery>) -> J {
+    let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
+    let rows: Vec<ShareLinkRow> = sqlx::query_as(&format!(
+        "{LINK_SELECT} WHERE s.org_id = $1 AND s.page_id = $2
+            AND ($3 OR (s.revoked_at IS NULL AND s.expires_at > now() AND (s.max_uses IS NULL OR s.use_count < s.max_uses)))
+          ORDER BY s.id DESC"
+    ))
+    .bind(ctx.org_id())
+    .bind(ctx.page_id())
+    .bind(q.include_inactive.unwrap_or(false))
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(json!({ "items": rows.iter().map(ShareLinkRow::json).collect::<Vec<_>>() })))
+}
+
+#[derive(Deserialize)]
+pub struct CreateLinkReq {
+    expires_in: i64,
+    max_uses: Option<i32>,
+    password: Option<String>,
+    label: Option<String>,
+}
+
+pub async fn create_share_link(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<CreateLinkReq>) -> AppResult<(StatusCode, Json<Value>)> {
+    let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
+    if !(300..=7_776_000).contains(&r.expires_in) {
+        return Err(AppError::field("expires_in", "范围 300..7776000 秒"));
+    }
+    if r.max_uses.is_some_and(|m| !(1..=1_000_000).contains(&m)) {
+        return Err(AppError::field("max_uses", "范围 1..1000000，或 null 表示不限"));
+    }
+    let label = text_field("label", r.label.as_deref().unwrap_or(""), 0, 100)?;
+    let password_hash = match r.password.filter(|p| !p.is_empty()) {
+        Some(p) if (4..=128).contains(&p.chars().count()) => Some(hash_password(p).await?),
+        Some(_) => return Err(AppError::field("password", "长度需在 4..128 字符")),
+        None => None,
+    };
+    let token = random_token();
+    let link_id = new_id();
+    let mut tx = st.db.begin().await?;
+    sqlx::query(
+        "INSERT INTO share_links (id, org_id, page_id, token_hash, token_prefix, label, expires_at, max_uses, password_hash, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7), $8, $9, $10)",
+    )
+    .bind(link_id)
+    .bind(ctx.org_id())
+    .bind(ctx.page_id())
+    .bind(sha256(&token))
+    .bind(&token[..6])
+    .bind(&label)
+    .bind(r.expires_in as f64)
+    .bind(r.max_uses)
+    .bind(&password_hash)
+    .bind(ctx.user_id())
+    .execute(&mut *tx)
+    .await?;
+    audit::log(
+        &mut tx,
+        Some(ctx.org_id()),
+        &c.actor(),
+        "share_link.create",
+        "share_link",
+        Some(link_id),
+        json!({ "page_id": ctx.page_id(), "expires_in": r.expires_in, "max_uses": r.max_uses, "has_password": password_hash.is_some() }),
+    )
+    .await?;
+    tx.commit().await?;
+    let row = link_by_id(&st.db, ctx.org_id(), link_id).await?;
+    Ok((StatusCode::CREATED, Json(json!({ "share_link": row.json(), "url": format!("{}/s/{token}", st.cfg.public_url) }))))
+}
+
+async fn link_by_id(db: &PgPool, org_id: Uuid, id: Uuid) -> AppResult<ShareLinkRow> {
+    Ok(sqlx::query_as(&format!("{LINK_SELECT} WHERE s.org_id = $1 AND s.id = $2")).bind(org_id).bind(id).fetch_one(db).await?)
+}
+
+pub async fn revoke_share_link(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> AppResult<StatusCode> {
+    let ctx = require_share_link_manage(&st.db, &c, id, PUBLISH).await?;
+    let mut tx = st.db.begin().await?;
+    let n = sqlx::query("UPDATE share_links SET revoked_at = now() WHERE org_id = $1 AND page_id = $2 AND id = $3 AND revoked_at IS NULL")
+        .bind(ctx.org_id())
+        .bind(ctx.page_id())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if n > 0 {
+        audit::log(&mut tx, Some(ctx.org_id()), &c.actor(), "share_link.revoke", "share_link", Some(id), json!({ "page_id": ctx.page_id() })).await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}

@@ -1,0 +1,69 @@
+# 用法：SECRET_KEY=$(openssl rand -hex 32) PUBLIC_URL=https://relay.example.com docker compose up -d --build
+# 外网由 caddy 服务（host 网络，配置见 Caddyfile）反代到 127.0.0.1:8080；需要 PUBLIC_HOST、PAGES_HOST 和 cf-trusted.caddy（scripts/cf-firewall.sh 生成）
+services:
+  pg:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-relay}
+      POSTGRES_DB: relay
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    depends_on:
+      pg:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:${PG_PASSWORD:-relay}@pg:5432/relay
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      PAGES_ORIGIN: ${PAGES_ORIGIN:-}
+      SECRET_KEY: ${SECRET_KEY:?需要设置 SECRET_KEY（至少 32 字节随机串）}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-1}
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    network_mode: host # 直接监听宿主 80/443，由 firewalld 控制来源（docker 端口发布会绕过 firewalld）
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?需要设置 PUBLIC_HOST}
+      PAGES_HOST: ${PAGES_HOST:?需要设置 PAGES_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,z
+      - ./cf-trusted.caddy:/etc/caddy/cf-trusted.caddy:ro,z
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,25 @@
+# 两个主机名反代到同一 app，后端按 Host 分流（PAGES_HOST 下只开放 /h/*）
+# 前面是 Cloudflare 代理：只信任 CF 段（cf-trusted.caddy 由 scripts/cf-firewall.sh 生成），真实 IP 取 CF-Connecting-IP
+{
+	servers {
+		import /etc/caddy/cf-trusted.caddy
+		client_ip_headers CF-Connecting-IP
+		trusted_proxies_strict
+	}
+}
+
+(app) {
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:8080 {
+		# 后端 TRUST_PROXY=1 取 XFF 最右一项，这里整体覆盖成真实客户端 IP
+		header_up X-Forwarded-For {client_ip}
+	}
+}
+
+{$PUBLIC_HOST} {
+	import app
+}
+
+{$PAGES_HOST} {
+	import app
+}

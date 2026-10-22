@@ -1,0 +1,89 @@
+/*
+ * 主题 token（shadcn CSS 变量方案）。整套配色只在这里定义：换配色方向时只替换本文件的变量值。
+ * 当前为「陶土」方向：暖白底 + 哑光橙主色，主按钮深棕字，卡片与主按钮带很轻的暖色阴影，其余组件平面细描边。
+ * 规范与对比度核对见 docs/design-system.md，改色值后要按那里的表重新核对。
+ */
+:root {
+  /* 圆角：卡片 rounded-xl = 20px，按钮/输入框 rounded-md = 14px，徽标全圆 */
+  --radius: 16px;
+  /* 拉丁与数字用自托管 Nunito（main.tsx 引入 @fontsource-variable/nunito），中文走系统字体 */
+  --font-body: "Nunito Variable", "Nunito", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-heading: var(--font-body);
+
+  /* 动效：时长 150–250ms，缓动统一；prefers-reduced-motion 时由 index.css 关闭 */
+  --dur-fast: 150ms;
+  --dur-base: 200ms;
+  --dur-slow: 250ms;
+  --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* 勾选图标弹入等“小回弹”，只用于 ≤ 24px 的小元素 */
+  --ease-pop: cubic-bezier(0.3, 1.5, 0.5, 1);
+
+  --background: #fbf6f1;
+  --foreground: #4a382d;
+  --card: #fffdfa;
+  --card-foreground: #4a382d;
+  --popover: #fffdfa;
+  --popover-foreground: #4a382d;
+  --primary: #e58a4e;
+  --primary-foreground: #2e1405;
+  --secondary: #f4ebe2;
+  --secondary-foreground: #4a382d;
+  --muted: #f4ebe2;
+  --muted-foreground: #7a6254;
+  --accent: #f6ede4;
+  --accent-foreground: #4a382d;
+  --destructive: #be3a2e;
+  --border: #eee1d4;
+  --input: #e6d6c7;
+  --ring: #b85a1f;
+  /* 图表 5 色：设计稿色相，按色弱模拟（protan/deutan/tritan）调过明度，两两 OKLab ΔE ≥ 8 */
+  --chart-1: #e07a3a;
+  --chart-2: #79ba8a;
+  --chart-3: #d64a77;
+  --chart-4: #549cc0;
+  --chart-5: #7e63bc;
+  /* 语义状态色（Callout / Tag / 涨跌），作文字用时在卡片与 12% 浅底上都 ≥ 4.5:1 */
+  --success: #36732e;
+  --warning: #96501b;
+  --info: #33679f;
+
+  /* 阴影：卡片（含 1px 极淡暖色描边 + 内高光）、卡片悬停、主按钮、主按钮按下 */
+  --shadow-card: 0 0 0 1px rgb(120 70 30 / 0.05), 0 6px 14px -8px rgb(150 90 40 / 0.26), 0 1px 2px rgb(150 90 40 / 0.06), inset 0 1px 0 #fff, inset 0 -2px 4px rgb(180 120 70 / 0.08);
+  --shadow-card-hover: 0 0 0 1px rgb(120 70 30 / 0.07), 0 12px 22px -10px rgb(150 90 40 / 0.34), 0 2px 4px rgb(150 90 40 / 0.08), inset 0 1px 0 #fff, inset 0 -2px 4px rgb(180 120 70 / 0.08);
+  --shadow-primary: 0 4px 10px -4px rgb(200 100 40 / 0.5), inset 0 1px 1px rgb(255 235 215 / 0.6), inset 0 -2px 3px rgb(150 60 10 / 0.22);
+  --shadow-primary-press: 0 1px 3px -1px rgb(200 100 40 / 0.45), inset 0 1px 2px rgb(150 60 10 / 0.25);
+}
+
+.dark {
+  --background: #241c17;
+  --foreground: #ede0d3;
+  --card: #30261f;
+  --card-foreground: #ede0d3;
+  --popover: #30261f;
+  --popover-foreground: #ede0d3;
+  --primary: #f29a5e;
+  --primary-foreground: #2e1405;
+  --secondary: #3a2e26;
+  --secondary-foreground: #ede0d3;
+  --muted: #3a2e26;
+  --muted-foreground: #bfa893;
+  --accent: #3d3028;
+  --accent-foreground: #ede0d3;
+  --destructive: #f2826f;
+  --border: rgb(255 240 225 / 0.1);
+  --input: rgb(255 240 225 / 0.15);
+  --ring: #f29a5e;
+  --chart-1: #f08a4a;
+  --chart-2: #49c287;
+  --chart-3: #ca6a88;
+  --chart-4: #5a91c2;
+  --chart-5: #c2a1e8;
+  --success: #8dd080;
+  --warning: #f0a465;
+  --info: #82b6ea;
+
+  --shadow-card: 0 0 0 1px rgb(255 240 225 / 0.06), 0 6px 14px -8px rgb(0 0 0 / 0.55), inset 0 1px 0 rgb(255 240 225 / 0.06), inset 0 -2px 4px rgb(0 0 0 / 0.15);
+  --shadow-card-hover: 0 0 0 1px rgb(255 240 225 / 0.1), 0 12px 22px -10px rgb(0 0 0 / 0.65), inset 0 1px 0 rgb(255 240 225 / 0.08), inset 0 -2px 4px rgb(0 0 0 / 0.15);
+  --shadow-primary: 0 4px 10px -4px rgb(0 0 0 / 0.5), inset 0 1px 1px rgb(255 235 215 / 0.55), inset 0 -2px 3px rgb(150 60 10 / 0.25);
+  --shadow-primary-press: 0 1px 2px -1px rgb(0 0 0 / 0.5), inset 0 1px 2px rgb(150 60 10 / 0.3);
+}

@@ -1,0 +1,8 @@
+root = Stack([title, kpis, chartCard, pieCard, notes])
+title = CardHeader("10 月周报", "数据截至 2026-10-21")
+kpis = Stack([kpi1, kpi2], "row", "m", "stretch", "start", true)
+kpi1 = Card([TextContent("新增用户", "small"), TextContent("1,284", "large-heavy")])
+kpi2 = Card([TextContent("留存率", "small"), TextContent("63%", "large-heavy")])
+chartCard = Card([CardHeader("每周新增"), BarChart(["W1", "W2", "W3", "W4"], [Series("新增", [210, 305, 342, 427])])])
+pieCard = Card([CardHeader("新增来源"), PieChart(["自然", "活动", "邀请"], [48, 37, 15], "donut")])
+notes = MarkDownRenderer("**结论**：增长主要来自 W4 的活动投放。")

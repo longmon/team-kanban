@@ -1,0 +1,7 @@
+.git
+**/node_modules
+**/target
+web/dist
+data
+data.log
+.env

@@ -1,0 +1,16 @@
+root = Stack([title, desc, tbl, form])
+title = TextContent("待确认的发布清单", "large-heavy")
+desc = TextContent("下表是本周计划上线的变更，请勾选你**同意上线**的条目后提交。")
+tbl = Table([Col("编号", ids), Col("变更", names), Col("负责人", owners), Col("风险", risks)])
+ids = ["CH-101", "CH-102", "CH-103", "CH-104"]
+names = ["支付回调重试", "订单导出 CSV", "首页改版", "登录限流调整"]
+owners = ["王五", "赵六", "孙七", "周八"]
+risks = ["中", "低", "低", "高"]
+form = Form("approve", btns, [pick, note])
+pick = FormControl("同意上线", CheckBoxGroup("approved", [i1, i2, i3, i4]))
+i1 = CheckBoxItem("CH-101", "支付回调重试", "ch101")
+i2 = CheckBoxItem("CH-102", "订单导出 CSV", "ch102")
+i3 = CheckBoxItem("CH-103", "首页改版", "ch103")
+i4 = CheckBoxItem("CH-104", "登录限流调整", "ch104")
+note = FormControl("备注", Input("note", "可选"))
+btns = Buttons([Button("确认", @ToAssistant("确认发布清单"), "primary")])

@@ -1,0 +1,6 @@
+root = Stack([header, voteForm])
+header = CardHeader("技术方案投票", "请选择你支持的方案，可多次提交")
+voteForm = Form("vote", btns, [choiceField, commentField])
+choiceField = FormControl("方案", RadioGroup("choice", [RadioItem("方案 A", "自建机房", "A"), RadioItem("方案 B", "公有云", "B")]))
+commentField = FormControl("理由", TextArea("comment", "可选"))
+btns = Buttons([Button("提交", @ToAssistant("提交"), "primary")])

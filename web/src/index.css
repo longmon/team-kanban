@@ -1,0 +1,155 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./theme.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: var(--font-body);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --shadow-card: var(--shadow-card);
+  --shadow-card-hover: var(--shadow-card-hover);
+  --shadow-primary: var(--shadow-primary);
+  --shadow-primary-press: var(--shadow-primary-press);
+  --ease-standard: var(--ease-standard);
+  --ease-pop: var(--ease-pop);
+  /* transition / transition-colors 等不写 duration 时的默认值 */
+  --default-transition-duration: var(--dur-base);
+  --default-transition-timing-function: var(--ease-standard);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  code { @apply font-mono text-[0.88em]; }
+  /* 标题字重 600–700，层级靠字号与颜色 */
+  h1, h2, h3 { font-family: var(--font-heading); }
+  /* tw-animate-css 的进出动画（Dialog / Dropdown / Select / Tabs…）默认用统一缓动与时长；类名里写 duration-* 的仍以类名为准 */
+  .animate-in, .animate-out, [data-slot=accordion-content] { --tw-ease: var(--ease-standard); --tw-duration: var(--dur-base); }
+}
+
+@layer components {
+  /* 管理端正文里的行内链接 */
+  .link { @apply text-foreground underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground; }
+  /* agent 写的 markdown（TextContent / MarkDownRenderer / Callout 描述） */
+  .md { @apply text-sm leading-relaxed break-words; }
+  .md > :first-child { @apply mt-0; }
+  .md > :last-child { @apply mb-0; }
+  .md p { @apply my-2; }
+  /* 正文行宽限制在易读范围（约 80 个半角字符） */
+  .md :is(p, li, blockquote) { @apply max-w-[80ch]; }
+  .md a { @apply underline underline-offset-4; }
+  .md strong { @apply font-semibold; }
+  .md ul { @apply my-2 list-disc pl-5; }
+  .md ol { @apply my-2 list-decimal pl-5; }
+  .md li { @apply my-0.5; }
+  .md h1 { @apply mt-4 mb-2 text-xl font-semibold tracking-tight; }
+  .md h2 { @apply mt-4 mb-2 text-lg font-semibold tracking-tight; }
+  .md h3, .md h4 { @apply mt-3 mb-1.5 text-base font-semibold; }
+  .md blockquote { @apply my-2 border-l-2 pl-3 text-muted-foreground; }
+  .md code { @apply rounded bg-muted px-1 py-0.5; }
+  .md pre { @apply my-2 overflow-x-auto rounded-md bg-muted p-3 text-xs; }
+  .md pre code { @apply bg-transparent p-0; }
+  .md table { @apply my-2 w-full text-sm; }
+  .md th, .md td { @apply border-b px-2 py-1.5 text-left; }
+  .md hr { @apply my-4; }
+}
+
+/* 动效（时长/缓动见 theme.css）：只在路由切换时淡入一次；可点击卡片悬停轻抬；失败抖动 */
+@keyframes page-enter { from { opacity: 0; transform: translateY(4px); } }
+@keyframes shake { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+@layer components {
+  .page-enter { animation: page-enter var(--dur-slow) var(--ease-standard) both; }
+  .shake { animation: shake 300ms var(--ease-standard); }
+}
+/* 卡片表面：暖色软阴影代替描边 */
+@utility surface { @apply rounded-xl bg-card text-card-foreground shadow-card; }
+/* 可点击卡片/列表行：悬停抬起 1px + 阴影加深，键盘焦点有清晰焦点环 */
+@utility lift { @apply transition-[transform,box-shadow] outline-none hover:-translate-y-px hover:shadow-card-hover focus-visible:ring-[3px] focus-visible:ring-ring/80; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+  /* 减少动态：去掉位移/缩放，只保留颜色与阴影变化 */
+  .lift:hover, [data-slot=button]:active, .page-enter, .shake { transform: none !important; translate: none !important; scale: none !important; }
+}
+
+/* 管理端页面的结构类（颜色全部取 token） */
+@layer components {
+  .stack { @apply flex flex-col gap-3; }
+  .row { @apply flex items-center gap-2; }
+  .row.wrap { @apply flex-wrap; }
+  .toolbar { @apply gap-2 [&_[data-slot=input]]:max-w-sm [&_[data-slot=select-trigger]]:w-auto [&_[data-slot=select-trigger]]:min-w-40 [&_[data-slot=input]]:w-auto [&_[data-slot=input]]:min-w-0 [&_[data-slot=input]]:flex-[1_1_180px]; }
+  .muted { @apply text-muted-foreground; }
+  .small { @apply text-xs; }
+  .mono { @apply font-mono text-[0.92em]; }
+  .nowrap { @apply whitespace-nowrap; }
+  .wrap-any { @apply break-all; }
+  .form { @apply grid max-w-2xl gap-4; }
+  /* 宽屏布局：主列 + 右侧栏（新建表单等），xl 以下上下堆叠 */
+  .split { @apply grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_400px]; }
+  /* 设置类面板两列分组 */
+  .cols-2 { @apply grid items-start gap-4 xl:grid-cols-2; }
+  /* 列表上方的搜索/过滤框不随页面拉宽 */
+  .search { @apply max-w-md; }
+  .form-actions { @apply flex flex-wrap gap-2 pt-1; }
+  .checks { @apply grid gap-2; }
+  .tab-intro { @apply text-[13px] text-muted-foreground; }
+  .sub-title { @apply mt-2 text-[13px] font-medium text-muted-foreground; }
+  .pick-row { @apply flex items-center justify-between gap-2 border-b py-2 text-sm last:border-0; }
+
+  /* 列表行（页面、群组） */
+  .list { @apply grid gap-2.5; }
+  .list-row { @apply surface lift grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-6 gap-y-2 overflow-hidden px-5 py-3.5 max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:px-4; }
+  .list-main { @apply flex min-w-0 flex-col gap-1.5; }
+  .list-title { @apply w-fit max-w-full truncate text-[15px] font-semibold text-foreground; }
+  a.list-title { @apply underline-offset-4 hover:underline; }
+  .list-meta { @apply flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-xs text-muted-foreground; }
+  .list-stat { @apply min-w-[72px] text-right text-[13px] whitespace-nowrap text-muted-foreground max-sm:min-w-0 max-sm:self-start; }
+  .list-stat b { @apply mr-0.5 font-semibold text-foreground tabular-nums; }
+  .list-actions { @apply flex justify-end gap-1.5 max-sm:col-span-full max-sm:flex-wrap max-sm:justify-start; }
+  .list-expand { @apply col-span-full -mx-5 -mb-3.5 mt-1.5 border-t bg-muted/40 p-5 max-sm:-mx-4 max-sm:p-4; }
+}
+
+/* 图表悬停高亮时系列透明度平滑过渡 */
+[data-slot=chart] :is(path, circle) { transition: fill-opacity var(--dur-base) var(--ease-standard), stroke-opacity var(--dur-base) var(--ease-standard); }
+
+/* toast：成功/失败图标着色，进出由 sonner 自带动画 */
+[data-sonner-toast][data-type=success] [data-icon] { color: var(--success); }
+[data-sonner-toast][data-type=error] [data-icon] { color: var(--destructive); }
+[data-sonner-toast] { box-shadow: var(--shadow-card-hover) !important; border-radius: calc(var(--radius) - 2px) !important; }
