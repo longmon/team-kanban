@@ -246,7 +246,11 @@ docker compose exec -T pg pg_dump -U postgres relay | gzip > backups/relay-$(dat
 > 服务端 Docker 镜像里的二进制叫 `relay`（历史名称，为兼容保留），那个跑在服务器（容器）里；这里说的 `tkanban` 跑在你自己的电脑上，两者无关。
 
 ```bash
-# 1) 安装（需要 Rust 1.85+ 和 C 编译器；装到 ~/.cargo/bin/tkanban）
+# 1) 安装：到 https://github.com/longmon/team-kanban/releases 下载对应平台的压缩包，解压后把 tkanban 放进 PATH
+#    Linux（静态链接，任意发行版）：x86_64 / aarch64-unknown-linux-musl；macOS：aarch64（M 系列）/ x86_64-apple-darwin；Windows：x86_64-pc-windows-msvc
+#    例：curl -L https://github.com/longmon/team-kanban/releases/latest/download/tkanban-v2.0.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+#    macOS 首次运行被拦时：xattr -d com.apple.quarantine tkanban
+#    或从源码装（需要 Rust 1.85+ 和 C 编译器；装到 ~/.cargo/bin/tkanban）：
 cargo install --git https://github.com/longmon/team-kanban team-kanban
 #    或在本仓库里自己编译：cd mcp && cargo build --release && sudo install -m 0755 target/release/tkanban /usr/local/bin/tkanban
 tkanban --help                                     # 中文帮助
