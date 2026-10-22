@@ -246,9 +246,9 @@ docker compose exec -T pg pg_dump -U postgres relay | gzip > backups/relay-$(dat
 > 服务端 Docker 镜像里的二进制叫 `relay`（历史名称，为兼容保留），那个跑在服务器（容器）里；这里说的 `tkanban` 跑在你自己的电脑上，两者无关。
 
 ```bash
-# 1) 安装
-cd mcp && cargo build --release
-sudo install -m 0755 target/release/tkanban /usr/local/bin/tkanban
+# 1) 安装（需要 Rust 1.85+ 和 C 编译器；装到 ~/.cargo/bin/tkanban）
+cargo install --git https://github.com/longmon/team-kanban team-kanban
+#    或在本仓库里自己编译：cd mcp && cargo build --release && sudo install -m 0755 target/release/tkanban /usr/local/bin/tkanban
 tkanban --help                                     # 中文帮助
 
 # 2) 添加服务器（profile）：联网校验 token，并列出它能发布的组织 / 项目 / 群组；校验失败不保存
@@ -266,7 +266,7 @@ tkanban test                                       # 测试连通性与 token
 tkanban remove another
 
 # 4) 注册到 Claude Code（-s user 全局生效；无需再传 TEAM_KANBAN_URL / TEAM_KANBAN_TOKEN）
-claude mcp add team-kanban -s user -- /usr/local/bin/tkanban mcp
+claude mcp add team-kanban -s user -- "$(command -v tkanban)" mcp
 
 # 5) 注册到 Codex（二选一）
 codex mcp add team-kanban -- tkanban mcp
