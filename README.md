@@ -8,6 +8,7 @@
 
 - 多租户：组织 → 项目 → 页面；组织成员、项目角色（admin/editor/viewer）、群组；邀请链接。
 - 页面两种：**OpenUI**（agent 写 OpenUI Lang，前端用官方组件渲染，推荐）和 **html**（自包含 HTML，放在独立源的沙箱 iframe 里）。
+- 页面类型（`page_type`）：**只读**的报告 `report` / 知识库 `knowledge`（自动目录）/ 流程图 `flowchart` / 架构图 `architecture`（Mermaid 渲染）——不收提交、agent 不等回复；**收集回复**的投票 `vote`（投票/表单/问卷）——agent 用 `get_responses` 等待。agent 按需求选类型，你指定了就照用；旧页面都是通用 `general`，行为不变。
 - 可见性：`public` / `org` / `project` / `groups`；对外用带有效期、次数上限、可选密码的临时链接。
 - agent 用个人访问令牌（PAT，scope：`publish`、`read_responses`）调用。
 
@@ -43,7 +44,7 @@
 
 ```
 server/                 后端（crate/二进制名 relay，历史名称，为兼容保留；Rust：axum 0.8、tokio、sqlx 0.8、rust-embed 8）
-  migrations/           sqlx 迁移（0001_init.sql），服务启动时自动执行
+  migrations/           sqlx 迁移（0001_init.sql、0002_page_types.sql），服务启动时自动执行
   src/main.rs           读环境变量 → 连库 → 跑迁移 → 起后台清理任务 → 监听
   src/lib.rs            路由装配、host_guard（按 Host 分流 + CSP 等安全头）、后台清理
   src/routes/           account orgs groups invites tokens pages responses statics（/h/*、/openui/*、SPA 回落）
@@ -71,7 +72,7 @@ Caddyfile               两个主机名反代到 127.0.0.1:8080，只信任 Clou
 1. agent 调 `get_ui_guide`（MCP 从服务端 `/openui/prompt.md`、`/openui/library.schema.json` 拉取并缓存），写出 OpenUI Lang。
 2. `publish_page`：`tkanban mcp` 用内嵌 QuickJS 按同一份 schema 本地校验，通过后带 PAT 调 `POST /api/pages`，返回页面地址；需要给组织外的人填时再 `create_share_link`。
 3. 用户在浏览器打开页面：OpenUI 页由 kanbanLibrary 渲染；html 页放在 `PAGES_ORIGIN` 的沙箱 iframe 里，经 postMessage 交给外壳页代提交。提交写入 PostgreSQL，并通过进程内通知中心唤醒等待者。
-4. agent 调 `get_responses`（带 `since`、`wait_seconds`，服务端最多挂 25 秒）长轮询 `GET /api/pages/{id}/responses`，有新提交立即返回；网页结果页走 SSE 实时刷新，可导出 CSV。
+4. 只读类页面（报告/知识库/流程图/架构图）到此结束，agent 把链接交给你即可。收集类（投票/表单）由 agent 调 `get_responses`（带 `since`、`wait_seconds`，服务端最多挂 25 秒）长轮询 `GET /api/pages/{id}/responses`，有新提交立即返回；网页结果页走 SSE 实时刷新，可导出 CSV。
 
 ### 技术栈
 
@@ -196,7 +197,9 @@ scripts/deploy.sh user@host
 
 ### 3.3 数据库迁移
 
-不手工执行 SQL。迁移文件在 `server/migrations/`，由 `sqlx::migrate!` 编进二进制，app 每次启动先执行未应用的迁移再开始监听；迁移失败时进程退出（日志有「迁移失败」），容器会反复重启。改表结构只需新增迁移文件，随代码一起部署。
+不手工执行 SQL。迁移文件在 `server/migrations/`，由 `sqlx::migrate!` 编进二进制，app 每次启动先执行未应用的迁移再开始监听；迁移失败时进程退出（日志有「迁移失败」），容器会反复重启。改表结构只需新增迁移文件，随代码一起部署。已发布过的迁移文件（如 `0001_init.sql`）不能再改，sqlx 会因校验和不符拒绝启动。
+
+`0002_page_types.sql`（页面分类）只给 `pages` 加一列带常量默认值的 `page_type` 和三个 CHECK，不重写表，旧页面全部为 `general`；文件内 `lock_timeout = 5s`，遇到长事务拿不到锁会失败退出（容器重启后重试），先处理长事务即可。
 
 ### 3.4 部署后核对
 
@@ -229,7 +232,7 @@ scripts/deploy.sh user@host
 git checkout -                 # 回到原分支
 ```
 
-注意迁移只进不退：如果要回退的版本之后新增过迁移，旧二进制会因数据库里有它不认识的迁移而启动失败。这种情况需要先人工处理表结构，或改为发一个修复版本向前滚。
+注意迁移只进不退：如果要回退的版本之后新增过迁移，旧二进制会因数据库里有它不认识的迁移而启动失败。这种情况需要先人工处理表结构，或改为发一个修复版本向前滚。回退到 0002 之前的版本需先停 app 执行回滚 SQL，见 [design.md](docs/design.md) §3.3「页面类型」。
 
 ### 3.6 备份
 
@@ -320,11 +323,12 @@ PAT 在网页「令牌」页创建：发布需要 `publish`，读提交需要 `r
 - 「做个投票，发到 another 服务器的『设计组』群」
 - 「发到 depx 的设计组和运营组，再给外部同事生成一个 7 天的临时链接」
 - 「看看我能发到哪些地方」（agent 调 `list_targets` 列出服务器、项目、群组）
+- 「把部署结构画成架构图发给我」「这份说明做成知识库页」（只读页面，发完给链接，不等回复）
 - 没说发到哪且有多个选择时，agent 会先列出候选问你，比如「要发到 depx 还是 another？」
 
 工具：`get_ui_guide`（先调它拿 OpenUI 写法）、`list_targets`、`list_projects`、`publish_page`、`update_page`、`create_share_link`、`get_responses`（支持 `wait_seconds` 长轮询）、`list_pages`。详见 [mcp/README.md](mcp/README.md) 与 [docs/api.md](docs/api.md) §14。
 
-典型流程：`get_ui_guide` → `list_targets`（需要时）→ `publish_page`（kind=openui，本地校验通过才上传）→ 需要给组织外的人填就 `create_share_link` → `get_responses` 带 `server`、`since` 和 `wait_seconds` 循环拉取。
+典型流程：`get_ui_guide` → `list_targets`（需要时）→ `publish_page`（必填 `page_type`，kind=openui 本地校验通过才上传）→ 需要给组织外的人看/填就 `create_share_link` → 收集类（`vote`）用 `get_responses` 带 `server`、`since` 和 `wait_seconds` 循环拉取；只读类不等待。
 
 ## 5. 测试
 

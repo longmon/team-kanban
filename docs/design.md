@@ -1,6 +1,6 @@
 # Team Kanban 设计文档（v2：多租户完整版）
 
-状态：已定稿待实现 · 2026-10-21 · 配套契约：[api.md](api.md)、[../server/migrations/0001_init.sql](../server/migrations/0001_init.sql)
+状态：已定稿待实现 · 2026-10-21 · 配套契约：[api.md](api.md)、[../server/migrations/0001_init.sql](../server/migrations/0001_init.sql)、[0002_page_types.sql](../server/migrations/0002_page_types.sql)（页面分类）
 
 ## 1. 目标与范围
 
@@ -104,6 +104,17 @@ Dockerfile docker-compose.yml Caddyfile.example
 ### 3.3 页面与提交
 
 **pages** — `id`、`org_id`、`project_id`（FK `(org_id, project_id)`）、`title(1..200)`、`kind ∈ {openui, html}`（创建后不可改）、`content text`（openui ≤ 512 KiB，html ≤ 5 MiB，CHECK 兜底）、`version int`（content 变更 +1）、`visibility ∈ {public, org, project, groups}`、`accept_responses bool`、`results_visible_to ∈ {managers, viewers}`、`response_seq bigint`（最后分配的序号 = 提交总数）、`created_by`、`created_via_pat uuid?`、时间戳、`deleted_at?`。索引 `(project_id, id DESC) WHERE deleted_at IS NULL`。
+
+**页面类型**（0002）— `pages.page_type text NOT NULL DEFAULT 'general'`，CHECK 取值 ∈ {general, report, knowledge, flowchart, architecture, vote, requirement, task, task_tree}；与 `kind` 正交，创建后不可改。大类不入库，由代码里的纯函数 `page_category(page_type)` 推导：read = report/knowledge/flowchart/architecture（只读，CHECK `pages_read_only_check` 强制 `accept_responses = false`）；collect = vote/general；collab = requirement/task/task_tree（CHECK `pages_collab_kind_check` 要求 `kind='openui'`，尚未开放，创建时应用层 400）。旧页面全部为 general，行为不变；旧客户端不传 page_type 时也是 general。
+迁移只做 `ADD COLUMN … DEFAULT 常量`（PG11+ 只改元数据，不重写表）+ 三个 CHECK（校验扫一遍 pages 主表，大字段在 TOAST 不读），文件内 `SET LOCAL lock_timeout = '5s'`，拿不到锁即失败退出、不长时间阻塞。0002 上线后回退到旧镜像会因 sqlx 报版本缺失而起不来，确需回退时先停 app 再执行：
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_collab_kind_check, DROP CONSTRAINT IF EXISTS pages_read_only_check,
+                  DROP CONSTRAINT IF EXISTS pages_page_type_check, DROP COLUMN IF EXISTS page_type;
+DELETE FROM _sqlx_migrations WHERE version = 2;
+COMMIT;
+```
 
 **page_groups** — `visibility = 'groups'` 的受众。PK `(page_id, group_id)`，两条复合 FK。visibility 改成别的值时应用清空本表。
 
@@ -270,7 +281,8 @@ if !can_view -> 404 not_found                    # 未登录访问非 public 页
 
 # --- 提交判定（查看通过之后）---
 block_reason = NULL
-if principal.via == Pat                    -> block_reason = 'not_allowed'   # PAT 不能提交
+if category(page.page_type) == 'read'      -> block_reason = 'read_only'     # 只读类，提交返回 409 read_only_page
+elif principal.via == Pat                  -> block_reason = 'not_allowed'   # PAT 不能提交
 elif !page.accept_responses                -> 'responses_closed'
 elif via_share and link.max_uses and link.use_count >= link.max_uses
                                            -> 'share_link_exhausted'        # 仍可查看
@@ -284,7 +296,7 @@ can_view_results = can_manage or page.results_visible_to == 'viewers'
 1. 请求体 ≤ 64 KiB（超出 413），`Content-Type: application/json`（否则 415）。
 2. 限流：IP 维度 30 次/分钟；页面维度 600 次/分钟（429 + `Retry-After`）。
 3. 认证：cookie 会话则校验 CSRF；PAT → 403 `not_allowed`。
-4. `page_access`（上面全部步骤）；`can_submit` 为假 → 409 并给出 `block_reason` 作为错误码。
+4. `page_access`（上面全部步骤）；`can_submit` 为假 → 409 并给出 `block_reason` 作为错误码（`read_only` 对应错误码 `read_only_page`）。
 5. 校验 body：`data` 必须是 JSON object；未登录必须有 `nickname`（trim 后 1..50 字符，去控制字符）；已登录时 nickname 忽略。
 6. 事务：§3.3 的 seq 分配 + 临时链接名额原子占用（0 行 → 回滚，409 `share_link_exhausted` 或 410）+ INSERT。
 7. 提交后 `notify.send(page_id, seq)` 唤醒长轮询与 SSE。
@@ -386,7 +398,7 @@ Strict-Transport-Security 由 Caddy 加
 ### 7.1 长轮询与 SSE
 
 `notify.rs`：`Mutex<HashMap<page_id, broadcast::Sender<i64>>>`，提交成功后 `send(seq)`；无订阅者时移除条目。
-- 长轮询：先查 `seq > since`，有则立即返回；否则订阅后**再查一次**（防止订阅前后丢通知），再 `select!{ recv, sleep(wait) }`，被唤醒后查询返回。
+- 长轮询：先查 `seq > since`，有则立即返回；否则订阅后**再查一次**（防止订阅前后丢通知），再循环等到 deadline：收到 `Response`（或广播滞后 Lagged）时查库，有数据即返回；`Page` 等其它事件不查库、继续等，不会提前返回空结果；页面删除或超时返回当前结果。
 - SSE：先补发 `seq > since`（或 `Last-Event-ID`），再持续推送；每条事件一次按 seq 范围查库，保证顺序与不丢。
 
 ### 7.2 邮件
@@ -447,9 +459,16 @@ Strict-Transport-Security 由 Caddy 加
 - 表单字段用稳定的英文 `name`，agent 拿回的 `data.values` 以它为键。
 - 外部用户不在项目里：发布后用 `create_share_link` 生成临时链接发出去，或 `visibility=public`。
 - html 兜底：自包含 HTML，`<form data-kanban>` 或 `kanban.submit({...})` 提交；页面在沙箱 iframe 中，不能用 cookie/localStorage/弹窗。
+- 页面类型：report / knowledge / flowchart / architecture 是只读页面，不放 Form 或 `@ToAssistant`；knowledge 用 `MarkDownRenderer` 的 `##`/`###` 分节（前端自动生成目录）；flowchart / architecture 用 `Diagram` 写 Mermaid。
 
 ### 8.3 本地校验
-`publish_page`/`update_page` 在 kind=openui 时：按服务器 URL 分别拉取并缓存（进程生命周期，ETag 刷新）`/openui/library.schema.json`；`createParser(schema, "Stack").parse(spec)`；以下任一视为失败，**不调用服务端**，以 `isError: true` 返回错误列表给 agent：`result.root == null`、`meta.errors.length > 0`、`meta.incomplete`、`meta.unresolved.length > 0`。`meta.orphaned` 作为 warning 随成功结果返回。
+`publish_page`/`update_page` 在 kind=openui 时：按服务器 URL 分别拉取并缓存（进程生命周期，ETag 刷新）`/openui/library.schema.json`；`createParser(schema, "Stack").parse(spec)`；以下任一视为失败，**不调用服务端**，以 `isError: true` 返回错误列表给 agent：`result.root == null`、`meta.errors.length > 0`、`meta.incomplete`、`meta.unresolved.length > 0`。`meta.orphaned` 作为 warning 随成功结果返回。只读类 page_type 的 spec 含 `@ToAssistant` 或 `Form(` → `page_type_mismatch`，同样不调用服务端。
+
+### 8.4 页面类型的前端呈现
+- 只读类：不显示昵称栏、「已停止接受提交」提示与「查看结果」按钮；OpenUI 里会触发提交的按钮（`@ToAssistant` 或缺省动作）不渲染，Form 字段禁用；html 页 `relay:init` 带 `can_submit:false`。
+- `Diagram(code, caption?)`：`diagram.tsx` 只放 schema，`diagram-impl.tsx` 用 `import("mermaid")` 懒加载（npm 精确版本，Vite 打包自托管，满足 `script-src 'self'`）；`securityLevel:'strict'`、`htmlLabels:false`、`startOnLoad:false`；陶土 token 映射到 themeVariables，切换暗色时重新渲染；语法错误就地显示错误与源码；带「放大查看」对话框。
+- knowledge：从正文 Markdown 的 h2/h3 生成目录，xl 起左侧 240px sticky。
+- 项目页列表：筛选 chips「全部 / 只读 / 收集 / 各类型」，展开成 `?page_type=`；每行显示类型图标与中文名；只读类不显示提交数、结果按钮和提交开关。
 
 ## 9. 有意的简化与天花板
 
