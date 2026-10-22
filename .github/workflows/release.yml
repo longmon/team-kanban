@@ -1,0 +1,67 @@
+# tkanban 多平台二进制：推送 v* 标签时构建并发布到 GitHub Releases；其他分支推送只构建不发布（用于验证）。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+    branches-ignore: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin,        os: macos-14 }
+          - { target: aarch64-apple-darwin,       os: macos-14 }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      - name: build
+        env:
+          AWS_LC_SYS_PREBUILT_NASM: 1
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: package
+        run: |
+          name=tkanban-${GITHUB_REF_NAME//\//-}-${{ matrix.target }}
+          mkdir -p ../dist/$name
+          bin=target/${{ matrix.target }}/release/tkanban
+          [ -f $bin.exe ] && bin=$bin.exe
+          cp $bin ../LICENSE ../dist/$name/
+          cd ../dist
+          if [[ "${{ matrix.target }}" == *windows* ]]; then 7z a -bd $name.zip $name >/dev/null; else tar czf $name.tar.gz $name; fi
+          rm -rf $name
+      - name: smoke
+        # macos-14 是 arm64 机器，x86_64 产物不一定能跑（视 Rosetta），跳过
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: target/${{ matrix.target }}/release/tkanban --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "tkanban $GITHUB_REF_NAME" --generate-notes
