@@ -505,7 +505,7 @@ export const FormControl = defineComponent({
 // ---------- 按钮 ----------
 /** 提交反馈：OpenUIView 提供状态，触发这次提交的按钮（owner）显示 提交中 spinner → 「已提交 ✓」，失败时抖动并标红 */
 export type SubmitState = { phase: "idle" | "busy" | "done" | "error"; owner: string | null; n: number };
-export const SubmitContext = createContext<{ state: SubmitState; claim: (id: string) => void } | null>(null);
+export const SubmitContext = createContext<{ state: SubmitState; claim: (id: string) => void; readOnly?: boolean } | null>(null);
 
 /** 重新触发一次抖动动画（连续失败也能看到） */
 function shake(el: HTMLElement | null) {
@@ -542,6 +542,9 @@ export const Button = defineComponent({
     }, [phase, sub?.state.n]);
     const variant = props.variant || "primary";
     const destructive = props.type === "destructive";
+    const act = props.action as { steps?: { type: string; refType?: string }[] } | undefined;
+    // 只读页面：会触发提交的按钮（@ToAssistant 或缺省动作）不渲染，open_url 等照常
+    if (sub?.readOnly && (!act?.steps || act.steps.some((s) => s.type === ACTION_STEPS.ToAssistant))) return null;
     return (
       <UIButton ref={ref} type="button" size={BTN_SIZE[props.size ?? "medium"]}
         disabled={streaming} loading={phase === "busy"} aria-invalid={phase === "error" || undefined}
@@ -550,7 +553,6 @@ export const Button = defineComponent({
         variant={destructive ? (variant === "primary" ? "destructive" : "ghost-destructive") : BTN_VARIANT[variant]}
         onClick={() => {
           if (phase === "done") return;
-          const act = props.action as { steps?: { type: string; refType?: string }[] } | undefined;
           // 主按钮触发提交前先校验表单（与原库一致）
           if (fv && variant === "primary") {
             const needs = act?.steps
@@ -584,12 +586,14 @@ export const Form = defineComponent({
     const validation = useCreateFormValidation();
     // 不在卡片里时自成一张承托卡片（控件宽度由各字段自己限制）
     const inside = useContext(InSurface);
+    const readOnly = !!useContext(SubmitContext)?.readOnly;
     return (
       <FormValidationContext.Provider value={validation}>
         <FormNameContext.Provider value={props.name}>
           <InSurface.Provider value>
             <div role="form" className={cn("flex flex-col gap-5", !inside && "surface p-5 sm:p-6")}>
-              {renderNode(props.fields)}
+              {/* 只读页面：字段禁用 */}
+              <fieldset disabled={readOnly} className="contents">{renderNode(props.fields)}</fieldset>
               <div className="pt-1">{renderNode(props.buttons)}</div>
             </div>
           </InSurface.Provider>

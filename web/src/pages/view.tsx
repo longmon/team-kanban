@@ -1,5 +1,5 @@
 // 页面查看与提交：/pages/:id 与 /s/:token（api.md §7.2、§8.1、§9、§10）
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Lock, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,19 +9,21 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, errMsg, get, nicknameStore, post, shareGrant } from "../api";
 import { cn } from "@/lib/utils";
 import { Link, navigate } from "../router";
-import { AuthCard, ErrorBox, fmtTime, Notice, PageHeader, toast, useAction, useOwnOrg, useSession } from "../ui";
+import { AuthCard, ErrorBox, fmtTime, Notice, PageHeader, PageTypeTag, toast, useAction, useOwnOrg, useSession } from "../ui";
 import { ResultsView } from "./results";
 import type { PageView } from "../types";
 
 const OpenUIView = lazy(() => import("./openui-view"));
 
 // 含图表/表格/KPI 块的 OpenUI 页面铺满版心；纯表单/文字页收窄到 max-w-5xl 居中（表单卡本身也是 max-w-5xl）
-const WIDE_RE = /\b(?:BarChart|LineChart|AreaChart|PieChart|RadarChart|HorizontalBarChart|ScatterChart|Table|SnippetCardBlock|OverviewCardBlock)\s*\(/;
-const isNarrow = (v: PageView) => v.content.kind === "openui" && !WIDE_RE.test(v.content.spec);
+const WIDE_RE = /\b(?:BarChart|LineChart|AreaChart|PieChart|RadarChart|HorizontalBarChart|ScatterChart|Table|SnippetCardBlock|OverviewCardBlock|Diagram)\s*\(/;
+// 知识库页宽屏时左侧有目录栏，不收窄（正文段落本身限 80ch）
+const isNarrow = (v: PageView) => v.content.kind === "openui" && v.page.page_type !== "knowledge" && !WIDE_RE.test(v.content.spec);
 
 export type Source = { kind: "page"; id: string } | { kind: "share"; token: string };
 
 export const BLOCK_MSG: Record<string, string> = {
+  read_only: "只读页面，不接受提交",
   responses_closed: "页面已停止接受提交",
   share_link_exhausted: "该临时链接的提交次数已用完",
   share_link_expired: "该临时链接已过期",
@@ -88,6 +90,7 @@ function Viewer({ src }: { src: Source }) {
         title={view.page.title}
         desc={
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px]">
+            {view.page.page_type !== "general" && <Badge variant="secondary"><PageTypeTag type={view.page.page_type} /></Badge>}
             <span>v{view.page.version}</span>
             <span>更新于 {fmtTime(view.page.updated_at)}</span>
             {view.share_link && (
@@ -99,9 +102,9 @@ function Viewer({ src }: { src: Source }) {
             )}
           </div>
         }
-        actions={(view.can_view_results || view.can_manage) && (
+        actions={((view.can_view_results && view.page.category !== "read") || view.can_manage) && (
           <>
-            {view.can_view_results && (src.kind === "page"
+            {view.can_view_results && view.page.category !== "read" && (src.kind === "page"
               ? <Button size="sm" variant="outline" onClick={() => navigate(`/pages/${pageId}/results`)}>查看结果</Button>
               : <Button size="sm" variant="outline" onClick={() => setShowResults((x) => !x)}>{showResults ? "隐藏结果" : "查看结果"}</Button>)}
             {view.can_manage && <Button size="sm" variant="outline" onClick={() => navigate(`/pages/${pageId}/links`)}>临时链接</Button>}
@@ -163,7 +166,8 @@ function Submitter({ view, src }: { view: PageView; src: Source }) {
   // OpenUI 内容直接放在页面底色上（内部卡片自带表面）；html iframe 仍放在一张卡片里
   return (
     <div className="flex flex-col gap-4">
-      {!view.can_submit && view.submit_block_reason && <Notice tone="warning">{BLOCK_MSG[view.submit_block_reason]}</Notice>}
+      {/* 只读页面本来就没有提交入口，不提示 */}
+      {!view.can_submit && view.submit_block_reason && view.submit_block_reason !== "read_only" && <Notice tone="warning">{BLOCK_MSG[view.submit_block_reason]}</Notice>}
       {anon && view.can_submit && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl bg-muted/60 px-5 py-3">
           <Label htmlFor="relay-nick" className="text-[13px] whitespace-nowrap">你的昵称</Label>
@@ -174,13 +178,60 @@ function Submitter({ view, src }: { view: PageView; src: Source }) {
       )}
       {view.content.kind === "openui" ? (
         <Suspense fallback={<ContentSkeleton />}>
-          <OpenUIView spec={view.content.spec} submit={submit} />
+          {view.page.page_type === "knowledge"
+            ? <KnowledgeLayout><OpenUIView spec={view.content.spec} submit={submit} readOnly /></KnowledgeLayout>
+            : <OpenUIView spec={view.content.spec} submit={submit} readOnly={view.page.category === "read"} />}
         </Suspense>
       ) : (
         <div className="surface overflow-hidden">
           <HtmlFrame view={view} frameUrl={view.content.frame_url} submit={submit} nickname={anon ? nickname.trim() || null : null} />
         </div>
       )}
+    </div>
+  );
+}
+
+type Toc = { id: string; text: string; level: number }[];
+
+/** 知识库页：从正文 Markdown 的 h2/h3 生成目录，xl 起左侧 240px sticky；没有标题时不显示 */
+function KnowledgeLayout({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [toc, setToc] = useState<Toc>([]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const scan = () => {
+      const items: Toc = [];
+      el.querySelectorAll<HTMLElement>(".md h2, .md h3").forEach((h, i) => {
+        h.id ||= `kb-${i + 1}`;
+        items.push({ id: h.id, text: h.textContent ?? "", level: h.tagName === "H2" ? 2 : 3 });
+      });
+      setToc((old) => (JSON.stringify(old) === JSON.stringify(items) ? old : items));
+    };
+    scan();
+    // 内容懒加载、流式渲染：DOM 变化时重新扫描
+    const mo = new MutationObserver(scan);
+    mo.observe(el, { childList: true, subtree: true });
+    return () => mo.disconnect();
+  }, []);
+  const go = (id: string) => {
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById(id)?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+  };
+  return (
+    <div className={cn("grid gap-6", toc.length > 0 && "xl:grid-cols-[240px_minmax(0,1fr)]")}>
+      {toc.length > 0 && (
+        <nav aria-label="目录" className="hidden xl:block">
+          <div className="sticky top-6 flex max-h-[calc(100vh-3rem)] flex-col gap-1 overflow-y-auto border-l pl-4 text-[13px]">
+            <div className="mb-1 font-semibold">目录</div>
+            {toc.map((t) => (
+              <a key={t.id} href={`#${t.id}`} className={cn("py-0.5 text-muted-foreground transition-colors hover:text-foreground", t.level === 3 && "pl-3")}
+                onClick={(e) => (e.preventDefault(), go(t.id))}>{t.text}</a>
+            ))}
+          </div>
+        </nav>
+      )}
+      <div ref={ref} className="min-w-0">{children}</div>
     </div>
   );
 }

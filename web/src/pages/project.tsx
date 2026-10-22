@@ -1,6 +1,6 @@
 // 项目页：页面列表与元数据编辑、成员、群组授权、邀请、设置（api.md §4.3、§4.4、§7.1）
 import { useState, type FormEvent } from "react";
-import { FileText, ShieldCheck } from "lucide-react";
+import { Check, FileText, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,10 +8,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, put, qs } from "../api";
+import { cn } from "@/lib/utils";
 import { Link, navigate } from "../router";
 import {
-  AuthCard, CheckField, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page as Shell, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
-  PageHeader, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged, useSession,
+  AuthCard, CATEGORY_LABEL, CATEGORY_TYPES, CheckField, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page as Shell,
+  PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PAGE_TYPE_LABEL, PageHeader, PageTypeTag, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
+  useSession,
 } from "../ui";
 import { SLUG_RE } from "./home";
 import { Invites, MemberPicker } from "./org";
@@ -60,16 +62,39 @@ export function ProjectPage({ orgSlug, projectSlug }: { orgSlug: string; project
   );
 }
 
+/** 列表筛选项：all / 大类（read、collect）/ 具体 page_type */
+const FILTERS: [string, string][] = [
+  ["all", "全部"],
+  ...Object.keys(CATEGORY_TYPES).map((c): [string, string] => [c, CATEGORY_LABEL[c]]),
+  ...Object.values(CATEGORY_TYPES).flat().map((t): [string, string] => [t, PAGE_TYPE_LABEL[t]]),
+];
+const filterTypes = (f: string) => (f === "all" ? undefined : (CATEGORY_TYPES[f] ?? [f]).join(","));
+
 function Pages({ org, project }: { org: Org; project: Project }) {
-  const list = usePaged<Page>(`/pages${qs({ project_id: project.id })}`);
+  const [filter, setFilter] = useState("all");
+  const list = usePaged<Page>(`/pages${qs({ project_id: project.id, page_type: filterTypes(filter) })}`);
   const groups = useLoad(() => get<Paged<Group>>(`/orgs/${org.id}/groups?limit=200`), [org.id]);
   const [editing, setEditing] = useState<string | null>(null);
   return (
     <div className="stack">
       <p className="tab-intro">页面内容由 agent 通过 MCP 发布与更新；这里只能修改标题、可见性和提交开关。</p>
+      <div role="group" aria-label="按类型筛选" className="flex flex-wrap items-center gap-2">
+        {FILTERS.map(([v, label], i) => (
+          <button key={v} type="button" aria-pressed={filter === v} onClick={() => setFilter(v)}
+            className={cn(
+              "inline-flex h-7 items-center gap-1 rounded-full border px-3 text-[13px] font-semibold transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/80 active:scale-[.97]",
+              filter === v ? "border-primary bg-primary/10" : "border-input text-muted-foreground",
+              i === Object.keys(CATEGORY_TYPES).length + 1 && "sm:ml-3",
+            )}>
+            {filter === v && <Check strokeWidth={3} className="size-3.5 animate-in zoom-in-50 duration-150 ease-pop" />}{label}
+          </button>
+        ))}
+      </div>
       <ErrorBox error={list.error} />
       {list.loading && list.items.length === 0 && <ListSkeleton />}
-      {!list.loading && list.items.length === 0 && <Empty icon={<FileText />} title="还没有页面">让 agent 调用 MCP 的 publish_page 发布第一个页面。</Empty>}
+      {!list.loading && list.items.length === 0 && (filter === "all"
+        ? <Empty icon={<FileText />} title="还没有页面">让 agent 调用 MCP 的 publish_page 发布第一个页面。</Empty>
+        : <Empty icon={<FileText />} title="没有该类型的页面" />)}
       {list.items.length > 0 && (
         <div className="list">
           {list.items.map((pg) => (
@@ -77,16 +102,17 @@ function Pages({ org, project }: { org: Org; project: Project }) {
               <div className="list-main">
                 <Link to={`/pages/${pg.id}`} className="list-title">{pg.title}</Link>
                 <div className="list-meta">
+                  <Badge variant="secondary"><PageTypeTag type={pg.page_type} /></Badge>
                   <Badge variant="outline">{pg.kind === "openui" ? "OpenUI" : "HTML"}</Badge>
                   <Badge variant={pg.visibility === "public" ? "info" : "secondary"}>{VIS_LABEL[pg.visibility]}</Badge>
-                  {!pg.accept_responses && <Badge variant="warning">已关闭提交</Badge>}
+                  {!pg.accept_responses && pg.category !== "read" && <Badge variant="warning">已关闭提交</Badge>}
                   <span>v{pg.version}</span>
                   <span>{pg.created_by.display_name} 更新于 {fmtTime(pg.updated_at)}</span>
                 </div>
               </div>
-              <div className="list-stat"><b>{pg.response_count}</b> 条提交</div>
+              <div className="list-stat">{pg.category !== "read" && <><b>{pg.response_count}</b> 条提交</>}</div>
               <div className="list-actions">
-                <Button size="sm" variant="outline" onClick={() => navigate(`/pages/${pg.id}/results`)}>结果</Button>
+                {pg.category !== "read" && <Button size="sm" variant="outline" onClick={() => navigate(`/pages/${pg.id}/results`)}>结果</Button>}
                 {pg.can_manage && <Button size="sm" variant="outline" onClick={() => navigate(`/pages/${pg.id}/links`)}>临时链接</Button>}
                 {pg.can_manage && <Button size="sm" variant="ghost" onClick={() => setEditing(editing === pg.id ? null : pg.id)}>{editing === pg.id ? "收起" : "编辑"}</Button>}
               </div>
@@ -135,7 +161,7 @@ export function PageMetaEditor({ page, groups, onDone }: { page: Page; groups: G
           ))}
         </div>
       )}
-      <CheckField checked={f.accept_responses} onChange={(v) => setF({ ...f, accept_responses: v })}>接受提交</CheckField>
+      {page.category !== "read" && <CheckField checked={f.accept_responses} onChange={(v) => setF({ ...f, accept_responses: v })}>接受提交</CheckField>}
       <Field label="结果可见范围">
         <NativeSelect value={f.results_visible_to} onChange={(v) => setF({ ...f, results_visible_to: v })}
           options={[["managers", "仅页面管理者"], ["viewers", "所有能查看页面的人"]]} />

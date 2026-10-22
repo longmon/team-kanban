@@ -28,7 +28,7 @@ const projOut = () => ({ ...project, my_role: "admin" });
 const pageOut = (p) => ({ ...p, content: undefined, response_count: (responses.get(p.id) ?? []).length, url: `http://localhost:5173/pages/${p.id}`, created_by: brief(users[0]), can_manage: true });
 
 function addPage(title, kind, content, visibility = "public") {
-  const p = { id: id(), org_id: org.id, project_id: project.id, title, kind, version: 1, visibility, group_ids: [], accept_responses: true, results_visible_to: "viewers", created_at: now(), updated_at: now(), content };
+  const p = { id: id(), org_id: org.id, project_id: project.id, title, kind, page_type: "general", category: "collect", version: 1, visibility, group_ids: [], accept_responses: true, results_visible_to: "viewers", created_at: now(), updated_at: now(), content };
   pages.push(p);
   responses.set(p.id, []);
   return p;
@@ -73,7 +73,7 @@ function frameUrl(p) { return `/h/${p.id}/${p.version}?exp=${Math.floor(Date.now
 function view(p, user, link) {
   const blocked = !p.accept_responses ? "responses_closed" : link && link.max_uses !== null && link.use_count >= link.max_uses ? "share_link_exhausted" : null;
   return {
-    page: { id: p.id, title: p.title, kind: p.kind, version: p.version, accept_responses: p.accept_responses, results_visible_to: p.results_visible_to, updated_at: p.updated_at, project: { id: project.id, name: project.name }, org: { id: org.id, name: org.name } },
+    page: { id: p.id, title: p.title, kind: p.kind, page_type: p.page_type, category: p.category, version: p.version, accept_responses: p.accept_responses, results_visible_to: p.results_visible_to, updated_at: p.updated_at, project: { id: project.id, name: project.name }, org: { id: org.id, name: org.name } },
     content: p.kind === "openui" ? { kind: "openui", spec: p.content } : { kind: "html", frame_url: frameUrl(p), frame_origin: "null" },
     viewer: user ? { type: "user", user_id: user.id, display_name: user.display_name } : { type: "anonymous" },
     can_submit: !blocked, submit_block_reason: blocked,

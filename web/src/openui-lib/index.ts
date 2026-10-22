@@ -6,6 +6,7 @@ import {
   BoldText, Callout, CardHeader, Col, Icon, IconText, Image, MarkDownRenderer, MetricIndicatorInline, OverviewCardBlock, OverviewCardItem,
   Separator, SnippetCardBlock, SnippetCardItem, Steps, StepsItem, Table, Tag, TagBlock, Text, TextCallout, TextContent,
 } from "./content";
+import { Diagram } from "./diagram";
 import {
   Button, Buttons, CheckBoxGroup, CheckBoxItem, ChipItem, Chips, DatePicker, Form, FormControl, Input, Label, RadioGroup, RadioItem,
   Select, SelectItem, Slider, SwitchGroup, SwitchItem, TextArea,
@@ -56,6 +57,15 @@ const componentGroups = [
   },
   { name: "Charts (Scatter)", components: ["ScatterChart", "ScatterSeries", "Point"] },
   {
+    name: "Diagrams",
+    components: ["Diagram"],
+    notes: [
+      '- Flowcharts and architecture diagrams: Diagram(mermaidCode, caption?) with Mermaid syntax, e.g. Diagram("flowchart TD\\n  A[提交] --> B{审核}\\n  B -->|通过| C[发布]", "发布流程").',
+      "- Architecture: flowchart LR with subgraph per layer/zone (or C4Context / architecture-beta). Sequence: sequenceDiagram. States: stateDiagram-v2.",
+      "- Do NOT use %%{init}%% directives, click handlers or javascript: links. A linear list of steps can use Steps instead.",
+    ],
+  },
+  {
     name: "Forms",
     components: [
       "Form", "FormControl", "Label", "Input", "TextArea", "Select", "SelectItem", "DatePicker", "Slider",
@@ -104,6 +114,7 @@ export const kanbanLibrary = createLibrary({
     BarChart, LineChart, AreaChart, RadarChart, HorizontalBarChart, Series,
     PieChart,
     ScatterChart, ScatterSeries, Point,
+    Diagram,
     Form, FormControl, Label, Input, TextArea, Select, SelectItem, DatePicker, Slider,
     CheckBoxGroup, CheckBoxItem, RadioGroup, RadioItem, SwitchGroup, SwitchItem, ChipItem, Chips,
     Button, Buttons,

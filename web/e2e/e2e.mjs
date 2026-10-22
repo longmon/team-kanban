@@ -60,6 +60,12 @@ await call(demo, "POST", `/groups/${group.id}/members`, { user_id: member.user.i
 const vote = readFileSync(new URL("vote.openui", exDir), "utf8");
 await addPage("仅项目可见", "openui", vote, { visibility: "project" });
 await addPage("评审组可见", "openui", vote, { visibility: "groups", group_ids: [group.id] });
+// 页面类型：只读报告（故意带表单，验证前端不渲染提交入口）、流程图（Mermaid）、知识库（目录）
+await addPage("只读报告", "openui", vote, { page_type: "report" });
+await addPage("流程图", "openui", String.raw`root = Stack([d])
+d = Diagram("flowchart LR\n  A[提交需求] --> B{评审}\n  B -->|通过| C[开发]\n  B -->|驳回| A\n  subgraph 上线\n    C --> D[发布]\n  end", "需求流程")`, { page_type: "flowchart" });
+await addPage("知识库", "openui", String.raw`root = Stack([md])
+md = MarkDownRenderer("## 安装\n\n下载二进制。\n\n### Linux\n\n解压即可。\n\n## 配置\n\n运行 tkanban add。\n\n## 常见问题\n\n见下文。")`, { page_type: "knowledge" });
 
 // ---------- 浏览器 ----------
 const browser = await chromium.launch({ executablePath: exe });
@@ -229,6 +235,67 @@ await step("page-meta-edit", async () => {
   await page.getByRole("button", { name: "编辑" }).first().click();
   await page.getByRole("button", { name: "保存" }).click();
   await toast("已保存");
+});
+await step("read-only-no-submit", async () => {
+  await page.goto(BASE + "/pages/" + IDS["只读报告"]);
+  await page.getByText("技术选型投票").waitFor();
+  await page.getByText("报告", { exact: true }).waitFor(); // 类型徽标
+  if (await page.getByRole("button", { name: "提交" }).count()) throw new Error("read-only page shows submit button");
+  if (await page.getByRole("button", { name: "查看结果" }).count()) throw new Error("read-only page shows results button");
+  if (await page.getByText("不接受提交").count()) throw new Error("read-only page shows block notice");
+  await page.screenshot({ path: `${OUT}/read-only.png`, fullPage: true });
+});
+await step("read-only-anon-no-nickname", async () => {
+  const c2 = await browser.newContext();
+  const p = await c2.newPage();
+  watch(p);
+  try {
+    await p.goto(BASE + "/pages/" + IDS["只读报告"]);
+    await p.getByText("技术选型投票").waitFor();
+    if (await p.locator("#relay-nick").count()) throw new Error("read-only page shows nickname input");
+    if (await p.getByRole("button", { name: "提交" }).count()) throw new Error("read-only page shows submit button");
+  } finally { await c2.close(); }
+});
+await step("mermaid-diagram", async () => {
+  await page.goto(BASE + "/pages/" + IDS["流程图"]);
+  await page.locator(".diagram-svg svg").first().waitFor({ timeout: 15000 });
+  await page.getByText("需求流程").waitFor();
+  const labels = await page.locator(".diagram-svg svg").first().textContent();
+  if (!labels.includes("评审") || !labels.includes("发布")) throw new Error("diagram labels missing: " + labels);
+  await page.screenshot({ path: `${OUT}/flowchart.png`, fullPage: true });
+  await page.getByRole("button", { name: "放大查看" }).click();
+  await page.locator("[role=dialog] .diagram-svg svg").first().waitFor();
+  await page.keyboard.press("Escape");
+});
+await step("knowledge-toc", async () => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(BASE + "/pages/" + IDS["知识库"]);
+  const toc = page.getByRole("navigation", { name: "目录" });
+  await toc.waitFor();
+  const items = await toc.locator("a").allTextContents();
+  if (JSON.stringify(items) !== JSON.stringify(["安装", "Linux", "配置", "常见问题"])) throw new Error("toc " + items);
+  await page.screenshot({ path: `${OUT}/knowledge.png`, fullPage: true });
+  await page.setViewportSize({ width: 1200, height: 900 });
+});
+await step("list-filter-by-type", async () => {
+  await page.goto(BASE + "/o/demo/p/demo");
+  await page.getByText("示例：vote.openui").waitFor();
+  const filters = page.getByRole("group", { name: "按类型筛选" });
+  await filters.getByRole("button", { name: "只读", exact: true }).click();
+  await page.locator(".list-title", { hasText: "流程图" }).waitFor();
+  const titles = async () => (await page.locator(".list-title").allTextContents()).sort();
+  let t = await titles();
+  if (JSON.stringify(t) !== JSON.stringify(["只读报告", "流程图", "知识库"].sort())) throw new Error("只读: " + t);
+  await filters.getByRole("button", { name: "流程图", exact: true }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".list-title").length === 1);
+  t = await titles();
+  if (JSON.stringify(t) !== JSON.stringify(["流程图"])) throw new Error("流程图: " + t);
+  await filters.getByRole("button", { name: "收集", exact: true }).click();
+  await page.locator(".list-title", { hasText: "示例：vote.openui" }).waitFor();
+  t = await titles();
+  if (t.some((x) => ["只读报告", "流程图", "知识库"].includes(x))) throw new Error("收集: " + t);
+  await page.screenshot({ path: `${OUT}/project-filter.png`, fullPage: true });
+  await filters.getByRole("button", { name: "全部", exact: true }).click();
 });
 await step("perm-outsider-404", async () => {
   const c2 = await browser.newContext();

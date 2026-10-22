@@ -1,7 +1,7 @@
 // 通用小部件与 hooks；视觉组件来自 shadcn/ui（components/ui）
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast as sonner } from "sonner";
-import { Check, CircleAlert, Copy } from "lucide-react";
+import { BookOpen, Check, CircleAlert, Copy, FileChartColumn, FileText, Network, Vote, Workflow } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -362,4 +362,22 @@ export const ROLE_LABEL: Record<string, string> = {
 };
 export const VIS_LABEL: Record<string, string> = {
   public: "公开（持链接即可）", org: "组织成员", project: "项目成员", groups: "指定群组",
+};
+export const PAGE_TYPE_LABEL: Record<string, string> = {
+  general: "通用", report: "报告", knowledge: "知识库", flowchart: "流程图", architecture: "架构图", vote: "投票",
+  requirement: "需求对接", task: "任务页", task_tree: "任务树",
+};
+const PAGE_TYPE_ICON: Record<string, typeof FileText> = {
+  report: FileChartColumn, knowledge: BookOpen, flowchart: Workflow, architecture: Network, vote: Vote,
+};
+/** 页面类型图标 + 中文名（徽标内用） */
+export function PageTypeTag({ type }: { type: string }) {
+  const Icon = PAGE_TYPE_ICON[type] ?? FileText;
+  return <><Icon className="size-3.5" />{PAGE_TYPE_LABEL[type] ?? type}</>;
+}
+export const CATEGORY_LABEL: Record<string, string> = { read: "只读", collect: "收集", collab: "协作" };
+/** 大类 → 包含的页面类型（列表筛选展开成 ?page_type=）。协作类尚未开放，不列 */
+export const CATEGORY_TYPES: Record<string, string[]> = {
+  read: ["report", "knowledge", "flowchart", "architecture"],
+  collect: ["vote", "general"],
 };
