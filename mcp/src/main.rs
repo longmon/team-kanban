@@ -63,6 +63,32 @@ enum Kind {
     Html,
 }
 
+/// 页面类型（docs/api.md §7）。协作类 requirement/task/task_tree 尚未开放，不在此列。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum PageType {
+    Report,
+    Knowledge,
+    Flowchart,
+    Architecture,
+    Vote,
+}
+
+/// 只读类：report/knowledge/flowchart/architecture
+fn is_read_only(page_type: &str) -> bool {
+    matches!(page_type, "report" | "knowledge" | "flowchart" | "architecture")
+}
+
+/// 只读类页面不能含提交入口（前端也不会渲染提交按钮）
+fn check_read_only_spec(page_type: &str, spec: &str) -> R<()> {
+    if is_read_only(page_type) && (spec.contains("@ToAssistant") || spec.contains("Form(")) {
+        return Err(format!(
+            "page_type_mismatch: {page_type} 是只读页面，不能含 Form 或 @ToAssistant 按钮；需要用户回复请用 page_type=vote"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum Visibility {
@@ -103,6 +129,11 @@ struct PublishArgs {
     project: Option<String>,
     /// 页面标题，1..200 字符
     title: String,
+    /// 页面类型（必填）。用户明确指定了类型就照用；否则按用户意图选：
+    /// 只给人看、不需要回复 → report（报告/数据汇总/分析结论）、knowledge（说明文档/手册/FAQ）、
+    /// flowchart（流程/步骤/决策分支，用 Diagram 组件写 Mermaid）、architecture（系统组件/部署/模块关系，用 Diagram）；
+    /// 需要对方选择或填写 → vote（投票/表单/问卷/确认单）。拿不准时：需要回复选 vote，不需要回复选 report。
+    page_type: PageType,
     /// 默认 openui
     kind: Option<Kind>,
     /// kind=openui 时：OpenUI Lang 原文
@@ -115,7 +146,7 @@ struct PublishArgs {
     visibility: Option<Visibility>,
     /// 发到这些群组：群组名（大小写不敏感）或 UUID。给了就把可见性设成 groups
     groups: Option<Vec<String>>,
-    /// 默认 true
+    /// vote 默认 true；只读类型（report/knowledge/flowchart/architecture）默认 false 且不能设为 true
     accept_responses: Option<bool>,
     /// 谁能看结果，默认 managers
     results_visible_to: Option<ResultsVisibleTo>,
@@ -314,9 +345,14 @@ fn load_content(
 
 /// 从 Page 挑出 publish/update 的出参字段。
 fn page_out(s: &Srv, page: &Value, warnings: Vec<String>) -> String {
+    let next_step = match page["category"].as_str() {
+        Some("read") => "只读页面：把 url 发给用户即可，无需等待回复，不要调用 get_responses。",
+        _ => "收集类页面：把 url 发给用户，用 get_responses(wait_seconds=25) 等待提交。",
+    };
     pretty(&json!({
         "server": s.name, "id": page["id"], "url": page["url"], "version": page["version"],
-        "visibility": page["visibility"], "warnings": warnings,
+        "visibility": page["visibility"], "page_type": page["page_type"], "category": page["category"],
+        "warnings": warnings, "next_step": next_step,
     }))
 }
 
@@ -767,13 +803,17 @@ impl Kanban {
             }
             Some(v) => v,
         };
+        let page_type = json!(a.page_type);
         let warnings = match kind {
-            Kind::Openui => self.check_openui(&s, content.clone()).await?,
+            Kind::Openui => {
+                check_read_only_spec(page_type.as_str().unwrap_or_default(), &content)?;
+                self.check_openui(&s, content.clone()).await?
+            }
             Kind::Html => vec![],
         };
         let (project, group_ids) = self.resolve_target(&s, org, project, &groups, true).await?;
         let mut body = json!({
-            "project_id": project["id"], "title": a.title, "kind": kind, "content": content,
+            "project_id": project["id"], "title": a.title, "kind": kind, "page_type": page_type, "content": content,
             "visibility": visibility,
             "accept_responses": a.accept_responses, "results_visible_to": a.results_visible_to,
         });
@@ -808,6 +848,7 @@ impl Kanban {
                 .map_err(|e| format!("bad_response: kind {e}"))?;
             if let Some(content) = load_content(kind, a.spec, a.html, a.file_path)? {
                 if kind == Kind::Openui {
+                    check_read_only_spec(page["page_type"].as_str().unwrap_or_default(), &content)?;
                     warnings = self.check_openui(&s, content.clone()).await?;
                 }
                 body["content"] = content.into();
@@ -861,8 +902,11 @@ impl Kanban {
     }
 }
 
-const INSTRUCTIONS: &str = "Team Kanban：把报告、表格、图表、投票/问卷发布成网页，外部用户查看并提交，你再拉回提交结果。\
-流程：get_ui_guide（首次必读）→ list_targets → publish_page → create_share_link（给项目外的人）→ get_responses（可长轮询）。\
+const INSTRUCTIONS: &str = "Team Kanban：把报告、知识文档、流程图/架构图、投票/问卷发布成网页，外部用户查看；需要回复的页面你再拉回提交结果。\
+流程：get_ui_guide（首次必读）→ list_targets → publish_page → create_share_link（给项目外的人）→ 需要回复时 get_responses（可长轮询）。\
+发布前先按用户意图选 page_type（用户指定了类型就照用）：只给人看、不需要回复 → report / knowledge / flowchart / architecture\
+（只读页面，不能放 Form 或 @ToAssistant 按钮，发完把 url 交给用户即可，不要调用 get_responses 等待）；\
+需要对方选择或填写 → vote，发布后用 get_responses 等待。流程图、架构图用 Diagram 组件写 Mermaid。拿不准时：需要回复选 vote，不需要选 report。\
 本机可能配置了多个服务器（profile）、组织、项目和群组。目标选择规则：用户指明了就带上 server/org/project/groups；\
 用户没指明时，只有一个候选的工具会自动用，有多个候选时工具返回 {\"need_selection\": ...} 和候选列表——这时不要猜，\
 把候选展示给用户，问清发到哪个服务器、哪个项目或群组，再带参数重试。默认服务器只在用户用 `tkanban default` 显式设置过时才生效。\
@@ -910,7 +954,11 @@ impl Kanban {
     }
 
     #[tool(
-        description = "发布页面（默认 kind=openui），返回 {server,id,url,version,visibility,warnings}。spec/html/file_path 恰好给一个。\
+        description = "发布页面（默认 kind=openui），返回 {server,id,url,version,visibility,page_type,category,warnings,next_step}。spec/html/file_path 恰好给一个。\
+page_type 必填，按用户意图选（用户明确指定类型时以用户为准）：只给人看、不需要回复 → report 报告/数据汇总/分析结论、knowledge 说明文档/手册/FAQ、\
+flowchart 流程/步骤/决策分支（用 Diagram 组件写 Mermaid）、architecture 系统组件/部署/模块关系（Diagram）；这四类是只读页面，不能含 Form 或 @ToAssistant 按钮，\
+发布后把 url 交给用户即可，不要调用 get_responses 等待。需要对方选择或填写 → vote（投票、表单、问卷、确认单），发布后用 get_responses(wait_seconds=25) 等待。\
+拿不准时：需要回复选 vote，不需要回复选 report。\
 目标按 服务器 → 组织 → 项目 逐级定位：用户指明的用 server/org/project/groups 传入；profile 里配置的默认 org/project/groups 视为已指定；\
 某一级只有一个候选会自动选；有多个候选时返回 {\"need_selection\": \"server|org|project|group\", \"candidates\": [...]}（不是错误）——\
 此时不要猜，把候选告诉用户、问清发到哪个服务器/项目/群组后带参数重试。给了 groups（群组名或 UUID）就发到这些群组（visibility=groups），\

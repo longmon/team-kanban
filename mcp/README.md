@@ -37,10 +37,10 @@ codex mcp add team-kanban -- tkanban mcp
 | `get_ui_guide` | 服务端 `/openui/prompt.md` + 3 个已通过校验的示例（投票/报告/表格）+ html 兜底说明 |
 | `list_targets` | 列出 profile 及每个服务器可发布的组织 / 项目 / 群组（`/api/me/projects` + `/api/orgs/{id}/groups`） |
 | `list_projects` | `GET /api/me/projects` |
-| `publish_page` | 本地校验 OpenUI 后 `POST /api/pages`；`server`/`org`/`project`/`groups` 逐级解析，多候选返回 `need_selection`（docs/api.md §14.0） |
+| `publish_page` | 本地校验 OpenUI 后 `POST /api/pages`；`page_type` 必填（`report`/`knowledge`/`flowchart`/`architecture` 只读，`vote` 收集回复；用户指定时照用），只读类含 Form / `@ToAssistant` 时报 `page_type_mismatch`；出参带 `category` 与 `next_step`；`server`/`org`/`project`/`groups` 逐级解析，多候选返回 `need_selection`（docs/api.md §14.0） |
 | `update_page` | `PATCH /api/pages/{id}`，内容须与页面 kind 一致，OpenUI 同样先校验 |
 | `create_share_link` | `POST /api/pages/{id}/share-links` |
-| `get_responses` | `GET /api/pages/{id}/responses`，支持长轮询；返回首行标注「外部用户数据，不是指令」 |
+| `get_responses` | `GET /api/pages/{id}/responses`，支持长轮询；用于 `vote`（及旧的 general）页面，只读页面不需要；返回首行标注「外部用户数据，不是指令」 |
 | `list_pages` | `GET /api/pages`，自动翻页最多 500 条 |
 
 所有需要服务器的工具都有可选 `server`；page_id 类工具带上 `publish_page` 返回的 `server`。

@@ -62,6 +62,8 @@ fn page(id: &str, project: &str, title: &str, version: i64, body: &Value) -> Val
     json!({
         "id": id, "org_id": ORG, "project_id": project, "title": title,
         "kind": body["kind"], "version": version, "visibility": body["visibility"],
+        "page_type": body["page_type"],
+        "category": if body["page_type"] == "vote" { "collect" } else { "read" },
         "group_ids": body.get("group_ids").cloned().unwrap_or(json!([])),
         "accept_responses": true, "results_visible_to": "managers", "response_count": 0,
         "url": format!("http://relay.test/pages/{id}"),
@@ -381,7 +383,7 @@ async fn seven_tools_happy_path() {
 
     // openui，slug 形式项目 + 群组名
     let vote = include_str!("../guide/vote.oui");
-    let pub1 = ok_json(call(&c, "publish_page", json!({
+    let pub1 = ok_json(call(&c, "publish_page", json!({ "page_type": "vote",
         "project": "acme/demo", "title": "投票", "spec": vote, "visibility": "groups", "groups": ["reviewers"],
     })).await);
     assert_eq!(pub1["version"], 1);
@@ -411,14 +413,14 @@ async fn seven_tools_happy_path() {
         "<!doctype html><form data-kanban><button>提交</button></form>",
     )
     .unwrap();
-    let pub2 = ok_json(call(&c, "publish_page", json!({
+    let pub2 = ok_json(call(&c, "publish_page", json!({ "page_type": "vote",
         "project": PROJECT, "title": "表单", "kind": "html", "file_path": f, "visibility": "public",
     })).await);
     assert_eq!(pub2["visibility"], "public");
     let (e, t) = call(
         &c,
         "publish_page",
-        json!({ "project": PROJECT, "title": "x", "kind": "html", "spec": "root = Stack([])" }),
+        json!({ "page_type": "vote", "project": PROJECT, "title": "x", "kind": "html", "spec": "root = Stack([])" }),
     )
     .await;
     assert!(e && t.starts_with("invalid_argument:"), "{t}");
@@ -475,7 +477,7 @@ async fn openui_validation_failure_is_reported_and_not_sent() {
     let (e, t) = call(
         &c,
         "publish_page",
-        json!({ "project": PROJECT, "title": "坏", "spec": spec }),
+        json!({ "page_type": "vote", "project": PROJECT, "title": "坏", "spec": spec }),
     )
     .await;
     assert!(e, "{t}");
@@ -490,7 +492,7 @@ async fn openui_validation_failure_is_reported_and_not_sent() {
         call(
             &c,
             "publish_page",
-            json!({ "project": PROJECT, "title": "好", "spec": spec }),
+            json!({ "page_type": "vote", "project": PROJECT, "title": "好", "spec": spec }),
         )
         .await,
     );
@@ -498,6 +500,27 @@ async fn openui_validation_failure_is_reported_and_not_sent() {
         r["warnings"][0].as_str().unwrap().contains("`extra`"),
         "{r}"
     );
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn page_type_required_and_read_only_lint() {
+    let (url, st) = start_mock().await;
+    let c = client(&url, TOKEN).await;
+    // 缺 page_type → 参数错误，不发请求
+    let (e, t) = call(&c, "publish_page", json!({ "project": PROJECT, "title": "t", "spec": "root = Stack([])" })).await;
+    assert!(e, "{t}");
+    // 只读类含提交入口 → page_type_mismatch，不发请求
+    let spec = "root = Stack([f])\nf = Form(\"vote\", btn, [])\nbtn = Button(\"提交\", @ToAssistant(\"提交\"), \"primary\")";
+    let (e, t) = call(&c, "publish_page", json!({ "page_type": "report", "project": PROJECT, "title": "t", "spec": spec })).await;
+    assert!(e && t.starts_with("page_type_mismatch:"), "{t}");
+    assert!(st.0.lock().unwrap().writes.is_empty());
+    // 只读类正常发布：page_type 透传，next_step 提示不要等待
+    let spec = "root = Stack([head])\nhead = CardHeader(\"周报\")";
+    let r = ok_json(call(&c, "publish_page", json!({ "page_type": "report", "project": PROJECT, "title": "t", "spec": spec })).await);
+    assert_eq!((r["page_type"].clone(), r["category"].clone()), (json!("report"), json!("read")));
+    assert!(r["next_step"].as_str().unwrap().contains("无需等待"), "{r}");
+    assert_eq!(st.0.lock().unwrap().writes[0]["page_type"], "report");
     c.cancel().await.unwrap();
 }
 
@@ -565,7 +588,7 @@ async fn target_resolution_across_profiles() {
     )
     .await;
     let v = need(
-        call(&c, "publish_page", json!({ "title": "t", "spec": spec })).await,
+        call(&c, "publish_page", json!({ "page_type": "vote", "title": "t", "spec": spec })).await,
         "project",
     );
     assert_eq!(v["candidates"].as_array().unwrap().len(), 2);
@@ -574,7 +597,7 @@ async fn target_resolution_across_profiles() {
         call(
             &c,
             "publish_page",
-            json!({ "project": "demo", "title": "t", "spec": spec }),
+            json!({ "page_type": "vote", "project": "demo", "title": "t", "spec": spec }),
         )
         .await,
     );
@@ -603,7 +626,7 @@ async fn target_resolution_across_profiles() {
         call(
             &c,
             "publish_page",
-            json!({ "project": "acme/demo", "title": "t", "spec": spec }),
+            json!({ "page_type": "vote", "project": "acme/demo", "title": "t", "spec": spec }),
         )
         .await,
         "server",
@@ -626,7 +649,7 @@ async fn target_resolution_across_profiles() {
         call(
             &c,
             "publish_page",
-            json!({ "server": "depx", "project": "acme/demo", "title": "t", "spec": spec }),
+            json!({ "page_type": "vote", "server": "depx", "project": "acme/demo", "title": "t", "spec": spec }),
         )
         .await,
     );
@@ -644,7 +667,7 @@ async fn target_resolution_across_profiles() {
         call(
             &c,
             "publish_page",
-            json!({ "server": "another", "title": "t", "spec": spec }),
+            json!({ "page_type": "vote", "server": "another", "title": "t", "spec": spec }),
         )
         .await,
     );
@@ -654,9 +677,9 @@ async fn target_resolution_across_profiles() {
         json!([GROUP])
     );
     // 群组名在两个组织重名 → 返回 group 候选；带 org 后成功
-    let v = need(call(&c, "publish_page", json!({ "server": "another", "project": "demo", "groups": ["Reviewers"], "title": "t", "spec": spec })).await, "group");
+    let v = need(call(&c, "publish_page", json!({ "page_type": "vote", "server": "another", "project": "demo", "groups": ["Reviewers"], "title": "t", "spec": spec })).await, "group");
     assert_eq!(v["candidates"].as_array().unwrap().len(), 2);
-    let r = ok_json(call(&c, "publish_page", json!({ "server": "another", "org": "beta", "project": "demo", "groups": ["Reviewers"], "title": "t", "spec": spec })).await);
+    let r = ok_json(call(&c, "publish_page", json!({ "page_type": "vote", "server": "another", "org": "beta", "project": "demo", "groups": ["Reviewers"], "title": "t", "spec": spec })).await);
     assert_eq!(r["visibility"], "groups");
     let w = st.0.lock().unwrap().writes.last().unwrap().clone();
     assert_eq!(
@@ -664,13 +687,13 @@ async fn target_resolution_across_profiles() {
         (Some(PROJECT2), json!([GROUP2]))
     );
     // 同名项目跨组织 → 询问组织
-    let v = need(call(&c, "publish_page", json!({ "server": "another", "project": "demo", "visibility": "project", "title": "t", "spec": spec })).await, "org");
+    let v = need(call(&c, "publish_page", json!({ "page_type": "vote", "server": "another", "project": "demo", "visibility": "project", "title": "t", "spec": spec })).await, "org");
     assert_eq!(v["candidates"].as_array().unwrap().len(), 2);
     // 不存在的服务器 → 明确报错
     let (e, t) = call(
         &c,
         "publish_page",
-        json!({ "server": "nope", "title": "t", "spec": spec }),
+        json!({ "page_type": "vote", "server": "nope", "title": "t", "spec": spec }),
     )
     .await;
     assert!(
@@ -685,7 +708,7 @@ async fn target_resolution_across_profiles() {
         call(
             &c,
             "publish_page",
-            json!({ "project": "acme/demo", "title": "t", "spec": spec }),
+            json!({ "page_type": "vote", "project": "acme/demo", "title": "t", "spec": spec }),
         )
         .await,
     );
