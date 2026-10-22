@@ -87,6 +87,9 @@ pub struct SubmitReq {
 }
 
 fn block_error(reason: &'static str) -> AppError {
+    if reason == "read_only" {
+        return AppError::conflict("read_only_page", "只读页面不接受提交");
+    }
     let msg = match reason {
         "responses_closed" => "页面已停止接受提交",
         "share_link_exhausted" => "临时链接提交次数已用完",
@@ -206,9 +209,15 @@ pub async fn poll(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q): Q
         // 先订阅再查一次，防止订阅前后丢通知
         let mut rx = st.notify.subscribe(page_id);
         rows = fetch_after(&st.db, org_id, page_id, since, limit + 1).await?;
-        if rows.is_empty() {
-            let _ = tokio::time::timeout(Duration::from_secs(wait), rx.recv()).await;
-            rows = fetch_after(&st.db, org_id, page_id, since, limit + 1).await?;
+        // 非 Response 事件（页面更新等）或无关唤醒不提前返回：继续等到有新数据或 deadline
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(wait);
+        while rows.is_empty() {
+            match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Err(_) | Ok(Err(RecvError::Closed)) | Ok(Ok(Event::Deleted)) => break,
+                Ok(Ok(Event::Page)) => continue,
+                // Response 或 Lagged（可能漏掉了 Response）→ 查库
+                Ok(_) => rows = fetch_after(&st.db, org_id, page_id, since, limit + 1).await?,
+            }
         }
     }
     let has_more = rows.len() as i64 > limit;

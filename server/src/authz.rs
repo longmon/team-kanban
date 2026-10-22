@@ -273,6 +273,15 @@ pub async fn require_group(db: &PgPool, c: &Caller, group_id: Uuid, min: OrgRole
 
 // ---------------------------------------------------------------- 页面
 
+/// 页面类型的行为大类（不入库，由 page_type 推导）：read 只读 / collect 收集回复 / collab 协作任务
+pub fn page_category(page_type: &str) -> &'static str {
+    match page_type {
+        "report" | "knowledge" | "flowchart" | "architecture" => "read",
+        "requirement" | "task" | "task_tree" => "collab",
+        _ => "collect",
+    }
+}
+
 #[derive(FromRow, Debug, Clone)]
 pub struct PageRow {
     pub id: Uuid,
@@ -280,6 +289,7 @@ pub struct PageRow {
     pub project_id: Uuid,
     pub title: String,
     pub kind: String,
+    pub page_type: String,
     pub version: i32,
     pub visibility: String,
     pub accept_responses: bool,
@@ -315,7 +325,7 @@ impl PageRow {
 
 async fn load_page(db: &PgPool, page_id: Uuid, user: Option<Uuid>) -> AppResult<Option<PageRow>> {
     let sql = format!(
-        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.version, p.visibility, p.accept_responses,
+        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.version, p.visibility, p.accept_responses,
                 p.results_visible_to, p.response_seq, p.updated_at, pr.name AS project_name, o.name AS org_name,
                 m.role AS org_role, {} AS role,
                 EXISTS (SELECT 1 FROM page_groups pg
@@ -499,7 +509,9 @@ pub async fn page_access(db: &PgPool, cfg: &Config, c: &Caller, target: Target<'
     if share.is_none() && !page.can_view(user) {
         return Err(AppError::not_found());
     }
-    let block_reason = if c.p.is_pat() {
+    let block_reason = if page_category(&page.page_type) == "read" {
+        Some("read_only")
+    } else if c.p.is_pat() {
         Some("not_allowed")
     } else if !page.accept_responses {
         Some("responses_closed")

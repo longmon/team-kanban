@@ -446,3 +446,113 @@ async fn html_pages_origin() {
     assert_eq!(r.header("referrer-policy"), "no-referrer");
     assert_eq!(r.header("x-content-type-options"), "nosniff");
 }
+
+#[tokio::test]
+async fn page_types_read_only() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let base = json!({ "project_id": w.proj, "title": "t", "kind": "openui", "content": "root = Stack([])", "visibility": "public" });
+    let with = |extra: Value| {
+        let mut b = base.clone();
+        b.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        b
+    };
+    // 不传 page_type（旧客户端）→ general，收集类，行为不变
+    let general = h.req(&w.owner, "POST", "/api/pages", Some(base.clone())).await.ok(201);
+    assert_eq!((general["page_type"].clone(), general["category"].clone(), general["accept_responses"].clone()), (json!("general"), json!("collect"), json!(true)));
+    submit_anon(&h, &s(&general["id"])).await.ok(201);
+    // 只读类：accept_responses 省略时为 false；显式 true → 400
+    let report = h.req(&w.owner, "POST", "/api/pages", Some(with(json!({ "page_type": "report" })))).await.ok(201);
+    assert_eq!((report["category"].clone(), report["accept_responses"].clone()), (json!("read"), json!(false)));
+    let rid = s(&report["id"]);
+    let r = h.req(&w.owner, "POST", "/api/pages", Some(with(json!({ "page_type": "flowchart", "accept_responses": true })))).await;
+    assert_eq!((r.status, r.json()["error"]["details"]["fields"]["accept_responses"].is_string()), (400, true));
+    let vote = h.req(&w.owner, "POST", "/api/pages", Some(with(json!({ "page_type": "vote" })))).await.ok(201);
+    assert_eq!((vote["category"].clone(), vote["accept_responses"].clone()), (json!("collect"), json!(true)));
+    // 非法类型 / 协作类（P1 未开放）→ 400
+    for t in ["nope", "task_tree"] {
+        let r = h.req(&w.owner, "POST", "/api/pages", Some(with(json!({ "page_type": t })))).await;
+        assert_eq!((r.status, r.code()), (400, "validation_failed".into()), "{t}");
+    }
+    // 查看：read_only，不能提交
+    let v = h.req(&C::anon(), "GET", &format!("/api/pages/{rid}/view"), None).await.ok(200);
+    assert_eq!((v["page"]["page_type"].clone(), v["page"]["category"].clone()), (json!("report"), json!("read")));
+    assert_eq!((v["can_submit"].clone(), v["submit_block_reason"].clone()), (json!(false), json!("read_only")));
+    let r = submit_anon(&h, &rid).await;
+    assert_eq!((r.status, r.code()), (409, "read_only_page".into()));
+    let r = h.req(&w.owner, "POST", &format!("/api/pages/{rid}/responses"), Some(json!({ "data": {} }))).await;
+    assert_eq!((r.status, r.code()), (409, "read_only_page".into()));
+    // 临时链接同样拒绝
+    let link = h.req(&w.owner, "POST", &format!("/api/pages/{rid}/share-links"), Some(json!({ "expires_in": 3600 }))).await.ok(201);
+    let token = s(&link["url"]).rsplit('/').next().unwrap().to_string();
+    assert_eq!(h.req(&C::anon(), "GET", &format!("/api/s/{token}"), None).await.ok(200)["submit_block_reason"], "read_only");
+    let r = h.req(&C::anon(), "POST", &format!("/api/s/{token}/responses"), Some(json!({ "data": {}, "nickname": "n" }))).await;
+    assert_eq!((r.status, r.code()), (409, "read_only_page".into()));
+    // 更新：不能开提交、不能改类型；其它字段照常
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{rid}"), Some(json!({ "accept_responses": true }))).await;
+    assert_eq!(r.status, 400);
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{rid}"), Some(json!({ "page_type": "vote" }))).await;
+    assert_eq!(r.status, 400);
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{rid}"), Some(json!({ "title": "新标题", "accept_responses": false }))).await.ok(200);
+    // 数据库 CHECK 兜底
+    let err = sqlx::query("UPDATE pages SET accept_responses = true WHERE id = $1::uuid").bind(&rid).execute(&h.db).await.unwrap_err();
+    assert!(err.to_string().contains("pages_read_only_check"), "{err}");
+    // 列表筛选与字段
+    let ids = |v: Value| v["items"].as_array().unwrap().iter().map(|p| s(&p["page_type"])).collect::<Vec<_>>();
+    assert_eq!(ids(h.req(&w.owner, "GET", "/api/pages?page_type=report,knowledge", None).await.ok(200)), vec!["report"]);
+    assert_eq!(ids(h.req(&w.owner, "GET", "/api/pages?page_type=vote,general", None).await.ok(200)), vec!["vote", "general"]);
+    assert_eq!(ids(h.req(&w.owner, "GET", "/api/pages", None).await.ok(200)).len(), 3);
+    assert_eq!(h.req(&w.owner, "GET", "/api/pages?page_type=bad", None).await.status, 400);
+}
+
+#[tokio::test]
+async fn page_type_default_for_existing_rows() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    // 模拟旧代码：INSERT 不带 page_type 列
+    let id = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, created_by)
+         VALUES ($1, $2::uuid, $3::uuid, 'old', 'openui', 'root = Stack([])', 'public', $4::uuid)",
+    )
+    .bind(id)
+    .bind(&w.org)
+    .bind(&w.proj)
+    .bind(&w.owner.user_id)
+    .execute(&h.db)
+    .await
+    .unwrap();
+    let v = h.req(&C::anon(), "GET", &format!("/api/pages/{id}/view"), None).await.ok(200);
+    assert_eq!((v["page"]["page_type"].clone(), v["can_submit"].clone()), (json!("general"), json!(true)));
+    submit_anon(&h, &id.to_string()).await.ok(201);
+}
+
+#[tokio::test]
+async fn long_poll_not_woken_by_page_event() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let page = publish(&h, &w.owner, &w.proj, "public", &[]).await;
+    let (agent, _) = create_pat(&h, &w.owner, &["read_responses"], None, None).await;
+    // 页面更新（Event::Page）不应让长轮询提前返回空结果
+    let start = std::time::Instant::now();
+    let req = h.build(&agent, "GET", &format!("/api/pages/{page}/responses?since=0&wait=2"), None, &[]);
+    let waiter = tokio::spawn(h.app.clone().oneshot(req));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "content": "root = Stack([Text(\"v2\")])" }))).await.ok(200);
+    let res = waiter.await.unwrap().unwrap();
+    let body: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["responses"], json!([]));
+    assert!(start.elapsed() >= Duration::from_millis(1900), "提前返回：{:?}", start.elapsed());
+    // 页面更新之后的新提交仍能唤醒
+    let start = std::time::Instant::now();
+    let req = h.build(&agent, "GET", &format!("/api/pages/{page}/responses?since=0&wait=10"), None, &[]);
+    let waiter = tokio::spawn(h.app.clone().oneshot(req));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "content": "root = Stack([Text(\"v3\")])" }))).await.ok(200);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    submit_anon(&h, &page).await.ok(201);
+    let res = waiter.await.unwrap().unwrap();
+    let body: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["responses"][0]["seq"], 1);
+    assert!(start.elapsed() < Duration::from_secs(5));
+}

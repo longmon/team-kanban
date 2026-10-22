@@ -15,7 +15,7 @@ use crate::{
     AppState, audit,
     auth::Caller,
     authz::{
-        ANY_SCOPE, PUBLISH, PageAccess, ProjectRole, Target, issue_grant, page_access, require_page_manage, require_project,
+        ANY_SCOPE, PUBLISH, PageAccess, ProjectRole, Target, issue_grant, page_access, page_category, require_page_manage, require_project,
         require_share_link_manage, require_user, role_expr, share_by_token,
     },
     error::{AppError, AppResult, JsonBody, P, Q},
@@ -33,6 +33,7 @@ struct PageListRow {
     project_id: Uuid,
     title: String,
     kind: String,
+    page_type: String,
     version: i32,
     visibility: String,
     accept_responses: bool,
@@ -49,7 +50,7 @@ struct PageListRow {
 /// $1 = 调用者 user_id
 fn page_select() -> String {
     format!(
-        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.version, p.visibility, p.accept_responses, p.results_visible_to,
+        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.version, p.visibility, p.accept_responses, p.results_visible_to,
                 p.response_seq, p.created_by, u.display_name AS creator_name, p.created_at, p.updated_at,
                 COALESCE((SELECT array_agg(pg.group_id ORDER BY pg.group_id) FROM page_groups pg
                            WHERE pg.org_id = p.org_id AND pg.page_id = p.id), '{{}}') AS group_ids,
@@ -70,6 +71,7 @@ impl PageListRow {
         json!({
             "id": self.id, "org_id": self.org_id, "project_id": self.project_id,
             "title": self.title, "kind": self.kind, "version": self.version,
+            "page_type": self.page_type, "category": page_category(&self.page_type),
             "visibility": self.visibility, "group_ids": self.group_ids,
             "accept_responses": self.accept_responses, "results_visible_to": self.results_visible_to,
             "response_count": self.response_seq,
@@ -94,16 +96,25 @@ async fn page_by_id(st: &AppState, org_id: Uuid, page_id: Uuid, uid: Uuid) -> Ap
 #[derive(Deserialize)]
 pub struct ListQuery {
     project_id: Option<Uuid>,
+    /// 逗号分隔的 page_type 列表
+    page_type: Option<String>,
 }
 
 pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQuery>, Q(q): Q<ListQuery>) -> J {
     let uid = require_user(&c, ANY_SCOPE)?;
     let pat = c.p.pat();
+    let types = q
+        .page_type
+        .as_deref()
+        .map(|t| t.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| check_page_type(t).map(|_| t.to_string())).collect::<AppResult<Vec<_>>>())
+        .transpose()?
+        .filter(|t| !t.is_empty());
     // ponytail: 跨所有项目扫描再按角色过滤；单用户页面数很大时给 project_id 走索引
     let sql = format!(
         "SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
              AND ($2::uuid IS NULL OR p.org_id = $2) AND ($3::uuid IS NULL OR p.project_id = $3)
-             AND ($4::uuid IS NULL OR p.project_id = $4) AND ($5::uuid IS NULL OR p.id < $5)) x
+             AND ($4::uuid IS NULL OR p.project_id = $4) AND ($5::uuid IS NULL OR p.id < $5)
+             AND ($7::text[] IS NULL OR p.page_type = ANY($7))) x
           WHERE role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group))
           ORDER BY id DESC LIMIT $6",
         page_select()
@@ -115,6 +126,7 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
         .bind(q.project_id)
         .bind(page.cursor_id()?)
         .bind(page.limit() + 1)
+        .bind(types)
         .fetch_all(&st.db)
         .await?;
     let (rows, next) = paginate(rows, page.limit(), |r| r.id.to_string());
@@ -125,6 +137,16 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
 
 fn check_kind(kind: &str) -> AppResult<()> {
     if matches!(kind, "openui" | "html") { Ok(()) } else { Err(AppError::field("kind", "取值必须是 openui/html")) }
+}
+
+const PAGE_TYPES: [&str; 9] = ["general", "report", "knowledge", "flowchart", "architecture", "vote", "requirement", "task", "task_tree"];
+
+fn check_page_type(t: &str) -> AppResult<()> {
+    if PAGE_TYPES.contains(&t) { Ok(()) } else { Err(AppError::field("page_type", &format!("取值必须是 {}", PAGE_TYPES.join("/")))) }
+}
+
+fn read_only_accept() -> AppError {
+    AppError::field("accept_responses", "只读类型页面不能开启提交")
 }
 
 fn check_content(kind: &str, content: &str) -> AppResult<()> {
@@ -183,6 +205,7 @@ pub struct CreateReq {
     project_id: Uuid,
     title: String,
     kind: String,
+    page_type: Option<String>,
     content: String,
     visibility: String,
     group_ids: Option<Vec<Uuid>>,
@@ -194,6 +217,15 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     let ctx = require_project(&st.db, &c, r.project_id, ProjectRole::Editor, PUBLISH).await?;
     let title = text_field("title", &r.title, 1, 200)?;
     check_kind(&r.kind)?;
+    let page_type = r.page_type.as_deref().unwrap_or("general");
+    check_page_type(page_type)?;
+    let read_only = match page_category(page_type) {
+        "collab" => return Err(AppError::field("page_type", "该类型尚未开放")),
+        c => c == "read",
+    };
+    if read_only && r.accept_responses == Some(true) {
+        return Err(read_only_accept());
+    }
     check_content(&r.kind, &r.content)?;
     check_visibility(&r.visibility)?;
     let results = r.results_visible_to.unwrap_or_else(|| "managers".into());
@@ -202,8 +234,8 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     let mut tx = st.db.begin().await?;
     let groups = check_groups(&mut tx, ctx.org_id(), &r.visibility, r.group_ids.as_deref()).await?;
     sqlx::query(
-        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat, page_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(id)
     .bind(ctx.org_id())
@@ -212,10 +244,11 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     .bind(&r.kind)
     .bind(&r.content)
     .bind(&r.visibility)
-    .bind(r.accept_responses.unwrap_or(true))
+    .bind(r.accept_responses.unwrap_or(!read_only))
     .bind(&results)
     .bind(ctx.user_id())
     .bind(c.p.pat().map(|p| p.id))
+    .bind(page_type)
     .execute(&mut *tx)
     .await?;
     set_groups(&mut tx, ctx.org_id(), id, &groups).await?;
@@ -226,7 +259,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
         "page.publish",
         "page",
         Some(id),
-        json!({ "project_id": ctx.project_id(), "kind": r.kind, "visibility": r.visibility, "group_ids": groups }),
+        json!({ "project_id": ctx.project_id(), "kind": r.kind, "page_type": page_type, "visibility": r.visibility, "group_ids": groups }),
     )
     .await?;
     tx.commit().await?;
@@ -244,6 +277,8 @@ pub async fn get_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> 
 
 #[derive(Deserialize)]
 pub struct UpdateReq {
+    /// 不可修改；传了即 400
+    page_type: Option<Value>,
     title: Option<String>,
     content: Option<String>,
     visibility: Option<String>,
@@ -254,6 +289,9 @@ pub struct UpdateReq {
 
 pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<UpdateReq>) -> J {
     let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
+    if r.page_type.is_some() {
+        return Err(AppError::field("page_type", "创建后不可修改"));
+    }
     require_any(&[
         r.title.is_some(),
         r.content.is_some(),
@@ -270,14 +308,17 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         check_results(v)?;
     }
     let mut tx = st.db.begin().await?;
-    let (kind, old_content, old_vis, old_accept): (String, String, String, bool) = sqlx::query_as(
-        "SELECT kind, content, visibility, accept_responses FROM pages WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
+    let (kind, page_type, old_content, old_vis, old_accept): (String, String, String, String, bool) = sqlx::query_as(
+        "SELECT kind, page_type, content, visibility, accept_responses FROM pages WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(ctx.org_id())
     .bind(ctx.page_id())
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(AppError::not_found)?;
+    if r.accept_responses == Some(true) && page_category(&page_type) == "read" {
+        return Err(read_only_accept());
+    }
     let old_groups = ctx.page_group_ids(&mut tx).await?;
     let new_vis = r.visibility.clone().unwrap_or_else(|| old_vis.clone());
     let new_groups = match (&r.group_ids, new_vis == old_vis) {
@@ -394,6 +435,7 @@ async fn page_view(st: &AppState, a: &PageAccess) -> J {
     Ok(Json(json!({
         "page": {
             "id": p.id, "title": p.title, "kind": p.kind, "version": p.version,
+            "page_type": p.page_type, "category": page_category(&p.page_type),
             "accept_responses": p.accept_responses, "results_visible_to": p.results_visible_to, "updated_at": ts(&p.updated_at),
             "project": { "id": p.project_id, "name": p.project_name }, "org": { "id": p.org_id, "name": p.org_name },
         },
