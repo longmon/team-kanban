@@ -167,6 +167,8 @@ EOF
 chmod 600 .env
 ```
 
+   换域名时可以把旧主站写在 `PUBLIC_HOST` 里（空格分隔，加引号），并用 `PRIMARY_HOST` 指定新主站：旧域名下的网页 308 跳到新主站，`/api/*`、`/openui/*` 照常可用，已配置旧地址的 tkanban 不受影响。例：`PUBLIC_HOST="dash.example.com relay.example.com"`、`PRIMARY_HOST=dash.example.com`。
+
    compose 强制要求 `PUBLIC_HOST`、`PAGES_HOST`（Caddy 站点名）和 `SECRET_KEY`；`PUBLIC_URL`、`PAGES_ORIGIN`、`PG_PASSWORD` 不配会分别回落到 `http://localhost:8080`、空、`relay`，生产必须配。`TRUST_PROXY`、`COOKIE_SECURE` 用 compose 默认值即可，各变量含义见上面的「环境变量」表。`PG_PASSWORD` 只在 `pgdata` 卷首次初始化时生效，之后不要改。
 4. 本机执行一次 `scripts/deploy.sh user@host`（见 3.2）。首次运行时服务器上没有 `cf-trusted.caddy`，会自动执行 `cf-firewall.sh`：firewalld public 区只放 ssh，80/443 只对 Cloudflare 段放行，并生成 `cf-trusted.caddy`。
 5. Cloudflare 的 IP 段会变，建议在服务器上加每周 cron，例如 `0 4 * * 1 /opt/agent-relay/cf-firewall.sh`（可重复执行，刷新后热加载 caddy）。

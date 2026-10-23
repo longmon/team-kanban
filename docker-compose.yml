@@ -51,6 +51,7 @@ services:
     environment:
       PUBLIC_HOST: ${PUBLIC_HOST:?需要设置 PUBLIC_HOST}
       PAGES_HOST: ${PAGES_HOST:?需要设置 PAGES_HOST}
+      PRIMARY_HOST: ${PRIMARY_HOST:-${PUBLIC_HOST}}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro,z
       - ./cf-trusted.caddy:/etc/caddy/cf-trusted.caddy:ro,z

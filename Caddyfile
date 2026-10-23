@@ -16,7 +16,14 @@
 	}
 }
 
+# PUBLIC_HOST 可写多个主机名（空格分隔）：PRIMARY_HOST 以外的是旧域名，
+# 旧域名下网页 308 跳到 PRIMARY_HOST（会话 cookie 和 Origin 校验都只认主站），/api/*、/openui/* 照常反代给已配置旧地址的 tkanban
 {$PUBLIC_HOST} {
+	@legacy {
+		not host {$PRIMARY_HOST}
+		not path /api/* /openui/*
+	}
+	redir @legacy https://{$PRIMARY_HOST}{uri} 308
 	import app
 }
 
