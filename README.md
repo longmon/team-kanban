@@ -262,7 +262,7 @@ tkanban --help                                     # 中文帮助
 
 # 2) 添加服务器（profile）：联网校验 token，并列出它能发布的组织 / 项目 / 群组；校验失败不保存
 #    不写 --token 时交互输入（不回显），避免 token 留在 shell 历史
-tkanban add depx --url https://relay-mcp.depx.net
+tkanban add depx --url https://dash.tkanban.com
 #    也可以从 stdin 读，并给这个服务器配默认发布目标（视为「已指定」）
 printf '%s\n' "$ANOTHER_PAT" | tkanban add another --url https://relay.example.com \
   --org acme --project demo --group 设计组 --group 运营组
@@ -296,7 +296,7 @@ tool_timeout_sec = 60        # get_responses 长轮询最长 25 秒，留足余�
 default = "depx"
 
 [profiles.depx]
-url = "https://relay-mcp.depx.net"
+url = "https://dash.tkanban.com"
 token = "arp_xxxx…"
 
 [profiles.another]

@@ -19,7 +19,7 @@ cargo clippy --all-targets
 完整命令示例与选择规则见 [../README.md](../README.md)「本地 MCP 配置」。简要：
 
 ```bash
-tkanban add depx --url https://relay-mcp.depx.net --default   # 交互输入 PAT，校验后列出可发布目标
+tkanban add depx --url https://dash.tkanban.com --default   # 交互输入 PAT，校验后列出可发布目标
 tkanban list | tkanban targets | tkanban test | tkanban remove <名称> | tkanban default <名称>
 claude mcp add team-kanban -s user -- /usr/local/bin/tkanban mcp
 codex mcp add team-kanban -- tkanban mcp

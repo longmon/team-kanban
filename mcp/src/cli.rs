@@ -44,7 +44,7 @@ tkanban —— Team Kanban 本机命令行 + MCP 服务器（发布页面、拉�
 注意：服务端 Docker 镜像里的二进制叫 relay（历史名称，为兼容保留），那个跑在服务器上；本命令 tkanban 跑在你的电脑上，两者无关。
 
 示例：
-  tkanban add depx --url https://relay-mcp.depx.net --default        # 随后提示输入 PAT
+  tkanban add depx --url https://dash.tkanban.com --default        # 随后提示输入 PAT
   printf '%s\\n' \"$PAT\" | tkanban add another --url https://relay.example.com --org acme --group 设计组
   claude mcp add team-kanban -s user -- /usr/local/bin/tkanban mcp
 ";
