@@ -59,6 +59,7 @@ type Page = {
   id: string; org_id: string; project_id: string;
   title: string; kind: PageKind; version: number;
   page_type: PageType; category: PageCategory;
+  generated_by: string | null;                          // 生成页面的 AI 模型名称（创建/更新时的 model）；旧页面与未提供时为 null
   visibility: Visibility; group_ids: string[];          // visibility != "groups" 时为 []
   accept_responses: boolean; results_visible_to: "managers" | "viewers";
   response_count: number;
@@ -349,6 +350,7 @@ type Pat = {
   "title": "1..200",
   "kind": "openui | html",
   "page_type": "可选，PageType，默认 general",
+  "model": "可选，生成内容的 AI 模型名称，如 Claude Opus 5.5",
   "content": "openui: OpenUI Lang 原文 ≤512KiB；html: 完整 HTML ≤5MiB",
   "visibility": "public | org | project | groups",
   "group_ids": ["uuid"],
@@ -357,12 +359,13 @@ type Pat = {
 ```
 `visibility="groups"` 时 `group_ids` 必须非空且都属于同一组织（否则 400 `validation_failed`）；其它 visibility 时必须为空或省略。默认：`accept_responses=true`、`results_visible_to="managers"`；`visibility` 必填。服务端**不解析** OpenUI（校验在 MCP 本地做；渲染错误由前端显示）。
 `page_type`：非法值 400 `validation_failed`；只读类省略 `accept_responses` 时写 false，显式 true → 400 `validation_failed`（字段 `accept_responses`）；协作类 → 400「该类型尚未开放」。
+`model`：去首尾空白后 1..100 字符且不含控制字符，否则 400 `validation_failed`（字段 `model`）；省略或空白时 `generated_by` 为 null。存入 `generated_by`，页面查看页与项目页列表显示「由 {generated_by} 生成」。
 
 更新（全部可选，至少一个）：
 ```json
-{ "title": "...", "content": "...", "visibility": "...", "group_ids": [], "accept_responses": false, "results_visible_to": "viewers" }
+{ "title": "...", "model": "GPT-5", "content": "...", "visibility": "...", "group_ids": [], "accept_responses": false, "results_visible_to": "viewers" }
 ```
-`kind`、`page_type` 不可改（传了 `page_type` 即 400 `validation_failed`）；只读类传 `accept_responses=true` → 400。`content` 变化时 `version += 1`，已有提交保留（记录其提交时的 `page_version`）。
+`kind`、`page_type` 不可改（传了 `page_type` 即 400 `validation_failed`）；只读类传 `accept_responses=true` → 400。`content` 变化时 `version += 1`，已有提交保留（记录其提交时的 `page_version`）。`model` 校验同创建，给了就覆盖 `generated_by`（页面被别的模型改过），不给则不变。
 
 ### 7.2 查看 — 给浏览器渲染用
 
@@ -376,7 +379,7 @@ type Pat = {
 ```ts
 type PageView = {
   page: { id: string; title: string; kind: PageKind; version: number;
-          page_type: PageType; category: PageCategory;
+          page_type: PageType; category: PageCategory; generated_by: string | null;
           accept_responses: boolean; results_visible_to: "managers" | "viewers"; updated_at: string;
           project: { id: string; name: string }; org: { id: string; name: string } };
   content:
@@ -622,6 +625,7 @@ type AuditEntry = {
     project?: string,           // 项目 UUID、"org_slug/project_slug"、slug 或名称；唯一候选时可省略
     title: string,
     page_type: "report" | "knowledge" | "flowchart" | "architecture" | "vote",   // 必填；协作类未开放
+    model: string,              // 必填：调用方 AI 自己的模型名称，如 "Claude Opus 5.5"、"GPT-5"，按实际身份填写，不要编造；透传为 POST 的 model
     kind?: "openui" | "html",   // 默认 "openui"
     spec?: string,              // kind=openui 时：OpenUI Lang 原文
     html?: string,              // kind=html 时
@@ -637,7 +641,7 @@ type AuditEntry = {
 - 出参：`{ server, id, url, version, visibility, page_type, category, warnings: string[], next_step }`（`POST /api/pages`）；`next_step` 提示下一步（只读类：「把 url 发给用户即可，无需等待」；收集类：用 get_responses 等待）；或 §14.0 的「需要选择」
 
 ### update_page
-- 入参：`{ server?: string, page_id: string, title?, spec?, html?, file_path?, visibility?, groups?, accept_responses?, results_visible_to? }`；至少一个可选字段。内容类入参须与页面 kind 一致（先 `GET /api/pages/{id}` 取 kind），openui 同样本地校验。
+- 入参：`{ server?: string, page_id: string, title?, model?, spec?, html?, file_path?, visibility?, groups?, accept_responses?, results_visible_to? }`；至少一个可选字段。`model` 同 publish_page（改内容时传自己的模型名称），给了就覆盖页面的 `generated_by`。内容类入参须与页面 kind 一致（先 `GET /api/pages/{id}` 取 kind），openui 同样本地校验。
 - 出参：同 publish_page（`PATCH /api/pages/{id}`）。改内容时同样按页面 page_type 做只读 lint。
 
 ### create_share_link

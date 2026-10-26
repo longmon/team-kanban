@@ -528,6 +528,48 @@ async fn page_type_default_for_existing_rows() {
 }
 
 #[tokio::test]
+async fn page_model() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let base = json!({ "project_id": w.proj, "title": "t", "kind": "openui", "content": "root = Stack([])", "visibility": "public" });
+    let with = |m: Value| {
+        let mut b = base.clone();
+        b["model"] = m;
+        b
+    };
+    // 超长 / 控制字符 → 400
+    for m in [json!("x".repeat(101)), json!("GPT\n5"), json!("a\u{7}b")] {
+        let r = h.req(&w.owner, "POST", "/api/pages", Some(with(m.clone()))).await;
+        assert_eq!((r.status, r.json()["error"]["details"]["fields"]["model"].is_string()), (400, true), "{m}");
+    }
+    // 不传 / 空白 → null（旧客户端兼容）
+    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(base.clone())).await.ok(201)["generated_by"], Value::Null);
+    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(with(json!("  ")))).await.ok(201)["generated_by"], Value::Null);
+    // 去首尾空白；100 字符边界可存
+    h.req(&w.owner, "POST", "/api/pages", Some(with(json!("中".repeat(100))))).await.ok(201);
+    let p = h.req(&w.owner, "POST", "/api/pages", Some(with(json!("  Claude Opus 5.5 ")))).await.ok(201);
+    let id = s(&p["id"]);
+    assert_eq!(p["generated_by"], "Claude Opus 5.5");
+    let meta: Value = sqlx::query_scalar("SELECT meta FROM audit_log WHERE action = 'page.publish' ORDER BY id DESC LIMIT 1").fetch_one(&h.db).await.unwrap();
+    assert_eq!(meta["model"], "Claude Opus 5.5");
+    let v = h.req(&C::anon(), "GET", &format!("/api/pages/{id}/view"), None).await.ok(200);
+    assert_eq!(v["page"]["generated_by"], "Claude Opus 5.5");
+    let list = h.req(&w.owner, "GET", "/api/pages", None).await.ok(200);
+    assert_eq!(list["items"][0]["generated_by"], "Claude Opus 5.5");
+    // 更新：不传不变；传了覆盖；非法 400
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "title": "t2" }))).await.ok(200);
+    assert_eq!(r["generated_by"], "Claude Opus 5.5");
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "content": "root = Stack([Text(\"x\")])", "model": "GPT-5" }))).await.ok(200);
+    assert_eq!(r["generated_by"], "GPT-5");
+    assert_eq!(h.req(&w.owner, "GET", &format!("/api/pages/{id}"), None).await.ok(200)["generated_by"], "GPT-5");
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "model": "x".repeat(101) }))).await;
+    assert_eq!(r.status, 400);
+    // 数据库 CHECK 兜底
+    let err = sqlx::query("UPDATE pages SET generated_by = '' WHERE id = $1::uuid").bind(&id).execute(&h.db).await.unwrap_err();
+    assert!(err.to_string().contains("pages_generated_by_check"), "{err}");
+}
+
+#[tokio::test]
 async fn long_poll_not_woken_by_page_event() {
     let h = H::new().await;
     let w = world(&h).await;

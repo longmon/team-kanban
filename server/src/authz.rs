@@ -290,6 +290,7 @@ pub struct PageRow {
     pub title: String,
     pub kind: String,
     pub page_type: String,
+    pub generated_by: Option<String>,
     pub version: i32,
     pub visibility: String,
     pub accept_responses: bool,
@@ -325,7 +326,7 @@ impl PageRow {
 
 async fn load_page(db: &PgPool, page_id: Uuid, user: Option<Uuid>) -> AppResult<Option<PageRow>> {
     let sql = format!(
-        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.version, p.visibility, p.accept_responses,
+        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.generated_by, p.version, p.visibility, p.accept_responses,
                 p.results_visible_to, p.response_seq, p.updated_at, pr.name AS project_name, o.name AS org_name,
                 m.role AS org_role, {} AS role,
                 EXISTS (SELECT 1 FROM page_groups pg

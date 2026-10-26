@@ -93,6 +93,7 @@ function Viewer({ src }: { src: Source }) {
             {view.page.page_type !== "general" && <Badge variant="secondary"><PageTypeTag type={view.page.page_type} /></Badge>}
             <span>v{view.page.version}</span>
             <span>更新于 {fmtTime(view.page.updated_at)}</span>
+            {view.page.generated_by && <span>由 {view.page.generated_by} 生成</span>}
             {view.share_link && (
               <>
                 <Badge variant="info">临时链接：{view.share_link.label || "未命名"}</Badge>

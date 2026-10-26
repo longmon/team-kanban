@@ -111,6 +111,7 @@ function Pages({ org, project }: { org: Org; project: Project }) {
                   {!pg.accept_responses && pg.category !== "read" && <Badge variant="warning">已关闭提交</Badge>}
                   <span>v{pg.version}</span>
                   <span>{pg.created_by.display_name} 更新于 {fmtTime(pg.updated_at)}</span>
+                  {pg.generated_by && <span>由 {pg.generated_by} 生成</span>}
                 </div>
               </div>
               <div className="list-stat">{pg.category !== "read" && <><b>{pg.response_count}</b> 条提交</>}</div>

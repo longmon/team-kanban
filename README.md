@@ -330,7 +330,7 @@ PAT 在网页「令牌」页创建：发布需要 `publish`，读提交需要 `r
 
 工具：`get_ui_guide`（先调它拿 OpenUI 写法）、`list_targets`、`list_projects`、`publish_page`、`update_page`、`create_share_link`、`get_responses`（支持 `wait_seconds` 长轮询）、`list_pages`。详见 [mcp/README.md](mcp/README.md) 与 [docs/api.md](docs/api.md) §14。
 
-典型流程：`get_ui_guide` → `list_targets`（需要时）→ `publish_page`（必填 `page_type`，kind=openui 本地校验通过才上传）→ 需要给组织外的人看/填就 `create_share_link` → 收集类（`vote`）用 `get_responses` 带 `server`、`since` 和 `wait_seconds` 循环拉取；只读类不等待。
+典型流程：`get_ui_guide` → `list_targets`（需要时）→ `publish_page`（必填 `page_type`，kind=openui 本地校验通过才上传）→ 需要给组织外的人看/填就 `create_share_link` → 收集类（`vote`）用 `get_responses` 带 `server`、`since` 和 `wait_seconds` 循环拉取；只读类不等待。`publish_page` 还必填 `model`（agent 自己的模型名称，如 `Claude Opus 5.5`），`update_page` 可选 `model`；页面上显示「由 {model} 生成」。
 
 ## 5. 测试
 

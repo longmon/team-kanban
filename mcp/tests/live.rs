@@ -71,7 +71,7 @@ async fn live_smoke() {
 
     // 3. 投票页
     let vote = include_str!("../guide/vote.oui");
-    let pub1 = ok_json(call(&c, "publish_page", json!({ "page_type": "vote",
+    let pub1 = ok_json(call(&c, "publish_page", json!({ "page_type": "vote", "model": "Claude Opus 5.5",
         "project": slug, "title": "技术方案投票", "spec": vote, "visibility": "project",
     })).await);
     assert_eq!((pub1["version"].as_i64(), pub1["visibility"].as_str()), (Some(1), Some("project")));
@@ -116,7 +116,7 @@ async fn live_smoke() {
     assert!(t0.elapsed() < Duration::from_secs(5));
 
     // 7. html 页：取 frame_url 验证 CSP 与桥接脚本，再按外壳页的方式提交
-    let pub2 = ok_json(call(&c, "publish_page", json!({ "page_type": "vote",
+    let pub2 = ok_json(call(&c, "publish_page", json!({ "page_type": "vote", "model": "Claude Opus 5.5",
         "project": proj["id"], "title": "报名表", "kind": "html", "visibility": "public",
         "html": "<!doctype html><form data-kanban><input name=\"name\"><button>提交</button></form>",
     })).await);
@@ -144,7 +144,7 @@ async fn live_smoke() {
     assert!(titles.contains(&"技术方案投票") && titles.contains(&"报名表 v2"), "{titles:?}");
 
     // 10. 写错的 openui 被本地拦下，服务端无新页面
-    let (e, t) = call(&c, "publish_page", json!({ "page_type": "vote", "project": slug, "title": "坏", "spec": "root = Stack([x])\nx = Bogus(1)" })).await;
+    let (e, t) = call(&c, "publish_page", json!({ "page_type": "vote", "model": "Claude Opus 5.5", "project": slug, "title": "坏", "spec": "root = Stack([x])\nx = Bogus(1)" })).await;
     assert!(e && t.starts_with("openui_invalid:"), "{t}");
     let l2 = ok_json(call(&c, "list_pages", json!({ "project": slug })).await);
     assert_eq!(l2["pages"].as_array().unwrap().len(), l["pages"].as_array().unwrap().len());

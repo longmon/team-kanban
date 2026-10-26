@@ -19,7 +19,7 @@ export type Group = { id: string; org_id: string; name: string; description: str
 export type Page = {
   id: string; org_id: string; project_id: string;
   title: string; kind: PageKind; version: number;
-  page_type: PageType; category: PageCategory;
+  page_type: PageType; category: PageCategory; generated_by: string | null;
   visibility: Visibility; group_ids: string[];
   accept_responses: boolean; results_visible_to: "managers" | "viewers";
   response_count: number; url: string;
@@ -68,7 +68,7 @@ export type Pat = {
 export type PageView = {
   page: {
     id: string; title: string; kind: PageKind; version: number;
-    page_type: PageType; category: PageCategory;
+    page_type: PageType; category: PageCategory; generated_by: string | null;
     accept_responses: boolean; results_visible_to: "managers" | "viewers"; updated_at: string;
     project: { id: string; name: string }; org: { id: string; name: string };
   };

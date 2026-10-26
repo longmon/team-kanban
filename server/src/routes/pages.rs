@@ -34,6 +34,7 @@ struct PageListRow {
     title: String,
     kind: String,
     page_type: String,
+    generated_by: Option<String>,
     version: i32,
     visibility: String,
     accept_responses: bool,
@@ -50,7 +51,7 @@ struct PageListRow {
 /// $1 = 调用者 user_id
 fn page_select() -> String {
     format!(
-        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.version, p.visibility, p.accept_responses, p.results_visible_to,
+        "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.generated_by, p.version, p.visibility, p.accept_responses, p.results_visible_to,
                 p.response_seq, p.created_by, u.display_name AS creator_name, p.created_at, p.updated_at,
                 COALESCE((SELECT array_agg(pg.group_id ORDER BY pg.group_id) FROM page_groups pg
                            WHERE pg.org_id = p.org_id AND pg.page_id = p.id), '{{}}') AS group_ids,
@@ -71,7 +72,7 @@ impl PageListRow {
         json!({
             "id": self.id, "org_id": self.org_id, "project_id": self.project_id,
             "title": self.title, "kind": self.kind, "version": self.version,
-            "page_type": self.page_type, "category": page_category(&self.page_type),
+            "page_type": self.page_type, "category": page_category(&self.page_type), "generated_by": self.generated_by,
             "visibility": self.visibility, "group_ids": self.group_ids,
             "accept_responses": self.accept_responses, "results_visible_to": self.results_visible_to,
             "response_count": self.response_seq,
@@ -145,6 +146,18 @@ fn check_page_type(t: &str) -> AppResult<()> {
     if PAGE_TYPES.contains(&t) { Ok(()) } else { Err(AppError::field("page_type", &format!("取值必须是 {}", PAGE_TYPES.join("/")))) }
 }
 
+/// 生成页面的 AI 模型名称：去首尾空白后 1..100 字符、不含控制字符；空/缺省 → None
+fn check_model(v: Option<&str>) -> AppResult<Option<String>> {
+    let t = v.unwrap_or("").trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    if t.chars().count() > 100 || t.chars().any(char::is_control) {
+        return Err(AppError::field("model", "长度需在 1..100 字符且不含控制字符"));
+    }
+    Ok(Some(t.to_string()))
+}
+
 fn read_only_accept() -> AppError {
     AppError::field("accept_responses", "只读类型页面不能开启提交")
 }
@@ -206,6 +219,7 @@ pub struct CreateReq {
     title: String,
     kind: String,
     page_type: Option<String>,
+    model: Option<String>,
     content: String,
     visibility: String,
     group_ids: Option<Vec<Uuid>>,
@@ -219,6 +233,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     check_kind(&r.kind)?;
     let page_type = r.page_type.as_deref().unwrap_or("general");
     check_page_type(page_type)?;
+    let model = check_model(r.model.as_deref())?;
     let read_only = match page_category(page_type) {
         "collab" => return Err(AppError::field("page_type", "该类型尚未开放")),
         c => c == "read",
@@ -234,8 +249,8 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     let mut tx = st.db.begin().await?;
     let groups = check_groups(&mut tx, ctx.org_id(), &r.visibility, r.group_ids.as_deref()).await?;
     sqlx::query(
-        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat, page_type)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat, page_type, generated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(id)
     .bind(ctx.org_id())
@@ -249,6 +264,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     .bind(ctx.user_id())
     .bind(c.p.pat().map(|p| p.id))
     .bind(page_type)
+    .bind(&model)
     .execute(&mut *tx)
     .await?;
     set_groups(&mut tx, ctx.org_id(), id, &groups).await?;
@@ -259,7 +275,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
         "page.publish",
         "page",
         Some(id),
-        json!({ "project_id": ctx.project_id(), "kind": r.kind, "page_type": page_type, "visibility": r.visibility, "group_ids": groups }),
+        json!({ "project_id": ctx.project_id(), "kind": r.kind, "page_type": page_type, "model": model, "visibility": r.visibility, "group_ids": groups }),
     )
     .await?;
     tx.commit().await?;
@@ -279,6 +295,8 @@ pub async fn get_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> 
 pub struct UpdateReq {
     /// 不可修改；传了即 400
     page_type: Option<Value>,
+    /// 提供时覆盖 generated_by（页面被别的模型改过）
+    model: Option<String>,
     title: Option<String>,
     content: Option<String>,
     visibility: Option<String>,
@@ -292,7 +310,9 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     if r.page_type.is_some() {
         return Err(AppError::field("page_type", "创建后不可修改"));
     }
+    let model = check_model(r.model.as_deref())?;
     require_any(&[
+        model.is_some(),
         r.title.is_some(),
         r.content.is_some(),
         r.visibility.is_some(),
@@ -336,7 +356,7 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         "UPDATE pages SET title = COALESCE($3, title), content = COALESCE($4, content),
                 version = version + CASE WHEN $4::text IS NULL THEN 0 ELSE 1 END,
                 visibility = $5, accept_responses = COALESCE($6, accept_responses),
-                results_visible_to = COALESCE($7, results_visible_to), updated_at = now()
+                results_visible_to = COALESCE($7, results_visible_to), generated_by = COALESCE($8, generated_by), updated_at = now()
           WHERE org_id = $1 AND id = $2",
     )
     .bind(ctx.org_id())
@@ -346,6 +366,7 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     .bind(&new_vis)
     .bind(r.accept_responses)
     .bind(&r.results_visible_to)
+    .bind(&model)
     .execute(&mut *tx)
     .await?;
     if new_groups != old_groups {
@@ -359,6 +380,7 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         ("group_ids", new_groups != old_groups),
         ("accept_responses", r.accept_responses.is_some()),
         ("results_visible_to", r.results_visible_to.is_some()),
+        ("model", model.is_some()),
     ] {
         if present {
             fields.push(name);
@@ -435,7 +457,7 @@ async fn page_view(st: &AppState, a: &PageAccess) -> J {
     Ok(Json(json!({
         "page": {
             "id": p.id, "title": p.title, "kind": p.kind, "version": p.version,
-            "page_type": p.page_type, "category": page_category(&p.page_type),
+            "page_type": p.page_type, "category": page_category(&p.page_type), "generated_by": p.generated_by,
             "accept_responses": p.accept_responses, "results_visible_to": p.results_visible_to, "updated_at": ts(&p.updated_at),
             "project": { "id": p.project_id, "name": p.project_name }, "org": { "id": p.org_id, "name": p.org_name },
         },

@@ -61,7 +61,7 @@ const vote = readFileSync(new URL("vote.openui", exDir), "utf8");
 await addPage("仅项目可见", "openui", vote, { visibility: "project" });
 await addPage("评审组可见", "openui", vote, { visibility: "groups", group_ids: [group.id] });
 // 页面类型：只读报告（故意带表单，验证前端不渲染提交入口）、流程图（Mermaid）、知识库（目录）
-await addPage("只读报告", "openui", vote, { page_type: "report" });
+await addPage("只读报告", "openui", vote, { page_type: "report", model: "Claude Opus 5.5" });
 await addPage("流程图", "openui", String.raw`root = Stack([d])
 d = Diagram("flowchart LR\n  A[提交需求] --> B{评审}\n  B -->|通过| C[开发]\n  B -->|驳回| A\n  subgraph 上线\n    C --> D[发布]\n  end", "需求流程")`, { page_type: "flowchart" });
 await addPage("知识库", "openui", String.raw`root = Stack([md])
@@ -270,6 +270,15 @@ await step("read-only-anon-no-nickname", async () => {
     if (await p.locator("#relay-nick").count()) throw new Error("read-only page shows nickname input");
     if (await p.getByRole("button", { name: "提交" }).count()) throw new Error("read-only page shows submit button");
   } finally { await c2.close(); }
+});
+await step("generated-by-meta", async () => {
+  await page.goto(BASE + "/pages/" + IDS["只读报告"]);
+  await page.getByText("由 Claude Opus 5.5 生成", { exact: true }).waitFor();
+  await page.goto(BASE + "/pages/" + IDS["流程图"]); // 未带 model
+  await page.getByText("需求流程").waitFor();
+  if (await page.getByText(/^由 .* 生成$/).count()) throw new Error("page without model shows generated_by");
+  await page.goto(BASE + "/o/demo/p/demo");
+  await page.getByText("由 Claude Opus 5.5 生成", { exact: true }).first().waitFor();
 });
 await step("mermaid-diagram", async () => {
   await page.goto(BASE + "/pages/" + IDS["流程图"]);

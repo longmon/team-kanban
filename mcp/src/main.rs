@@ -134,6 +134,8 @@ struct PublishArgs {
     /// flowchart（流程/步骤/决策分支，用 Diagram 组件写 Mermaid）、architecture（系统组件/部署/模块关系，用 Diagram）；
     /// 需要对方选择或填写 → vote（投票/表单/问卷/确认单）。拿不准时：需要回复选 vote，不需要回复选 report。
     page_type: PageType,
+    /// 必填：你自己（生成内容的 AI）的模型名称，例如 "Claude Opus 5.5"、"GPT-5"；按你自己的实际身份填写，不要编造。1..100 字符
+    model: String,
     /// 默认 openui
     kind: Option<Kind>,
     /// kind=openui 时：OpenUI Lang 原文
@@ -158,6 +160,8 @@ struct UpdateArgs {
     server: Option<String>,
     page_id: String,
     title: Option<String>,
+    /// 你自己（生成内容的 AI）的模型名称，例如 "Claude Opus 5.5"、"GPT-5"；按你自己的实际身份填写，不要编造。给了就覆盖页面的生成模型
+    model: Option<String>,
     /// 新的 OpenUI Lang 原文（页面 kind=openui）
     spec: Option<String>,
     /// 新的完整 HTML（页面 kind=html）
@@ -814,7 +818,7 @@ impl Kanban {
         let (project, group_ids) = self.resolve_target(&s, org, project, &groups, true).await?;
         let mut body = json!({
             "project_id": project["id"], "title": a.title, "kind": kind, "page_type": page_type, "content": content,
-            "visibility": visibility,
+            "model": a.model, "visibility": visibility,
             "accept_responses": a.accept_responses, "results_visible_to": a.results_visible_to,
         });
         if !group_ids.is_empty() {
@@ -831,6 +835,7 @@ impl Kanban {
         let has_content = a.spec.is_some() || a.html.is_some() || a.file_path.is_some();
         if !has_content
             && a.title.is_none()
+            && a.model.is_none()
             && a.visibility.is_none()
             && a.groups.is_none()
             && a.accept_responses.is_none()
@@ -860,6 +865,7 @@ impl Kanban {
         }
         for (k, v) in [
             ("title", json!(a.title)),
+            ("model", json!(a.model)),
             ("visibility", json!(a.visibility)),
             ("accept_responses", json!(a.accept_responses)),
             ("results_visible_to", json!(a.results_visible_to)),
@@ -959,6 +965,7 @@ page_type 必填，按用户意图选（用户明确指定类型时以用户为�
 flowchart 流程/步骤/决策分支（用 Diagram 组件写 Mermaid）、architecture 系统组件/部署/模块关系（Diagram）；这四类是只读页面，不能含 Form 或 @ToAssistant 按钮，\
 发布后把 url 交给用户即可，不要调用 get_responses 等待。需要对方选择或填写 → vote（投票、表单、问卷、确认单），发布后用 get_responses(wait_seconds=25) 等待。\
 拿不准时：需要回复选 vote，不需要回复选 report。\
+model 必填：填你自己（生成内容的 AI）的模型名称，例如 \"Claude Opus 5.5\"、\"GPT-5\"，按你自己的实际身份填写，不要编造；页面上会显示「由 model 生成」。\
 目标按 服务器 → 组织 → 项目 逐级定位：用户指明的用 server/org/project/groups 传入；profile 里配置的默认 org/project/groups 视为已指定；\
 某一级只有一个候选会自动选；有多个候选时返回 {\"need_selection\": \"server|org|project|group\", \"candidates\": [...]}（不是错误）——\
 此时不要猜，把候选告诉用户、问清发到哪个服务器/项目/群组后带参数重试。给了 groups（群组名或 UUID）就发到这些群组（visibility=groups），\
@@ -973,7 +980,8 @@ OpenUI 会先在本地校验，失败时返回 openui_invalid 与逐条 `行:列
     }
 
     #[tool(
-        description = "更新已发布页面（链接不变，已有提交保留；内容变化时 version+1）。server 传 publish_page 返回的 server（多个服务器时必需）。至少给一个要改的字段；内容须与页面 kind 一致，OpenUI 同样本地校验。"
+        description = "更新已发布页面（链接不变，已有提交保留；内容变化时 version+1）。server 传 publish_page 返回的 server（多个服务器时必需）。至少给一个要改的字段；内容须与页面 kind 一致，OpenUI 同样本地校验。\
+改了内容时传 model：你自己（生成内容的 AI）的模型名称，例如 \"Claude Opus 5.5\"、\"GPT-5\"，按你自己的实际身份填写，不要编造。"
     )]
     async fn update_page(
         &self,
