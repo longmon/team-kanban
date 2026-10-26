@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator as UISeparator } from "@/components/ui/separator";
 import { Table as UITable, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { asArray, Surface } from "./util";
+import { asArray, CountUp, Surface } from "./util";
 
 export function Md({ text, className }: { text: string; className?: string }) {
   return <div className={cn("md", className)}><Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown></div>;
@@ -321,7 +321,7 @@ function Line({ p, bold }: { p: Partial<LineProps>; bold: boolean }) {
   return (
     <div className="flex min-w-0 flex-col items-end gap-0.5 text-right">
       <span className={cn(LINE_SIZE[p.size ?? "sm"], bold && "font-bold", num && "tabular-nums", bold && num && p.size !== "xs" && "text-[22px] leading-tight")}>
-        {String(p.value ?? "")}
+        {num ? <CountUp value={String(p.value ?? "")} /> : String(p.value ?? "")}
       </span>
       {p.subtext && (
         <span className={cn("text-xs", p.subtextVariant === "metric" ? cn("rounded-full px-2 py-0.5 font-bold", metricTone(p.subtext)) : "text-muted-foreground", p.subtextVariant !== "text" && "tabular-nums")}>
@@ -392,7 +392,7 @@ export const MetricIndicatorInline = defineComponent({
     const up = t?.direction === "up";
     return (
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className="text-2xl font-semibold tracking-tight tabular-nums">{props.value}</span>
+        <CountUp value={props.value} className="text-2xl font-semibold tracking-tight" />
         {t && typeof t.value === "number" && (
           <span className={cn("inline-flex items-center gap-0.5 text-xs font-medium tabular-nums", up ? "text-success" : "text-destructive")}>
             {up ? <TrendingUp className="size-3.5" /> : <TrendingDown className="size-3.5" />}{t.value}%

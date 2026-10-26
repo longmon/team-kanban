@@ -34,7 +34,7 @@ export default function OpenUIView({ spec, submit, readOnly }: { spec: string; s
       },
       (err) => {
         toast.err(errMsg(err));
-        setState((s) => ({ ...s, phase: "error", n: s.n + 1 }));
+        setState((s) => ({ ...s, phase: "error", n: s.n + 1, error: errMsg(err) }));
       },
     ).finally(() => void (busy.current = false));
   };

@@ -504,7 +504,7 @@ export const FormControl = defineComponent({
 
 // ---------- 按钮 ----------
 /** 提交反馈：OpenUIView 提供状态，触发这次提交的按钮（owner）显示 提交中 spinner → 「已提交 ✓」，失败时抖动并标红 */
-export type SubmitState = { phase: "idle" | "busy" | "done" | "error"; owner: string | null; n: number };
+export type SubmitState = { phase: "idle" | "busy" | "done" | "error"; owner: string | null; n: number; error?: string };
 export const SubmitContext = createContext<{ state: SubmitState; claim: (id: string) => void; readOnly?: boolean } | null>(null);
 
 /** 重新触发一次抖动动画（连续失败也能看到） */
@@ -539,6 +539,8 @@ export const Button = defineComponent({
     const phase = sub?.state.owner === id ? sub.state.phase : "idle";
     useEffect(() => {
       if (phase === "error") shake(ref.current);
+      // 回到空闲/失败时解除宽度锁定
+      if ((phase === "idle" || phase === "error") && ref.current) ref.current.style.minWidth = "";
     }, [phase, sub?.state.n]);
     const variant = props.variant || "primary";
     const destructive = props.type === "destructive";
@@ -546,9 +548,10 @@ export const Button = defineComponent({
     // 只读页面：会触发提交的按钮（@ToAssistant 或缺省动作）不渲染，open_url 等照常
     if (sub?.readOnly && (!act?.steps || act.steps.some((s) => s.type === ACTION_STEPS.ToAssistant))) return null;
     return (
+      <>
       <UIButton ref={ref} type="button" size={BTN_SIZE[props.size ?? "medium"]}
         disabled={streaming} loading={phase === "busy"} aria-invalid={phase === "error" || undefined}
-        aria-disabled={phase === "done" || undefined} className={cn(phase === "done" && "pointer-events-none")}
+        aria-disabled={phase === "done" || undefined} className={cn(phase === "done" && "submit-glow pointer-events-none")}
         onAnimationEnd={(e) => e.currentTarget.classList.remove("shake")}
         variant={destructive ? (variant === "primary" ? "destructive" : "ghost-destructive") : BTN_VARIANT[variant]}
         onClick={() => {
@@ -560,11 +563,22 @@ export const Button = defineComponent({
               : true;
             if (needs && !fv.validateForm()) return shake(ref.current);
           }
+          // 锁定宽度：提交中 / 已提交时按钮不跳宽
+          if (sub && ref.current) ref.current.style.minWidth = `${ref.current.offsetWidth}px`;
           sub?.claim(id);
           trigger(props.label, formName, act as never);
         }}>
-        {phase === "done" ? <><Check strokeWidth={3} className="animate-in zoom-in-50 duration-150 ease-pop" />已提交</> : props.label}
+        {/* 状态切换时内容交叉淡入（key 变化重新挂载） */}
+        <span key={phase} className={cn("inline-flex items-center gap-2", phase !== "idle" && "animate-in fade-in-0 slide-in-from-bottom-1")}>
+          {phase === "done" ? <><Check strokeWidth={3} className="check-draw" />已提交</> : props.label}
+        </span>
       </UIButton>
+      {phase === "error" && sub?.state.error && (
+        <span role="alert" className="flex items-center gap-1.5 text-[13px] text-destructive animate-in fade-in-0">
+          <CircleAlert className="size-3.5 shrink-0" />{sub.state.error}
+        </span>
+      )}
+      </>
     );
   },
 });

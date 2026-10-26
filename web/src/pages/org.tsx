@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, qs } from "../api";
 import { Link, navigate } from "../router";
 import {
-  AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
+  AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page, PAGE_TABS_INDICATOR, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
   PageHeader, Panel, ROLE_LABEL, TableCard, toast, useAction, useLoad, usePaged, useSession,
 } from "../ui";
 import { SLUG_RE, slugify, Tile, TILES } from "./home";
@@ -27,7 +27,7 @@ export function OrgPage({ slug }: { slug: string }) {
     <Page>
       <PageHeader title={org.name} badge={<Badge variant="secondary">{ROLE_LABEL[org.my_role]}</Badge>} desc={<span className="font-mono text-[13px]">{org.slug}</span>} />
       <Tabs defaultValue="projects" className="gap-6">
-        <TabsList className={PAGE_TABS_LIST}>
+        <TabsList className={PAGE_TABS_LIST} indicatorClassName={PAGE_TABS_INDICATOR}>
           <TabsTrigger value="projects" className={PAGE_TABS_TRIGGER}>项目</TabsTrigger>
           <TabsTrigger value="groups" className={PAGE_TABS_TRIGGER}>群组</TabsTrigger>
           <TabsTrigger value="members" className={PAGE_TABS_TRIGGER}>成员</TabsTrigger>

@@ -1,5 +1,5 @@
 // 图表渲染实现（Recharts），由 charts.tsx 按需懒加载：没有图表的页面不下载 Recharts
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { ComponentRenderProps } from "@openuidev/react-lang";
 import {
   Area, AreaChart as RArea, Bar, BarChart as RBar, CartesianGrid, Cell, Line, LineChart as RLine, Pie, PieChart as RPie,
@@ -21,17 +21,37 @@ const tick = (v: unknown) => {
 const compact = (v: unknown) => (typeof v === "number" ? Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 }).format(v) : String(v));
 
 
-function Frame({ config, height, children }: { config: ChartConfig; height?: number; children: ReactNode }) {
+function Frame({ config, height, draw, children }: { config: ChartConfig; height?: number; draw: Draw; children: ReactNode }) {
+  // key 随 draw.on 变化：进入视口时重新挂载一次，Recharts 从 0 开始播进入动画
   return (
-    <ChartContainer config={config} className="aspect-auto w-full" style={{ height: Math.min(Math.max(height ?? 260, 160), 640) }}>
+    <ChartContainer key={String(draw.on)} ref={draw.ref} config={config} className="aspect-auto w-full" style={{ height: Math.min(Math.max(height ?? 260, 160), 640) }}>
       {children as never}
     </ChartContainer>
   );
 }
 
-// 进入动画：时长适中，减少动态时关闭
+// 进入动画：折线描边、柱从 0 生长、饼/环扫过，550ms ease-out；减少动态时关闭
 const MOTION = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const anim = { isAnimationActive: MOTION, animationDuration: 450, animationEasing: "ease-out" } as const;
+
+/**
+ * 图表只在首次进入视口时绘制一次：挂载时已在视口内直接播；在视口外先静态完整渲染（打印、截图不缺图），
+ * 滚到可见时重新挂载播一次。
+ */
+function useDraw() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [on, setOn] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !MOTION) return;
+    const r = el.getBoundingClientRect();
+    if (r.top < window.innerHeight && r.bottom > 0) return setOn(true);
+    const io = new IntersectionObserver(([e]) => e.isIntersecting && (setOn(true), io.disconnect()));
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return { ref, on, anim: { isAnimationActive: on, animationDuration: 550, animationEasing: "ease-out" } as const };
+}
+type Draw = ReturnType<typeof useDraw>;
 
 /** 悬停高亮：图例或图形悬停时对应系列保持不透明，其余变淡 */
 function useHighlight() {
@@ -66,11 +86,12 @@ const unwrap = (n: unknown) => ((n as { type?: string; props?: Record<string, un
 
 export const BarChartView = ({ props }: P) => {
     const h = useHighlight();
+    const d = useDraw();
     const { rows, names } = buildChartData(props.labels, props.series);
     if (!rows.length || !names.length) return null;
     const stacked = props.variant === "stacked";
     return (
-      <Frame config={configOf(names)} height={props.height}>
+      <Frame draw={d} config={configOf(names)} height={props.height}>
         <RBar data={rows} margin={{ top: 8, right: 8, left: props.yLabel ? 8 : 0, bottom: props.xLabel ? 12 : 0 }}
           barCategoryGap={names.length > 1 && !stacked ? "24%" : "32%"} barGap={2}>
           <CartesianGrid vertical={false} strokeDasharray="3 3" />
@@ -79,7 +100,7 @@ export const BarChartView = ({ props }: P) => {
           <ChartTooltip cursor={{ fillOpacity: 0.5 }} content={<ChartTooltipContent />} />
           {legend(names.length, h)}
           {names.map((_, i) => (
-            <Bar key={i} dataKey={`s${i}`} fill={`var(--color-s${i})`} fillOpacity={h.op(`s${i}`)} {...h.hover(`s${i}`)} maxBarSize={48} {...anim}
+            <Bar key={i} dataKey={`s${i}`} fill={`var(--color-s${i})`} fillOpacity={h.op(`s${i}`)} {...h.hover(`s${i}`)} maxBarSize={48} {...d.anim}
               stackId={stacked ? "a" : undefined} stroke={stacked ? "var(--card)" : undefined} strokeWidth={stacked ? 1 : 0}
               radius={stacked ? (i === names.length - 1 ? [4, 4, 0, 0] : 0) : [4, 4, 0, 0]} />
           ))}
@@ -90,6 +111,7 @@ export const BarChartView = ({ props }: P) => {
 
 export const HorizontalBarChartView = ({ props }: P) => {
     const h = useHighlight();
+    const d = useDraw();
     const { rows, names } = buildChartData(props.labels, props.series);
     if (!rows.length || !names.length) return null;
     const stacked = props.variant === "stacked";
@@ -97,7 +119,7 @@ export const HorizontalBarChartView = ({ props }: P) => {
     const height = rows.length * Math.max(28, per * 18 + 12) + (names.length > 1 ? 48 : 24);
     const longest = Math.max(...rows.map((r) => String(r.category).length));
     return (
-      <Frame config={configOf(names)} height={height}>
+      <Frame draw={d} config={configOf(names)} height={height}>
         <RBar data={rows} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: props.xLabel ? 12 : 0 }} barCategoryGap="24%" barGap={2}>
           <CartesianGrid horizontal={false} strokeDasharray="3 3" />
           <XAxis type="number" tickLine={false} axisLine={false} tickFormatter={compact}>{xLab(props.xLabel)}</XAxis>
@@ -106,7 +128,7 @@ export const HorizontalBarChartView = ({ props }: P) => {
           <ChartTooltip cursor={{ fillOpacity: 0.5 }} content={<ChartTooltipContent />} />
           {legend(names.length, h)}
           {names.map((_, i) => (
-            <Bar key={i} dataKey={`s${i}`} fill={`var(--color-s${i})`} fillOpacity={h.op(`s${i}`)} {...h.hover(`s${i}`)} maxBarSize={28} {...anim}
+            <Bar key={i} dataKey={`s${i}`} fill={`var(--color-s${i})`} fillOpacity={h.op(`s${i}`)} {...h.hover(`s${i}`)} maxBarSize={28} {...d.anim}
               stackId={stacked ? "a" : undefined} stroke={stacked ? "var(--card)" : undefined} strokeWidth={stacked ? 1 : 0}
               radius={stacked ? (i === names.length - 1 ? [0, 4, 4, 0] : 0) : [0, 4, 4, 0]} />
           ))}
@@ -117,10 +139,11 @@ export const HorizontalBarChartView = ({ props }: P) => {
 
 export const LineChartView = ({ props }: P) => {
     const h = useHighlight();
+    const d = useDraw();
     const { rows, names } = buildChartData(props.labels, props.series);
     if (!rows.length || !names.length) return null;
     return (
-      <Frame config={configOf(names)} height={props.height}>
+      <Frame draw={d} config={configOf(names)} height={props.height}>
         <RLine data={rows} margin={{ top: 8, right: 12, left: props.yLabel ? 8 : 0, bottom: props.xLabel ? 12 : 0 }}>
           <CartesianGrid vertical={false} strokeDasharray="3 3" />
           <XAxis dataKey="category" tickLine={false} axisLine={false} tickMargin={8} tickFormatter={tick} minTickGap={12}>{xLab(props.xLabel)}</XAxis>
@@ -128,7 +151,7 @@ export const LineChartView = ({ props }: P) => {
           <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
           {legend(names.length, h)}
           {names.map((_, i) => (
-            <Line key={i} dataKey={`s${i}`} type={curve(props.variant)} stroke={`var(--color-s${i})`} strokeOpacity={h.op(`s${i}`)} strokeWidth={h.hi === `s${i}` ? 3 : 2} {...anim}
+            <Line key={i} dataKey={`s${i}`} type={curve(props.variant)} stroke={`var(--color-s${i})`} strokeOpacity={h.op(`s${i}`)} strokeWidth={h.hi === `s${i}` ? 3 : 2} {...d.anim}
               dot={rows.length <= 12 ? { r: 3, strokeWidth: 2, fill: "var(--card)" } : false} activeDot={{ r: 5, stroke: "var(--card)", strokeWidth: 2 }} />
           ))}
         </RLine>
@@ -138,10 +161,11 @@ export const LineChartView = ({ props }: P) => {
 
 export const AreaChartView = ({ props }: P) => {
     const h = useHighlight();
+    const d = useDraw();
     const { rows, names } = buildChartData(props.labels, props.series);
     if (!rows.length || !names.length) return null;
     return (
-      <Frame config={configOf(names)} height={props.height}>
+      <Frame draw={d} config={configOf(names)} height={props.height}>
         <RArea data={rows} margin={{ top: 8, right: 12, left: props.yLabel ? 8 : 0, bottom: props.xLabel ? 12 : 0 }}>
           <defs>
             {names.map((_, i) => (
@@ -158,7 +182,7 @@ export const AreaChartView = ({ props }: P) => {
           {legend(names.length, h)}
           {names.map((_, i) => (
             <Area key={i} dataKey={`s${i}`} type={curve(props.variant)} stroke={`var(--color-s${i})`} strokeWidth={2}
-              strokeOpacity={h.op(`s${i}`)} fillOpacity={h.op(`s${i}`)} fill={`url(#fill-s${i})`} {...anim} />
+              strokeOpacity={h.op(`s${i}`)} fillOpacity={h.op(`s${i}`)} fill={`url(#fill-s${i})`} {...d.anim} />
           ))}
         </RArea>
       </Frame>
@@ -167,10 +191,11 @@ export const AreaChartView = ({ props }: P) => {
 
 export const RadarChartView = ({ props }: P) => {
     const h = useHighlight();
+    const d = useDraw();
     const { rows, names } = buildChartData(props.labels, props.series);
     if (!rows.length || !names.length) return null;
     return (
-      <Frame config={configOf(names)} height={300}>
+      <Frame draw={d} config={configOf(names)} height={300}>
         <RRadar data={rows} outerRadius="72%">
           <PolarGrid />
           <PolarAngleAxis dataKey="category" tickFormatter={tick} className="text-xs" />
@@ -178,7 +203,7 @@ export const RadarChartView = ({ props }: P) => {
           {legend(names.length, h)}
           {names.map((_, i) => (
             <Radar key={i} dataKey={`s${i}`} stroke={`var(--color-s${i})`} strokeWidth={2} strokeOpacity={h.op(`s${i}`)} fill={`var(--color-s${i})`}
-              fillOpacity={0.18 * h.op(`s${i}`)} {...anim} dot={{ r: 3, fillOpacity: 1 }} />
+              fillOpacity={0.18 * h.op(`s${i}`)} {...d.anim} dot={{ r: 3, fillOpacity: 1 }} />
           ))}
         </RRadar>
       </Frame>
@@ -187,6 +212,7 @@ export const RadarChartView = ({ props }: P) => {
 
 export const PieChartView = ({ props }: P) => {
     const h = useHighlight();
+    const d = useDraw();
     const [ref, side] = useWide(420);
     const labels = asArray(props.labels).map(String);
     const values = asArray(props.values);
@@ -200,10 +226,10 @@ export const PieChartView = ({ props }: P) => {
     // 宽度够时图例放在图右侧并整体居中，不够时回落到下方
     return (
       <div ref={ref} className={side ? "mx-auto w-full max-w-[460px]" : undefined}>
-      <Frame config={configOf(labels)} height={semi ? 220 : 280}>
+      <Frame draw={d} config={configOf(labels)} height={semi ? 220 : 280}>
         <RPie>
           <ChartTooltip content={<ChartTooltipContent nameKey="key" hideLabel />} />
-          <Pie data={data} dataKey="value" nameKey="key" {...anim}
+          <Pie data={data} dataKey="value" nameKey="key" {...d.anim}
             onMouseEnter={(_: unknown, i: number) => h.setHi(data[i]?.key ?? null)} onMouseLeave={() => h.setHi(null)}
             innerRadius={donut ? "58%" : 0} outerRadius="82%" paddingAngle={donut ? 2 : 0} cornerRadius={donut ? 4 : 0}
             stroke="var(--card)" strokeWidth={2}
@@ -234,6 +260,7 @@ export const PieChartView = ({ props }: P) => {
 
 export const ScatterChartView = ({ props }: P) => {
     const h = useHighlight();
+    const d = useDraw();
     const sets = asArray(props.datasets).map((d) => {
       const p = unwrap(d) ?? {};
       return {
@@ -247,7 +274,7 @@ export const ScatterChartView = ({ props }: P) => {
     if (!sets.length) return null;
     const hasZ = asArray(props.datasets).some((d) => asArray(unwrap(d)?.points).some((pt) => unwrap(pt)?.z != null));
     return (
-      <Frame config={configOf(sets.map((s) => s.name))} height={300}>
+      <Frame draw={d} config={configOf(sets.map((s) => s.name))} height={300}>
         <RScatter margin={{ top: 8, right: 12, left: props.yLabel ? 8 : 0, bottom: props.xLabel ? 12 : 0 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis type="number" dataKey="x" tickLine={false} axisLine={false} tickFormatter={compact} name={props.xLabel ?? "x"}>{xLab(props.xLabel)}</XAxis>
@@ -256,7 +283,7 @@ export const ScatterChartView = ({ props }: P) => {
           <ChartTooltip cursor={{ strokeDasharray: "3 3" }} content={<ChartTooltipContent hideLabel />} />
           {legend(sets.length, h)}
           {sets.map((s, i) => (
-            <Scatter key={i} name={`s${i}`} data={s.data} fill={`var(--color-s${i})`} fillOpacity={0.8 * h.op(`s${i}`)} stroke="var(--card)" strokeWidth={1.5} {...anim} />
+            <Scatter key={i} name={`s${i}`} data={s.data} fill={`var(--color-s${i})`} fillOpacity={0.8 * h.op(`s${i}`)} stroke="var(--card)" strokeWidth={1.5} {...d.anim} />
           ))}
         </RScatter>
       </Frame>

@@ -97,32 +97,52 @@
 
 ## 5. 动效
 
+原则：静止时外观与无动效时完全一致（配色、字体、圆角、布局不变），只在交互或数据变化时出现；每个动效都要能回答「它告诉用户什么」。只用浏览器原生能力（CSS、WAAPI、View Transitions、IntersectionObserver），不引入动画库，符合 CSP `script-src 'self'`。
+
 | 变量 | 值 | 用途 |
 |---|---|---|
 | `--dur-fast` | 150ms | 勾选图标弹入、颜色切换 |
 | `--dur-base` | 200ms | 默认过渡（`transition-*` 不写时长时即此值）、tw-animate 进出 |
-| `--dur-slow` | 250ms | 路由切换淡入、进度条宽度 |
+| `--dur-slow` | 250ms | 路由切换淡入、Tab / 筛选 chips 指示块滑动 |
 | `--ease-standard` | `cubic-bezier(.2,.8,.2,1)` | 统一缓动（默认过渡缓动、tw-animate 默认缓动） |
 | `--ease-pop` | `cubic-bezier(.3,1.5,.5,1)` | 只用于 ≤ 24px 的小元素弹入（勾、圆点） |
+| `--ease-spring` | `linear(0, .22 6%, .56 14%, .86 24%, 1.03 34%, 1.055 42%, 1.04 52%, 1.012 64%, .996 78%, 1)` | 新增。轻弹簧，过冲约 5%，**只用于按钮松开回弹** |
 
-- 路由切换：内容区 `.page-enter` 淡入 + 上移 4px，一次性，不做逐块飞入。
+时长以 150–400ms 为主；图表首次绘制 550ms、结果行闪底色 600ms、骨架屏一轮 1.4s 是例外。
+
+| 动效 | 规范 | 实现位置 |
+|---|---|---|
+| 按钮按下回弹 | 按下 75ms 缩到 `.97` 并下沉 1px；松开时位移/缩放走 320ms `--ease-spring`，颜色/阴影仍 200ms `--ease-standard` | `button.tsx`（按下）、`index.css` `[data-slot=button]:not(:active)`（松开，顺序须与 button.tsx 的 `transition-[…]` 一致） |
+| 卡片悬停抬起 | 可点击卡片/列表行上移 2px + `shadow-card-hover`；用 `translate` 属性，不与入场动画的 `transform` 冲突 | `index.css` `lift` 工具类 |
+| 列表依次入场 | `.list` 的子项淡入上移 6px，300ms，每项错开 30ms，第 9 项起同时出现；首次加载、换筛选、重新加载后重播（容器 `key={list.gen}`） | `index.css` `.list > *`、`ui.tsx` `usePaged().gen` |
+| Tab / 筛选 chips 滑动指示 | 选中底色/下划线是一个绝对定位的指示块，按选中项的位置尺寸 250ms 滑过去；首帧直接到位不滑；选中项本身不再画选中底 | `tabs.tsx` `useSlidingIndicator` / `SlidingIndicator`（TabsList 内置；页内下划线 tabs 传 `PAGE_TABS_INDICATOR`）；项目页筛选 chips |
+| 数字滚动计数 | 文本中第一个数字从 0（首次）或旧值补间到新值，450ms ease-out，保留前后缀/小数位/千分位，`tabular-nums` 防抖动；播完显示原文 | `openui-lib/util.tsx` `CountUp`：KPI（`MetricIndicatorInline`、`Text/BoldText` 的 number 变体）、结果页计数 |
+| 骨架屏微光 | `bg-muted` 上一道浅色高光扫过，1.4s 一轮，替代 `animate-pulse` | `skeleton.tsx` + `index.css` `.skeleton-shimmer` |
+| toast 滑入 | 沿用 sonner 自带的滑入/滑出，不另做 | `components/ui/sonner.tsx` |
+| 勾选形变 | 多选：勾的描边 180ms 画出（`.check-draw`）；单选：圆点 150ms `--ease-pop` 弹入 | `checkbox.tsx`、`radio-group.tsx` |
+| 提交 loading → 成功 / 失败 | 点击即锁定按钮宽度；内容随状态交叉淡入；成功「✓ 已提交」勾描边画出；失败抖动 300ms + `aria-invalid` 标红 + 按钮旁红字写明原因（同时 `toast.err`） | `openui-lib/forms.tsx` Button、`pages/openui-view.tsx` |
+| 提交成功柔光 | 成功时按钮外一圈淡绿柔光 480ms（`::after` box-shadow 扩散到 10px 后消失），替代彩带 | `index.css` `.submit-glow` |
+| 列表 → 页面共享元素 | 点列表标题进入页面：标题作为共享元素（`page-title`）300ms 移到页头 h1，其余内容交叉淡入 250ms；最多等新页标题 300ms，过渡期间点击 iframe 无效；浏览器不支持 View Transitions 时直接切换 | `router.tsx` `navigate(to, replace, from)`、`<Link viewTransition>`、`index.css` `::view-transition-*` |
+| 图表首次绘制 | 折线描边、柱从 0 生长、饼/环扫过，550ms ease-out（Recharts 自带动画）；每个图表只在首次进入视口时播一次，视口外先静态完整渲染（打印、截图不缺图） | `openui-lib/charts-impl.tsx` `useDraw` |
+| 结果条实时增长 + 新行闪底色 | 计数条首次出现从 0 生长（`scaleX` 360ms），新数据到达时宽度 360ms 过渡、数字滚动、该行闪一下主色 12% 底色（600ms）；表格里新到达的提交行同样闪一下（连接后 800ms 内补发的历史提交不闪） | `pages/results.tsx` `TallyRow`、`index.css` `.bar-grow` / `.flash-bg` |
+
+- 路由切换：内容区 `.page-enter` 淡入 + 上移 4px，一次性，不做逐块飞入（报告不做滚动逐块揭示）。
 - 弹层：Dialog / Dropdown / Select / Tooltip / Tabs 内容用 tw-animate-css 的 `animate-in/out fade/zoom/slide`；Accordion 用 `accordion-down/up`。
-- 图表：Recharts 进入动画 450ms ease-out。
-- 失败：`.shake`（300ms 左右抖动）。
-- `prefers-reduced-motion: reduce`：所有过渡与动画时长归零，并去掉位移/缩放（按下、悬停抬起、淡入位移、抖动），图表关闭进入动画。
+- 不做：鼠标跟随微光、噪点纹理、焦点渐变描边、报告滚动逐块揭示、⌘K、庆祝彩点。
+- `prefers-reduced-motion: reduce`：所有过渡与动画时长、延迟归零，并去掉位移/缩放（按下、悬停抬起、淡入位移、列表入场、结果条生长、抖动）；骨架屏微光、闪底色、成功柔光、勾描边不播；数字直接显示终值；图表关闭进入动画；不走 View Transitions。新增动效必须同时加进 `index.css` 的这条规则。
 
 ## 6. 组件状态规范
 
 | 状态 | 规范 |
 |---|---|
-| hover | 主按钮 `brightness(1.04)`；outline/ghost 按钮换 `accent` 底；可点击卡片/列表行 `lift`：上移 1px + `shadow-card-hover`；选项卡描边变 `primary/50` |
-| active（按下） | 按钮 `scale(.97)` + 下沉 1px，主按钮阴影换 `shadow-primary-press`；选项卡 `scale(.99)`，chip `scale(.97)` |
+| hover | 主按钮 `brightness(1.04)`；outline/ghost 按钮换 `accent` 底；可点击卡片/列表行 `lift`：上移 2px + `shadow-card-hover`；选项卡描边变 `primary/50` |
+| active（按下） | 按钮 `scale(.97)` + 下沉 1px（松开走 `--ease-spring` 回弹），主按钮阴影换 `shadow-primary-press`；选项卡 `scale(.99)`，chip `scale(.97)` |
 | focus-visible | `ring-[3px] ring-ring/80`（与背景 ≥ 3:1）；选项卡用 `has-[:focus-visible]` 在整卡上显示 |
 | disabled | `opacity-50`、`pointer-events-none` |
-| selected | **主色描边 + 10% 主色底**（`border-primary bg-primary/10`）：单选/多选选项卡、chip；勾/圆点 `zoom-in` 弹入；chip 选中时前面弹出 ✓ |
-| loading | `<Button loading>`：显示旋转 spinner、禁用、`aria-busy`，防止重复提交；数据加载用 `Skeleton`（`bg-muted` 脉冲） |
-| success | 提交按钮短暂（1.8s）变为「✓ 已提交」并不可再点；同时 `toast.ok()`（带绿色勾） |
-| error | 校验失败：字段下方红字 + 提交按钮抖动；提交失败：按钮抖动并 `aria-invalid` 标红，`toast.err()` 带红色叹号并写明原因 |
+| selected | **主色描边 + 10% 主色底**（`border-primary bg-primary/10`）：单选/多选选项卡、chip；多选勾描边画出、单选圆点 `zoom-in` 弹入；chip 选中时前面弹出 ✓；项目页筛选 chips 与 Tab 的选中底由滑动指示块绘制 |
+| loading | `<Button loading>`：显示旋转 spinner、禁用、`aria-busy`，防止重复提交；数据加载用 `Skeleton`（`bg-muted` 底 + 微光扫过） |
+| success | 提交按钮短暂（1.8s）变为「✓ 已提交」（勾描边画出 + 外圈淡绿柔光）并不可再点；同时 `toast.ok()`（带绿色勾） |
+| error | 校验失败：字段下方红字 + 提交按钮抖动；提交失败：按钮抖动并 `aria-invalid` 标红，按钮旁红字写明原因，`toast.err()` 带红色叹号并写明原因 |
 
 滑块：拇指 20px 白色，拖动时放大 1.1，右上角数值变主色并略放大。
 

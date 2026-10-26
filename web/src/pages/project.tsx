@@ -5,14 +5,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SlidingIndicator, Tabs, TabsContent, TabsList, TabsTrigger, useSlidingIndicator } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, put, qs } from "../api";
 import { cn } from "@/lib/utils";
 import { Link, navigate } from "../router";
 import {
   AuthCard, CATEGORY_LABEL, CATEGORY_TYPES, CheckField, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page as Shell,
-  PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PAGE_TYPE_LABEL, PageHeader, PageTypeTag, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
+  PAGE_TABS_INDICATOR, PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PAGE_TYPE_LABEL, PageHeader, PageTypeTag, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
   useSession,
 } from "../ui";
 import { SLUG_RE } from "./home";
@@ -45,7 +45,7 @@ export function ProjectPage({ orgSlug, projectSlug }: { orgSlug: string; project
       <PageHeader crumbs={<Link to={`/o/${org.slug}`}>{org.name}</Link>} title={p.name}
         badge={<Badge variant="secondary">{p.my_role ? ROLE_LABEL[p.my_role] : "组织管理员"}</Badge>} desc={p.description || undefined} />
       <Tabs defaultValue="pages" className="gap-6">
-        <TabsList className={PAGE_TABS_LIST}>
+        <TabsList className={PAGE_TABS_LIST} indicatorClassName={PAGE_TABS_INDICATOR}>
           <TabsTrigger value="pages" className={PAGE_TABS_TRIGGER}>页面</TabsTrigger>
           <TabsTrigger value="members" className={PAGE_TABS_TRIGGER}>成员</TabsTrigger>
           <TabsTrigger value="groups" className={PAGE_TABS_TRIGGER}>群组授权</TabsTrigger>
@@ -75,15 +75,18 @@ function Pages({ org, project }: { org: Org; project: Project }) {
   const list = usePaged<Page>(`/pages${qs({ project_id: project.id, page_type: filterTypes(filter) })}`);
   const groups = useLoad(() => get<Paged<Group>>(`/orgs/${org.id}/groups?limit=200`), [org.id]);
   const [editing, setEditing] = useState<string | null>(null);
+  const chips = useSlidingIndicator<HTMLDivElement>("[aria-pressed=true]");
   return (
     <div className="stack">
       <p className="tab-intro">页面内容由 agent 通过 MCP 发布与更新；这里只能修改标题、可见性和提交开关。</p>
-      <div role="group" aria-label="按类型筛选" className="flex flex-wrap items-center gap-2">
+      <div ref={chips.box} role="group" aria-label="按类型筛选" className="relative flex flex-wrap items-center gap-2">
+        {/* 选中底色是滑动指示块，chip 自身选中时只换描边为透明 */}
+        <SlidingIndicator ref={chips.bar} className="rounded-full border border-primary bg-primary/10" />
         {FILTERS.map(([v, label], i) => (
           <button key={v} type="button" aria-pressed={filter === v} onClick={() => setFilter(v)}
             className={cn(
-              "inline-flex h-7 items-center gap-1 rounded-full border px-3 text-[13px] font-semibold transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/80 active:scale-[.97]",
-              filter === v ? "border-primary bg-primary/10" : "border-input text-muted-foreground",
+              "relative inline-flex h-7 items-center gap-1 rounded-full border px-3 text-[13px] font-semibold transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/80 active:scale-[.97]",
+              filter === v ? "border-transparent" : "border-input text-muted-foreground",
               i === Object.keys(CATEGORY_TYPES).length + 1 && "sm:ml-3",
             )}>
             {filter === v && <Check strokeWidth={3} className="size-3.5 animate-in zoom-in-50 duration-150 ease-pop" />}{label}
@@ -96,11 +99,11 @@ function Pages({ org, project }: { org: Org; project: Project }) {
         ? <Empty icon={<FileText />} title="还没有页面">让 agent 调用 MCP 的 publish_page 发布第一个页面。</Empty>
         : <Empty icon={<FileText />} title="没有该类型的页面" />)}
       {list.items.length > 0 && (
-        <div className="list">
+        <div key={list.gen} className="list">
           {list.items.map((pg) => (
             <div key={pg.id} className="list-row">
               <div className="list-main">
-                <Link to={`/pages/${pg.id}`} className="list-title">{pg.title}</Link>
+                <Link to={`/pages/${pg.id}`} className="list-title" viewTransition>{pg.title}</Link>
                 <div className="list-meta">
                   <Badge variant="secondary"><PageTypeTag type={pg.page_type} /></Badge>
                   <Badge variant="outline">{pg.kind === "openui" ? "OpenUI" : "HTML"}</Badge>

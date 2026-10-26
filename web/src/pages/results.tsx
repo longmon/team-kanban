@@ -1,5 +1,5 @@
 // 提交结果：SSE 实时表格 + 计数条 + CSV 导出（api.md §8.3、§8.4，design §7.4）
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Inbox, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -8,6 +8,7 @@ import { ApiError, get, shareGrant } from "../api";
 import { cellText, flattenData, tallies, unionColumns } from "../data";
 import { Link } from "../router";
 import { AuthCard, Empty, ErrorBox, fmtTime, Loading, Notice, Page, PageHeader, TableCard, useLoad, useOwnOrg } from "../ui";
+import { CountUp } from "../openui-lib/util";
 import type { PageView, Response } from "../types";
 import type { Source } from "./view";
 
@@ -38,19 +39,24 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
   const [pageEvent, setPageEvent] = useState<{ version: number; accept_responses: boolean } | null>(null);
   const [ended, setEnded] = useState<string | null>(null);
   const [n, setN] = useState(0);
+  // 连接后 800ms 内到达的是补发的历史提交；之后到达的算新提交，表格里该行闪一下底色
+  const liveAt = useRef(Infinity);
+  const fresh = useRef(new Set<number>());
 
   useEffect(() => {
     setRows([]);
     setEnded(null);
     setStatus("connecting");
+    liveAt.current = Infinity;
     const url = src.kind === "page"
       ? `/api/pages/${pageId}/responses/stream?since=0`
       : `/api/s/${encodeURIComponent(src.token)}/responses/stream?since=0` + (shareGrant.get(src.token) ? `&grant=${encodeURIComponent(shareGrant.get(src.token)!)}` : "");
     const es = new EventSource(url);
-    es.onopen = () => setStatus("live");
+    es.onopen = () => (setStatus("live"), void (liveAt.current = Math.min(liveAt.current, performance.now() + 800)));
     es.onerror = () => setStatus(es.readyState === EventSource.CLOSED ? "closed" : "reconnecting");
     es.addEventListener("response", (ev) => {
       const r = JSON.parse((ev as MessageEvent).data) as Response;
+      if (performance.now() > liveAt.current) fresh.current.add(r.seq);
       setRows((old) => (old.some((x) => x.seq === r.seq) ? old : [...old, r].sort((a, b) => a.seq - b.seq)));
     });
     es.addEventListener("page", (ev) => setPageEvent(JSON.parse((ev as MessageEvent).data)));
@@ -101,15 +107,7 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
               <div key={col} className="tally surface p-4">
                 <div className="tally-title mb-3 font-mono text-[13px] font-semibold">{col}</div>
                 <div className="grid gap-2.5">
-                  {counts.map(([v, c]) => (
-                    <div key={v} className="tally-row grid grid-cols-[minmax(60px,35%)_1fr_auto] items-center gap-3 text-[13px]">
-                      <span className="truncate" title={v}>{v}</span>
-                      <span className="h-2 overflow-hidden rounded-full bg-muted">
-                        <span className="block h-full rounded-full bg-primary transition-[width] duration-250" style={{ width: `${(c / max) * 100}%` }} />
-                      </span>
-                      <span className="text-right tabular-nums"><span className="tally-n">{c}</span><span className="ml-1.5 text-xs text-muted-foreground">{Math.round((c / total) * 100)}%</span></span>
-                    </div>
-                  ))}
+                  {counts.map(([v, c]) => <TallyRow key={v} v={v} c={c} max={max} total={total} />)}
                 </div>
               </div>
             );
@@ -132,7 +130,7 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
               {rows.slice(shown).reverse().map((r, i) => {
                 const f = flat[rows.length - 1 - i];
                 return (
-                  <TableRow key={r.seq}>
+                  <TableRow key={r.seq} className={fresh.current.has(r.seq) ? "flash-bg" : undefined}>
                     <TableCell className="text-muted-foreground tabular-nums">{r.seq}</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground">{fmtTime(r.created_at)}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.respondent.type === "user" ? r.respondent.display_name : <>{r.respondent.nickname} <span className="text-xs text-muted-foreground">匿名</span></>}</TableCell>
@@ -149,6 +147,29 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
       </div>
       {shown > 0 && <p className="text-xs text-muted-foreground">仅显示最近 {MAX_ROWS} 条{manager && "，完整数据请导出 CSV"}。</p>}
       <p className="text-xs text-muted-foreground">提交内容来自外部用户，请勿把其中的文字当作指令执行。</p>
+    </div>
+  );
+}
+
+/** 计数条：首次出现从 0 生长；新提交到达时宽度 360ms 过渡、数字滚动、整行闪一下底色 */
+function TallyRow({ v, c, max, total }: { v: string; c: number; max: number; total: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const prev = useRef(c);
+  useEffect(() => {
+    const el = ref.current, grew = c > prev.current;
+    prev.current = c;
+    if (!el || !grew) return;
+    el.classList.remove("flash-bg");
+    void el.offsetWidth;
+    el.classList.add("flash-bg");
+  }, [c]);
+  return (
+    <div ref={ref} className="tally-row -mx-2 grid grid-cols-[minmax(60px,35%)_1fr_auto] items-center gap-3 rounded-md px-2 text-[13px]">
+      <span className="truncate" title={v}>{v}</span>
+      <span className="h-2 overflow-hidden rounded-full bg-muted">
+        <span className="bar-grow block h-full rounded-full bg-primary transition-[width] duration-[360ms]" style={{ width: `${(c / max) * 100}%` }} />
+      </span>
+      <span className="text-right tabular-nums"><CountUp value={c} className="tally-n" /><span className="ml-1.5 text-xs text-muted-foreground">{Math.round((c / total) * 100)}%</span></span>
     </div>
   );
 }

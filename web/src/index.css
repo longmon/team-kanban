@@ -91,22 +91,63 @@
   .md hr { @apply my-4; }
 }
 
-/* 动效（时长/缓动见 theme.css）：只在路由切换时淡入一次；可点击卡片悬停轻抬；失败抖动 */
+/* 动效（时长/缓动见 theme.css，规范见 docs/design-system.md §5）。静止时外观不变，只在交互/数据变化时出现 */
 @keyframes page-enter { from { opacity: 0; transform: translateY(4px); } }
 @keyframes shake { 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+@keyframes check-draw { from { stroke-dashoffset: 24; } }
+@keyframes submit-glow { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 45%, transparent); } to { box-shadow: 0 0 0 10px transparent; } }
+@keyframes bar-grow { from { transform: scaleX(0); } }
+@keyframes flash-bg { from { background-color: color-mix(in srgb, var(--primary) 12%, transparent); } }
 @layer components {
   .page-enter { animation: page-enter var(--dur-slow) var(--ease-standard) both; }
   .shake { animation: shake 300ms var(--ease-standard); }
+  /* 列表依次入场：每项错开 30ms，第 9 项起同时（总长 ≤ 540ms）；列表容器换 key 时重播 */
+  .list > * { animation: rise 300ms var(--ease-standard) backwards; }
+  .list > :nth-child(2) { animation-delay: 30ms; }
+  .list > :nth-child(3) { animation-delay: 60ms; }
+  .list > :nth-child(4) { animation-delay: 90ms; }
+  .list > :nth-child(5) { animation-delay: 120ms; }
+  .list > :nth-child(6) { animation-delay: 150ms; }
+  .list > :nth-child(7) { animation-delay: 180ms; }
+  .list > :nth-child(8) { animation-delay: 210ms; }
+  .list > :nth-child(n + 9) { animation-delay: 240ms; }
+  /* 骨架屏微光：在 bg-muted 上扫过一道浅色高光，1.4s 一轮 */
+  .skeleton-shimmer {
+    background-image: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--card) 60%, transparent) 50%, transparent 100%);
+    background-size: 200% 100%; background-repeat: no-repeat;
+    animation: shimmer 1.4s linear infinite;
+  }
+  /* 勾描边画出（lucide Check 路径长约 22.6） */
+  .check-draw path { stroke-dasharray: 24; animation: check-draw 180ms var(--ease-standard) 40ms backwards; }
+  /* 提交成功：按钮外一圈 480ms 淡绿柔光 */
+  .submit-glow { position: relative; }
+  .submit-glow::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; animation: submit-glow 480ms var(--ease-standard) forwards; }
+  /* 结果条首次出现时从 0 生长；新数据到达时整行闪一下底色 */
+  .bar-grow { transform-origin: left center; animation: bar-grow 360ms var(--ease-standard); }
+  .flash-bg { animation: flash-bg 600ms var(--ease-standard); }
 }
+/* 按钮：按下 75ms 缩到 .97（button.tsx），松开时位移/缩放走 320ms 弹簧，颜色/阴影仍是标准过渡。顺序与 button.tsx 的 transition-[…] 一致 */
+[data-slot=button]:not(:active) {
+  transition-duration: var(--dur-base), var(--dur-base), var(--dur-base), var(--dur-base), var(--dur-base), var(--dur-base), 320ms, 320ms;
+  transition-timing-function: var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-spring), var(--ease-spring);
+}
+/* 列表→页面标题共享元素（router.tsx navigate 的 View Transitions）：标题 300ms 移到页头，其余内容交叉淡入 */
+::view-transition-group(page-title) { animation-duration: 300ms; animation-timing-function: var(--ease-standard); }
+::view-transition-old(page-title), ::view-transition-new(page-title) { animation-duration: 300ms; height: 100%; object-fit: none; object-position: left center; }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-slow); animation-timing-function: var(--ease-standard); }
 /* 卡片表面：暖色软阴影代替描边 */
 @utility surface { @apply rounded-xl bg-card text-card-foreground shadow-card; }
-/* 可点击卡片/列表行：悬停抬起 1px + 阴影加深，键盘焦点有清晰焦点环 */
-@utility lift { @apply transition-[transform,box-shadow] outline-none hover:-translate-y-px hover:shadow-card-hover focus-visible:ring-[3px] focus-visible:ring-ring/80; }
+/* 可点击卡片/列表行：悬停抬起 2px（translate 属性，不与入场动画的 transform 冲突）+ 阴影加深，键盘焦点有清晰焦点环 */
+@utility lift { @apply transition-[translate,box-shadow] outline-none hover:-translate-y-0.5 hover:shadow-card-hover focus-visible:ring-[3px] focus-visible:ring-ring/80; }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+  *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; transition-delay: 0s !important; animation-delay: 0s !important; }
   /* 减少动态：去掉位移/缩放，只保留颜色与阴影变化 */
-  .lift:hover, [data-slot=button]:active, .page-enter, .shake { transform: none !important; translate: none !important; scale: none !important; }
+  .lift:hover, [data-slot=button]:active, .page-enter, .shake, .list > *, .bar-grow { transform: none !important; translate: none !important; scale: none !important; }
+  .skeleton-shimmer, .flash-bg, .submit-glow::after, .check-draw path { animation: none !important; }
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
 
 /* 管理端页面的结构类（颜色全部取 token） */

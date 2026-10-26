@@ -68,6 +68,8 @@ export function usePaged<T>(path: string | null) {
   const [error, setError] = useState<unknown>();
   const [loading, setLoading] = useState(false);
   const [n, setN] = useState(0);
+  // 每次整表重载（首次、换筛选、reload）完成 +1：列表容器用作 key，重播依次入场动画
+  const [gen, setGen] = useState(0);
   const load = useCallback(
     async (c: string | null, reset: boolean) => {
       if (!path) return;
@@ -76,6 +78,7 @@ export function usePaged<T>(path: string | null) {
         const sep = path.includes("?") ? "&" : "?";
         const r = await get<Paged<T>>(path + (c ? `${sep}cursor=${encodeURIComponent(c)}` : ""));
         setItems((old) => (reset ? r.items : [...old, ...r.items]));
+        if (reset) setGen((g) => g + 1);
         setCursor(r.next_cursor ?? null);
         setError(undefined);
       } catch (e) {
@@ -88,7 +91,7 @@ export function usePaged<T>(path: string | null) {
   );
   useEffect(() => void load(null, true), [load, n]);
   return {
-    items, error, loading, hasMore: !!cursor,
+    items, error, loading, hasMore: !!cursor, gen,
     more: () => load(cursor, false),
     reload: () => setN((x) => x + 1),
   };
@@ -246,7 +249,9 @@ export function ListSkeleton({ rows = 3 }: { rows?: number }) {
 
 /** 页内一级 tabs：下划线样式，窄屏横向滚动 */
 export const PAGE_TABS_LIST = "h-auto w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent p-0 [scrollbar-width:none]";
-export const PAGE_TABS_TRIGGER = "h-auto flex-none rounded-none border-0 border-b-2 border-transparent px-0.5 pt-1 pb-2.5 text-muted-foreground hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:border-primary dark:data-[state=active]:bg-transparent";
+export const PAGE_TABS_TRIGGER = "h-auto flex-none rounded-none border-0 border-b-2 border-transparent px-0.5 pt-1 pb-2.5 text-muted-foreground hover:text-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent";
+/** 下划线指示块：盖在选中项的 2px 底边位置，切换时滑过去 */
+export const PAGE_TABS_INDICATOR = "top-auto bottom-0 h-0.5 translate-y-0 rounded-none border-0 bg-primary shadow-none dark:bg-primary";
 
 /** 表格外框 */
 export function TableCard({ children }: { children: ReactNode }) {

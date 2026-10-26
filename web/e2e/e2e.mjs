@@ -103,8 +103,15 @@ await step("share-anon-render", async () => {
   await page.screenshot({ path: `${OUT}/share-report.png`, fullPage: true });
 });
 await step("share-anon-nickname-required", async () => {
-  await page.getByRole("button", { name: "提交反馈" }).click();
+  const btn = page.getByRole("button", { name: "提交反馈" });
+  // 记录按钮是否出现过 shake（抖动 300ms 后类名即移除）
+  await btn.evaluate((e) => new MutationObserver(() => e.classList.contains("shake") && (window.__shook = true)).observe(e, { attributeFilter: ["class"] }));
+  await btn.click();
   await toast("昵称");
+  // 提交失败：按钮抖动 + 标红，按钮旁红字写明原因
+  if ((await btn.getAttribute("aria-invalid")) !== "true") throw new Error("failed submit button not aria-invalid");
+  if (!(await page.evaluate(() => window.__shook))) throw new Error("failed submit button did not shake");
+  await page.getByRole("alert").filter({ hasText: "昵称" }).waitFor();
 });
 await step("share-anon-submit", async () => {
   await page.fill("#relay-nick", "小明");
@@ -112,6 +119,11 @@ await step("share-anon-submit", async () => {
   await page.locator("textarea").first().fill("不错");
   await page.getByRole("button", { name: "提交反馈" }).click();
   await toast("已提交（#1）");
+  // 提交成功：按钮变「已提交」并有一圈柔光，失败提示消失
+  const done = page.getByRole("button", { name: "已提交" });
+  await done.waitFor();
+  if (!(await done.evaluate((e) => e.classList.contains("submit-glow")))) throw new Error("success glow missing");
+  if (await page.getByRole("alert").filter({ hasText: "昵称" }).count()) throw new Error("error reason still shown after success");
 });
 await step("share-results-sse", async () => {
   await page.getByRole("button", { name: "查看结果" }).click();
@@ -186,8 +198,9 @@ await step("vote-submit-logged-in", async () => {
 await step("results-page", async () => {
   await page.goto(voteUrl + "/results");
   await page.locator(".tally-title", { hasText: "choice" }).waitFor();
-  const n = await page.locator(".tally-row", { hasText: "B" }).locator(".tally-n").first().textContent();
-  if (n !== "2") throw new Error("tally B = " + n);
+  // 计数有 450ms 滚动动画，等到终值
+  const n = page.locator(".tally-row", { hasText: "B" }).locator(".tally-n").first();
+  await n.filter({ hasText: /^2$/ }).waitFor({ timeout: 3000 }).catch(async () => { throw new Error("tally B = " + (await n.textContent())); });
   await page.screenshot({ path: `${OUT}/results.png`, fullPage: true });
 });
 await step("results-live-update", async () => {
@@ -208,6 +221,8 @@ await step("html-frame-submit", async () => {
   await page.getByText("示例：html 表单").click();
   const frame = page.frameLocator("iframe.html-frame");
   await frame.getByRole("button", { name: "提交" }).waitFor();
+  // 列表标题 → 页面走 View Transition，过渡期间（≤ 600ms）iframe 收不到点击，等过渡结束
+  await page.waitForFunction(() => !document.getAnimations().some((a) => a.effect?.pseudoElement?.startsWith("::view-transition")));
   page.once("dialog", (d) => d.accept());
   await frame.getByRole("button", { name: "提交" }).click();
   await toast("已提交（#2）");
@@ -281,7 +296,16 @@ await step("list-filter-by-type", async () => {
   await page.goto(BASE + "/o/demo/p/demo");
   await page.getByText("示例：vote.openui").waitFor();
   const filters = page.getByRole("group", { name: "按类型筛选" });
+  // 筛选 chips：选中底色是滑动指示块，切换后滑到新选中的 chip 上
+  const ind = filters.locator("[data-slot=tabs-indicator]");
+  const onPressed = () => page.waitForFunction(() => {
+    const g = document.querySelector("[aria-label=按类型筛选]"), b = g.querySelector("[aria-pressed=true]"), i = g.querySelector("[data-slot=tabs-indicator]");
+    return b && i.style.getPropertyValue("--x") === b.offsetLeft + "px" && i.style.getPropertyValue("--w") === b.offsetWidth + "px";
+  }, null, { timeout: 3000 });
+  await onPressed();
+  if ((await ind.evaluate((e) => getComputedStyle(e).transitionDuration)).split(",")[0].trim() !== "0.25s") throw new Error("chip indicator has no slide transition");
   await filters.getByRole("button", { name: "只读", exact: true }).click();
+  await onPressed();
   await page.locator(".list-title", { hasText: "流程图" }).waitFor();
   const titles = async () => (await page.locator(".list-title").allTextContents()).sort();
   let t = await titles();
@@ -342,6 +366,36 @@ await step("mobile-dark", async () => {
   await page.screenshot({ path: `${OUT}/mobile-dark-results.png`, fullPage: true });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   if (overflow) throw new Error("horizontal page overflow at 375px");
+});
+await step("reduced-motion", async () => {
+  // 开启「减少动态效果」：页面正常，所有动画/过渡时长归零，无运行中的动画残留
+  const c2 = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: "reduce" });
+  const p = await c2.newPage();
+  watch(p);
+  const settled = async (where) => {
+    await p.waitForTimeout(100);
+    const r = await p.evaluate(() => ({
+      running: document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getComputedTiming().duration > 0).map((a) => a.animationName ?? a.transitionProperty ?? "waapi"),
+      hidden: [...document.querySelectorAll(".list > *")].filter((e) => getComputedStyle(e).opacity !== "1").length,
+    }));
+    if (r.running.length || r.hidden) throw new Error(`${where}: running ${r.running} hidden rows ${r.hidden}`);
+  };
+  try {
+    await login(p, "demo@example.com");
+    await p.goto(BASE + "/o/demo/p/demo");
+    await p.locator(".list-title", { hasText: "示例：vote.openui" }).waitFor();
+    await settled("project");
+    const ind = p.locator("[data-slot=tabs-indicator]").first();
+    if ((await ind.evaluate((e) => getComputedStyle(e).transitionDuration)).split(",").some((d) => d.trim() !== "0s")) throw new Error("indicator transition not zeroed");
+    await p.getByRole("group", { name: "按类型筛选" }).getByRole("button", { name: "收集", exact: true }).click();
+    await p.locator(".list-title", { hasText: "示例：vote.openui" }).click(); // 列表 → 页面（减少动态时不走 View Transition）
+    await p.getByText("技术选型投票").waitFor();
+    await settled("vote");
+    await p.goto(BASE + "/pages/" + IDS["示例：report.openui"]);
+    await p.getByText("2026 Q3 运营报告").waitFor();
+    await settled("report");
+    await p.screenshot({ path: `${OUT}/reduced-motion-report.png`, fullPage: true });
+  } finally { await c2.close(); }
 });
 console.log("console errors:", errors.length ? errors : "none");
 await browser.close();
