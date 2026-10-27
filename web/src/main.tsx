@@ -2,6 +2,7 @@ import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { Check, ChevronsUpDown, KeyRound, LayoutGrid, LogOut, Moon, Sun, UserRound } from "lucide-react";
 import "@fontsource-variable/nunito";
+import { AnimateUIProvider } from "@animate-ui/react/provider";
 import "./index.css";
 import { post } from "./api";
 import { Link, match, navigate, useLocation } from "./router";
@@ -200,6 +201,9 @@ function AuthNotFound() {
   );
 }
 
+// 减少动态：animate-ui 默认只去位移、仍保留淡入淡出；按设计规范 §5 时长归零，这里把它的动效节奏压到 1%（近乎瞬时，弹簧同比加速）。
+// ponytail: 只在加载时读一次系统设置，运行中切换需刷新页面
+const tempo = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0.01 : 1;
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><SessionProvider><App /></SessionProvider></StrictMode>,
+  <StrictMode><AnimateUIProvider tempo={tempo} reducedMotion="user"><SessionProvider><App /></SessionProvider></AnimateUIProvider></StrictMode>,
 );

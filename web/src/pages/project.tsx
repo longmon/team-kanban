@@ -1,18 +1,18 @@
 // 项目页：页面列表与元数据编辑、成员、群组授权、邀请、设置（api.md §4.3、§4.4、§7.1）
-import { useState, type FormEvent } from "react";
+import { useLayoutEffect, useRef, useState, type ComponentProps, type FormEvent } from "react";
 import { Check, FileText, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { SlidingIndicator, Tabs, TabsContent, TabsList, TabsTrigger, useSlidingIndicator } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, put, qs } from "../api";
 import { cn } from "@/lib/utils";
 import { Link, navigate } from "../router";
 import {
   AuthCard, CATEGORY_LABEL, CATEGORY_TYPES, CheckField, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page as Shell,
-  PAGE_TABS_INDICATOR, PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PAGE_TYPE_LABEL, PageHeader, PageTypeTag, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
+  PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PAGE_TYPE_LABEL, PageHeader, PageTypeTag, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
   useSession,
 } from "../ui";
 import { SLUG_RE } from "./home";
@@ -45,7 +45,7 @@ export function ProjectPage({ orgSlug, projectSlug }: { orgSlug: string; project
       <PageHeader crumbs={<Link to={`/o/${org.slug}`}>{org.name}</Link>} title={p.name}
         badge={<Badge variant="secondary">{p.my_role ? ROLE_LABEL[p.my_role] : "组织管理员"}</Badge>} desc={p.description || undefined} />
       <Tabs defaultValue="pages" className="gap-6">
-        <TabsList className={PAGE_TABS_LIST} indicatorClassName={PAGE_TABS_INDICATOR}>
+        <TabsList className={PAGE_TABS_LIST}>
           <TabsTrigger value="pages" className={PAGE_TABS_TRIGGER}>页面</TabsTrigger>
           <TabsTrigger value="members" className={PAGE_TABS_TRIGGER}>成员</TabsTrigger>
           <TabsTrigger value="groups" className={PAGE_TABS_TRIGGER}>群组授权</TabsTrigger>
@@ -69,6 +69,42 @@ const FILTERS: [string, string][] = [
   ...Object.values(CATEGORY_TYPES).flat().map((t): [string, string] => [t, PAGE_TYPE_LABEL[t]]),
 ];
 const filterTypes = (f: string) => (f === "all" ? undefined : (CATEGORY_TYPES[f] ?? [f]).join(","));
+
+/**
+ * 筛选 chips 的滑动指示块：量出容器内当前选中项（selector）的位置尺寸，写进指示块的 --x/--y/--w/--h，
+ * 指示块按 translate/width 过渡 250ms 滑过去。首帧直接到位不滑；选中项变化、尺寸变化（字体加载、勾号出现）时重新量。
+ * （Tabs 的指示块由 animate-ui TabsList 内置，这里只服务于非 Tabs 的 chips）
+ */
+function useSlidingIndicator<T extends HTMLElement>(selector: string) {
+  const box = useRef<T>(null);
+  const bar = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const el = box.current, ind = bar.current;
+    if (!el || !ind) return;
+    const place = () => {
+      const a = el.querySelector<HTMLElement>(selector);
+      ind.style.visibility = a ? "" : "hidden";
+      if (!a) return;
+      ind.style.setProperty("--x", `${a.offsetLeft}px`);
+      ind.style.setProperty("--y", `${a.offsetTop}px`);
+      ind.style.setProperty("--w", `${a.offsetWidth}px`);
+      ind.style.setProperty("--h", `${a.offsetHeight}px`);
+    };
+    place();
+    const raf = requestAnimationFrame(() => (ind.dataset.ready = ""));
+    const mo = new MutationObserver(place);
+    mo.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-state", "aria-pressed"] });
+    const ro = new ResizeObserver(place);
+    ro.observe(el);
+    for (const c of el.children) ro.observe(c);
+    return () => (cancelAnimationFrame(raf), mo.disconnect(), ro.disconnect());
+  }, [selector]);
+  return { box, bar };
+}
+const INDICATOR = "pointer-events-none absolute top-0 left-0 h-(--h) w-(--w) translate-x-(--x) translate-y-(--y) data-ready:transition-[translate,width,height] data-ready:duration-(--dur-slow)";
+function SlidingIndicator({ className, ...props }: ComponentProps<"span">) {
+  return <span data-slot="tabs-indicator" aria-hidden="true" className={cn(INDICATOR, className)} {...props} />;
+}
 
 function Pages({ org, project }: { org: Org; project: Project }) {
   const [filter, setFilter] = useState("all");

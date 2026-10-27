@@ -1,5 +1,6 @@
 import * as React from "react";
-import { Accordion as AccordionPrimitive } from "radix-ui";
+// animate-ui：内容高度展开/收起由 motion 驱动（替代 accordion-down/up 关键帧）
+import { Accordion as AccordionPrimitive } from "@animate-ui/react/primitives/radix-ui";
 import { ChevronDownIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -24,7 +25,7 @@ function AccordionTrigger({ className, children, ...props }: React.ComponentProp
 function AccordionContent({ className, children, ...props }: React.ComponentProps<typeof AccordionPrimitive.Content>) {
   return (
     <AccordionPrimitive.Content data-slot="accordion-content"
-      className="overflow-hidden text-sm data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down" {...props}>
+      className="overflow-hidden text-sm" {...props}>
       <div className={cn("pt-0 pb-4", className)}>{children}</div>
     </AccordionPrimitive.Content>
   );

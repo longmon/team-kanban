@@ -249,9 +249,7 @@ export function ListSkeleton({ rows = 3 }: { rows?: number }) {
 
 /** 页内一级 tabs：下划线样式，窄屏横向滚动 */
 export const PAGE_TABS_LIST = "h-auto w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent p-0 [scrollbar-width:none]";
-export const PAGE_TABS_TRIGGER = "h-auto flex-none rounded-none border-0 border-b-2 border-transparent px-0.5 pt-1 pb-2.5 text-muted-foreground hover:text-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:bg-transparent";
-/** 下划线指示块：盖在选中项的 2px 底边位置，切换时滑过去 */
-export const PAGE_TABS_INDICATOR = "top-auto bottom-0 h-0.5 translate-y-0 rounded-none border-0 bg-primary shadow-none dark:bg-primary";
+export const PAGE_TABS_TRIGGER = "h-auto flex-none rounded-none border-0 border-b-2 border-transparent px-0.5 pt-1 pb-2.5 text-muted-foreground hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:border-primary dark:data-[state=active]:bg-transparent";
 
 /** 表格外框 */
 export function TableCard({ children }: { children: ReactNode }) {

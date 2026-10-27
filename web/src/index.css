@@ -60,8 +60,8 @@
   code { @apply font-mono text-[0.88em]; }
   /* 标题字重 600–700，层级靠字号与颜色 */
   h1, h2, h3 { font-family: var(--font-heading); }
-  /* tw-animate-css 的进出动画（Dialog / Dropdown / Select / Tabs…）默认用统一缓动与时长；类名里写 duration-* 的仍以类名为准 */
-  .animate-in, .animate-out, [data-slot=accordion-content] { --tw-ease: var(--ease-standard); --tw-duration: var(--dur-base); }
+  /* tw-animate-css 的进出动画（Select 弹层、chip 勾等）默认用统一缓动与时长；类名里写 duration-* 的仍以类名为准。Dialog / Dropdown / Tooltip / Tabs / Accordion 由 animate-ui（motion）驱动 */
+  .animate-in, .animate-out { --tw-ease: var(--ease-standard); --tw-duration: var(--dur-base); }
 }
 
 @layer components {
@@ -137,6 +137,9 @@
 ::view-transition-group(page-title) { animation-duration: 300ms; animation-timing-function: var(--ease-standard); }
 ::view-transition-old(page-title), ::view-transition-new(page-title) { animation-duration: 300ms; height: 100%; object-fit: none; object-position: left center; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-slow); animation-timing-function: var(--ease-standard); }
+/* animate-ui 对话框入场是 perspective 翻转 + 模糊，播完后行内样式停在 "perspective(500px) rotateX(0deg) scale(1)" / "blur(0px)"，
+   3D 合成层会让静止时文字发虚；只在这个静止值上清掉（进出动画过程中值不同，不受影响） */
+[data-slot=dialog-content][style*="rotateX(0deg) scale(1)"] { transform: none !important; filter: none !important; }
 /* 卡片表面：暖色软阴影代替描边 */
 @utility surface { @apply rounded-xl bg-card text-card-foreground shadow-card; }
 /* 可点击卡片/列表行：悬停抬起 2px（translate 属性，不与入场动画的 transform 冲突）+ 阴影加深，键盘焦点有清晰焦点环 */
