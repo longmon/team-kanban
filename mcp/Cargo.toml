@@ -3,7 +3,7 @@ name = "team-kanban"
 version = "2.1.0"
 edition = "2024"
 description = "Team Kanban 本机 stdio MCP：发布 OpenUI/HTML 页面、生成临时链接、拉取提交"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 
 [[bin]]
 name = "tkanban"

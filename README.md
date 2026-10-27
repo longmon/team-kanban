@@ -577,4 +577,6 @@ No. Rate limiting and long-poll wake-ups are in-process; run a single app instan
 
 ## 8. License
 
-[Apache License 2.0](LICENSE)
+[GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+
+In short: you may use, modify and self-host Team Kanban, including commercially. If you distribute it, or let users interact with a modified version over a network (e.g. offer it as a hosted service), you must make the complete corresponding source of your version available to those users under the same license. Releases up to and including v2.1.0 were published under Apache-2.0 and remain available under those terms.
