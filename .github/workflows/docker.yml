@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/team-kanban
+  IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/team-kanban-mcp-server
 
 jobs:
   build:
