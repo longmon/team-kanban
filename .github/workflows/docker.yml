@@ -57,6 +57,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
@@ -80,3 +81,13 @@ jobs:
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "$IMAGE@sha256:%s " *)
       - run: docker buildx imagetools inspect "$IMAGE:latest"
+      # Docker Hub 页面说明取自 docker/README.md；令牌需有 Read, Write, Delete 权限，否则这一步失败（镜像已推送，不受影响）
+      - run: sed "s|DOCKERHUB_NAMESPACE|${{ secrets.DOCKERHUB_USERNAME }}|g" docker/README.md > /tmp/dockerhub-readme.md
+      - uses: peter-evans/dockerhub-description@v4
+        continue-on-error: true
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/team-kanban-mcp-server
+          short-description: "Team Kanban server: AI agents publish pages, teams respond. amd64/arm64."
+          readme-filepath: /tmp/dockerhub-readme.md
