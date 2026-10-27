@@ -1,6 +1,6 @@
 import * as React from "react";
 // shadcn command（cmdk）。弹层用 radix Dialog + tw-animate 缩放淡入/退出（时长、缓动取 index.css 的 --dur-base / --ease-standard），
-// 圆角 10px（rounded-lg）、阴影 shadow-pop，配色全部取 token
+// 圆角 24px（与格子一致）、阴影 shadow-pop，配色全部取 token
 import { Command as CommandPrimitive } from "cmdk";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { SearchIcon } from "lucide-react";
@@ -19,7 +19,7 @@ function CommandDialog({ title = "命令栏", description = "搜索项目、页�
           className="fixed inset-0 z-50 bg-foreground/20 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
         <DialogPrimitive.Content data-slot="command-dialog" aria-describedby={undefined}
           className={cn(
-            "fixed top-[12vh] left-1/2 z-50 w-[calc(100%-2rem)] max-w-[560px] -translate-x-1/2 overflow-hidden rounded-lg border bg-popover p-0 shadow-pop outline-none",
+            "fixed top-[12vh] left-1/2 z-50 w-[calc(100%-2rem)] max-w-[600px] -translate-x-1/2 overflow-hidden rounded-[24px] border bg-popover p-0 shadow-pop outline-none",
             "origin-top data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
             className,
           )}>

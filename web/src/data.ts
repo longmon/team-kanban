@@ -132,3 +132,31 @@ export function colLabel(col: string, l: SpecLabels | null) {
 }
 /** 取值 → 显示名（选项标签） */
 export const valLabel = (col: string, v: string, l: SpecLabels | null) => l?.options[col]?.[v] ?? v;
+
+/** 选项标签拆成「字母 + 名称」用于票卡：「B. NATS」→ ["B", "NATS"]；没有字母前缀时按序号取 A、B、C… */
+export function splitLetter(label: string, i: number): [string, string] {
+  const m = label.match(/^([A-Za-z0-9])\s*[.．、:：)]\s*(.+)$/s);
+  return m ? [m[1].toUpperCase(), m[2]] : [i < 26 ? String.fromCharCode(65 + i) : String(i + 1), label];
+}
+
+/** 字段值 → 选中项列表：单选字符串、Chips 数组、CheckBoxGroup {项: true} */
+export const picked = (v: unknown): string[] =>
+  typeof v === "string" ? (v ? [v] : []) : Array.isArray(v) ? v.filter((x): x is string => typeof x === "string")
+    : isObj(v) ? Object.entries(v).filter(([, on]) => on === true).map(([k]) => k) : [];
+
+/** 票卡计数：{ 字段: { counts: {选项值: 票数}, total: 作答人数 } }（只统计给定的提交 data） */
+export type Tally = Record<string, { counts: Record<string, number>; total: number }>;
+export function tallyValues(datas: Record<string, unknown>[]): Tally {
+  const out: Tally = {};
+  for (const d of datas) {
+    const vals = isObj(d.values) ? d.values : d;
+    for (const [k, v] of Object.entries(vals)) {
+      const ks = picked(v);
+      if (!ks.length) continue;
+      const t = (out[k] ??= { counts: {}, total: 0 });
+      t.total++;
+      for (const x of ks) t.counts[x] = (t.counts[x] ?? 0) + 1;
+    }
+  }
+  return out;
+}

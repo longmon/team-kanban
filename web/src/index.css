@@ -40,13 +40,21 @@
   --color-highlight: var(--highlight);
   --color-highlight-foreground: var(--highlight-foreground);
   --color-coral: var(--coral);
+  --color-primary-soft: var(--primary-soft);
+  --color-live: var(--live);
+  --color-live-ring: var(--live-ring);
+  /* 当前元素的页面类型色（[data-tone=vote] 等设置 --tone*）：bg-tone-f / bg-tone-l / text-tone-ink / bg-tone */
+  --color-tone: var(--tone);
+  --color-tone-f: var(--tone-f);
+  --color-tone-l: var(--tone-l);
+  --color-tone-ink: var(--tone-ink);
+  --ease-rise: var(--ease-rise);
   --font-heading: var(--font-heading);
   --shadow-card: var(--shadow-card);
   --shadow-card-hover: var(--shadow-card-hover);
   --shadow-primary: var(--shadow-primary);
   --shadow-primary-press: var(--shadow-primary-press);
   --shadow-pop: var(--shadow-pop);
-  --shadow-dock: var(--shadow-dock);
   --ease-standard: var(--ease-standard);
   --ease-pop: var(--ease-pop);
   /* transition / transition-colors 等不写 duration 时的默认值 */
@@ -64,12 +72,20 @@
     line-height: 1.55;
   }
   code { @apply font-mono text-[0.88em]; }
-  /* 标题与数字用 Bricolage Grotesque（中文回退系统字体），字重 600–700，层级靠字号与颜色 */
+  /* 拉丁与数字 Outfit、中文系统栈；标题字重 600，层级靠字号与颜色 */
   h1, h2, h3, .font-heading { font-family: var(--font-heading); }
-  h1, h2 { letter-spacing: -0.01em; }
+  h1, h2 { letter-spacing: -0.02em; }
   /* tw-animate-css 的进出动画（Select 弹层、chip 勾等）默认用统一缓动与时长；类名里写 duration-* 的仍以类名为准。Dialog / Dropdown / Tooltip / Tabs / Accordion 由 animate-ui（motion）驱动 */
   .animate-in, .animate-out { --tw-ease: var(--ease-standard); --tw-duration: var(--dur-base); }
 }
+
+/* 页面类型 → 糖纸色（theme.css --t-*）。元素加 data-tone 后用 bg-tone-f / bg-tone-l / text-tone-ink / bg-tone */
+[data-tone=vote] { --tone: var(--t-vote); --tone-f: var(--t-vote-f); --tone-l: var(--t-vote-l); --tone-ink: var(--t-vote-ink); }
+[data-tone=form] { --tone: var(--t-form); --tone-f: var(--t-form-f); --tone-l: var(--t-form-l); --tone-ink: var(--t-form-ink); }
+[data-tone=report] { --tone: var(--t-report); --tone-f: var(--t-report-f); --tone-l: var(--t-report-l); --tone-ink: var(--t-report-ink); }
+[data-tone=flow] { --tone: var(--t-flow); --tone-f: var(--t-flow-f); --tone-l: var(--t-flow-l); --tone-ink: var(--t-flow-ink); }
+[data-tone=arch] { --tone: var(--t-arch); --tone-f: var(--t-arch-f); --tone-l: var(--t-arch-l); --tone-ink: var(--t-arch-ink); }
+[data-tone=book] { --tone: var(--t-book); --tone-f: var(--t-book-f); --tone-l: var(--t-book-l); --tone-ink: var(--t-book-ink); }
 
 @layer components {
   /* 管理端正文里的行内链接 */
@@ -107,8 +123,9 @@
 @keyframes submit-glow { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 45%, transparent); } to { box-shadow: 0 0 0 10px transparent; } }
 @keyframes bar-grow { from { transform: scaleX(0); } }
 @keyframes flash-bg { from { background-color: color-mix(in srgb, var(--primary) 12%, transparent); } }
-/* 荧光笔从左到右刷出（底色是 background-image，按 background-size 生长） */
-@keyframes mark-sweep { from { background-size: 0% 100%; } }
+/* 票卡填充从底部（竖排大行从左侧）涨到票数高度 */
+@keyframes rise-y { from { transform: scaleY(0); } }
+@keyframes rise-x { from { transform: scaleX(0); } }
 @layer components {
   .page-enter { animation: page-enter var(--dur-slow) var(--ease-standard) backwards; }
   .shake { animation: shake 300ms var(--ease-standard); }
@@ -136,32 +153,32 @@
   /* 结果条首次出现时从 0 生长；新数据到达时整行闪一下底色 */
   .bar-grow { transform-origin: left center; animation: bar-grow 360ms var(--ease-standard); }
   .flash-bg { animation: flash-bg 600ms var(--ease-standard); }
-  /* 「等你投票」荧光笔：柠檬底 + 深墨字；.mark-sweep 时 400ms 从左刷出（只在首屏首次出现时加这个类） */
-  .hl { @apply rounded-[3px] px-1 font-semibold text-highlight-foreground; background: linear-gradient(var(--highlight), var(--highlight)) left / 100% 100% no-repeat; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
-  .mark-sweep { animation: mark-sweep 400ms var(--ease-standard) 120ms backwards; }
+  /* 票卡填充：出现时 500ms 涨到位，之后票数变化时高度/宽度 400ms 过渡 */
+  .ticket-fill { animation: rise-y var(--dur-flip) var(--ease-rise) both; transition: height 400ms var(--ease-rise), width 400ms var(--ease-rise); }
+  .ticket-fill.origin-left { animation-name: rise-x; }
 }
 /* 按钮：按下 75ms 缩到 .97（button.tsx），松开时位移/缩放走 320ms 弹簧，颜色/阴影仍是标准过渡。顺序与 button.tsx 的 transition-[…] 一致 */
 [data-slot=button]:not(:active) {
   transition-duration: var(--dur-base), var(--dur-base), var(--dur-base), var(--dur-base), var(--dur-base), var(--dur-base), 320ms, 320ms;
   transition-timing-function: var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-standard), var(--ease-spring), var(--ease-spring);
 }
-/* 列表→页面标题共享元素（router.tsx navigate 的 View Transitions）：标题 300ms 移到页头，其余内容交叉淡入 */
+/* 格子→页面标题共享元素（router.tsx navigate 的 View Transitions）：标题 300ms 移到题头，其余内容交叉淡入 */
 ::view-transition-group(page-title) { animation-duration: 300ms; animation-timing-function: var(--ease-standard); }
 ::view-transition-old(page-title), ::view-transition-new(page-title) { animation-duration: 300ms; height: 100%; object-fit: none; object-position: left center; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-slow); animation-timing-function: var(--ease-standard); }
 /* animate-ui 对话框入场是 perspective 翻转 + 模糊，播完后行内样式停在 "perspective(500px) rotateX(0deg) scale(1)" / "blur(0px)"，
    3D 合成层会让静止时文字发虚；只在这个静止值上清掉（进出动画过程中值不同，不受影响） */
 [data-slot=dialog-content][style*="rotateX(0deg) scale(1)"] { transform: none !important; filter: none !important; }
-/* 卡片表面：白底 + 1px 线（shadow-card 即 1px border 色描边），不用投影 */
-@utility surface { @apply rounded-lg bg-card text-card-foreground shadow-card; }
+/* 卡片表面：白底 + 1px 线（shadow-card 即 1px border 色描边），不用投影；20px 圆角（格子 24、题头 28） */
+@utility surface { @apply rounded-[20px] bg-card text-card-foreground shadow-card; }
 /* 可点击卡片：悬停只加深描边（不位移），键盘焦点有清晰焦点环 */
 @utility lift { @apply transition-[box-shadow] outline-none hover:shadow-card-hover focus-visible:ring-[3px] focus-visible:ring-ring/80; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; transition-delay: 0s !important; animation-delay: 0s !important; }
   /* 减少动态：去掉位移/缩放，只保留颜色与阴影变化 */
-  [data-slot=button]:active, .page-enter, .shake, .list > *, .bar-grow { transform: none !important; translate: none !important; scale: none !important; }
-  .skeleton-shimmer, .flash-bg, .submit-glow::after, .check-draw path, .mark-sweep { animation: none !important; }
+  [data-slot=button]:active, .page-enter, .shake, .list > *, .bar-grow, .ticket-fill { transform: none !important; translate: none !important; scale: none !important; }
+  .skeleton-shimmer, .flash-bg, .submit-glow::after, .check-draw path, .ticket-fill { animation: none !important; }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
 
@@ -208,4 +225,4 @@
 /* toast：成功/失败图标着色，进出由 sonner 自带动画 */
 [data-sonner-toast][data-type=success] [data-icon] { color: var(--success); }
 [data-sonner-toast][data-type=error] [data-icon] { color: var(--destructive); }
-[data-sonner-toast] { box-shadow: var(--shadow-pop) !important; border-radius: var(--radius) !important; }
+[data-sonner-toast] { box-shadow: var(--shadow-pop) !important; border-radius: 18px !important; }

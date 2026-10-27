@@ -1,4 +1,4 @@
-// 项目页：页面动态流、成员与权限（直接成员、群组授权、邀请）、设置（api.md §4.3、§4.4、§7.1）；页面元数据编辑器供详情页「管理」使用
+// 项目页：页面格子墙、成员与权限（直接成员、群组授权、邀请）、设置（api.md §4.3、§4.4、§7.1）；页面元数据编辑器供详情页「管理」使用
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -11,14 +11,14 @@ import { del, get, patch, post, put, qs } from "../api";
 import { Link, navigate } from "../router";
 import {
   AuthCard, CheckField, Empty, ErrorBox, Field, fmtTime, loadMyProjects, Loading, MoreButton, NativeSelect, Page as Shell,
-  PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PageHeader, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
+  PageHeader, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
   useSession, useTab,
 } from "../ui";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { SLUG_RE } from "./home";
-import { Feed } from "./feed";
+import { Wall } from "./feed";
 import { Invites, MemberPicker } from "./org";
 import { AgentOnboarding } from "./settings";
 import type { Group, Org, Page, Paged, Project, ProjectGroupGrant, ProjectMember, ProjectRole, Visibility } from "../types";
@@ -46,32 +46,40 @@ export function ProjectPage({ orgSlug, projectSlug }: { orgSlug: string; project
   const proj = useLoad(() => (org ? findProject(org, projectSlug) : Promise.resolve(null)), [org?.id, projectSlug]);
   const admin = proj.data?.my_role === "admin" || org?.my_role === "owner" || org?.my_role === "admin";
   const [tab, setTab] = useTab(admin ? ["pages", "members", "settings"] : ["pages", "members"]);
-  if (proj.loading && !proj.data) return <Shell className="max-w-[680px]"><Loading /></Shell>;
+  if (proj.loading && !proj.data) return <Loading />;
   if (!org || !proj.data) return <AuthCard title="项目不存在或无权访问"><p className="text-sm"><Link className="link" to={org ? `/o/${org.slug}` : "/"}>返回</Link></p></AuthCard>;
   const p = proj.data;
   return (
-    <Shell className={tab === "pages" ? "max-w-[680px]" : undefined}>
-      <PageHeader crumbs={<Link to={`/o/${org.slug}`}>{org.name}</Link>} title={p.name}
-        badge={<Badge variant="secondary">{p.my_role ? ROLE_LABEL[p.my_role] : "组织管理员"}</Badge>} desc={p.description || undefined} />
-      <Tabs value={tab} onValueChange={setTab} className="gap-5">
-        <TabsList className={PAGE_TABS_LIST}>
-          <TabsTrigger value="pages" className={PAGE_TABS_TRIGGER}>页面</TabsTrigger>
-          <TabsTrigger value="members" className={PAGE_TABS_TRIGGER}>成员与权限</TabsTrigger>
-          {admin && <TabsTrigger value="settings" className={PAGE_TABS_TRIGGER}>设置</TabsTrigger>}
+    <Tabs value={tab} onValueChange={setTab} className="gap-5">
+      {/* 项目页 = 同一套格子墙只看该项目；成员与设置在右上角 Tab 里 */}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-[13px] text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-2">
+          <Link to={`/o/${org.slug}`} className="hover:text-foreground">{org.name}</Link><span aria-hidden="true">/</span>
+          <span className="truncate">{p.name}</span>
+          <Badge variant="secondary">{p.my_role ? ROLE_LABEL[p.my_role] : "组织管理员"}</Badge>
+        </span>
+        <TabsList className="h-auto rounded-full bg-muted p-1">
+          <TabsTrigger value="pages" className="rounded-full px-3.5">页面</TabsTrigger>
+          <TabsTrigger value="members" className="rounded-full px-3.5">成员与权限</TabsTrigger>
+          {admin && <TabsTrigger value="settings" className="rounded-full px-3.5">设置</TabsTrigger>}
         </TabsList>
-        <TabsContent value="pages">
-          <Feed projectId={p.id} empty={<AgentOnboarding title="这个项目还没有页面" note="让 agent 调用 MCP 的 publish_page 发布到本项目。还没接入的话，两步：" />} />
-        </TabsContent>
-        <TabsContent value="members">
+      </div>
+      <TabsContent value="pages">
+        <Wall projectId={p.id} title={p.name}
+          empty={<AgentOnboarding title="这个项目还没有页面" note="让 agent 调用 MCP 的 publish_page 发布到本项目。还没接入的话，两步：" />} />
+      </TabsContent>
+      <TabsContent value="members">
+        <Shell>
+          <PageHeader title={p.name} desc={p.description || undefined} />
           <div className="flex flex-col gap-10">
             <Section title="直接成员" desc="组织所有者/管理员自动拥有项目管理员权限。"><Members org={org} project={p} admin={admin} /></Section>
             <Section title="群组授权" desc="授权后，群组成员按所选角色访问本项目。"><GroupGrants org={org} project={p} admin={admin} /></Section>
             {admin && <Section title="邀请" desc="组织外的人用邀请链接加入本项目。"><Invites org={org} listPath={`/projects/${p.id}/invites`} targets={["project"]} projectId={p.id} /></Section>}
           </div>
-        </TabsContent>
-        {admin && <TabsContent value="settings"><ProjectSettings org={org} project={p} onSaved={proj.reload} /></TabsContent>}
-      </Tabs>
-    </Shell>
+        </Shell>
+      </TabsContent>
+      {admin && <TabsContent value="settings"><Shell><PageHeader title={p.name} /><ProjectSettings org={org} project={p} onSaved={proj.reload} /></Shell></TabsContent>}
+    </Tabs>
   );
 }
 

@@ -34,15 +34,10 @@ export function ResultsPage({ id }: { id: string }) {
 type Status = "connecting" | "live" | "reconnecting" | "closed";
 const STATUS_TEXT: Record<Status, string> = { connecting: "连接中…", live: "实时更新中", reconnecting: "重新连接中…", closed: "连接已断开" };
 
-/**
- * spec：OpenUI 原文，用来把字段名/选项值显示成标签；mine：我刚提交的数据（扁平化前），对应选项条播一次确认动效；
- * compact：详情页内嵌（窄栏），统计与明细上下排
- */
-export function ResultsView({ src, pageId, manager, spec, mine, compact, onCount }: {
-  src: Source; pageId: string; manager: boolean; spec?: string; mine?: Record<string, unknown> | null; compact?: boolean; onCount?: (n: number) => void;
-}) {
-  const labels = useMemo(() => (spec ? specLabels(spec) : null), [spec]);
-  const mineFlat = useMemo(() => (mine ? flattenData(mine) : null), [mine]);
+export type Stream = ReturnType<typeof useResponseStream>;
+
+/** 提交的 SSE 实时流（详情页一条连接同时供票卡、「大家的理由」与结果明细用）；enabled=false 时不连接 */
+export function useResponseStream(src: Source, pageId: string, enabled = true) {
   const [rows, setRows] = useState<Response[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [pageEvent, setPageEvent] = useState<{ version: number; accept_responses: boolean } | null>(null);
@@ -53,6 +48,7 @@ export function ResultsView({ src, pageId, manager, spec, mine, compact, onCount
   const fresh = useRef(new Set<number>());
 
   useEffect(() => {
+    if (!enabled) return;
     setRows([]);
     setEnded(null);
     setStatus("connecting");
@@ -75,9 +71,23 @@ export function ResultsView({ src, pageId, manager, spec, mine, compact, onCount
       setEnded(JSON.parse((ev as MessageEvent).data)?.reason ?? "end");
     });
     return () => es.close();
-  }, [src.kind === "page" ? src.id : src.token, pageId, n]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [src.kind === "page" ? src.id : src.token, pageId, n, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { rows, status, pageEvent, ended, fresh: fresh.current, reconnect: () => setN((x) => x + 1) };
+}
 
-  useEffect(() => void (status !== "connecting" && onCount?.(rows.length)), [rows.length, status]); // eslint-disable-line react-hooks/exhaustive-deps
+/**
+ * spec：OpenUI 原文，用来把字段名/选项值显示成标签；mine：我刚提交的数据（扁平化前），对应选项条播一次确认动效；
+ * compact：详情页内嵌（窄栏），统计与明细上下排；stream：外部已建立的连接（不传则自己连）
+ */
+export function ResultsView({ src, pageId, manager, spec, mine, compact, stream }: {
+  src: Source; pageId: string; manager: boolean; spec?: string; mine?: Record<string, unknown> | null; compact?: boolean; stream?: Stream;
+}) {
+  const labels = useMemo(() => (spec ? specLabels(spec) : null), [spec]);
+  const mineFlat = useMemo(() => (mine ? flattenData(mine) : null), [mine]);
+  const own = useResponseStream(src, pageId, !stream);
+  const { rows, status, pageEvent, ended, fresh } = stream ?? own;
+  const setN = (stream ?? own).reconnect;
+
   const flat = useMemo(() => rows.map((r) => flattenData(r.data ?? {})), [rows]);
   const cols = useMemo(() => unionColumns(flat), [flat]);
   const counts = useMemo(() => tallies(flat, cols), [flat, cols]);
@@ -100,7 +110,7 @@ export function ResultsView({ src, pageId, manager, spec, mine, compact, onCount
           <span className="text-muted-foreground tabular-nums">共 {rows.length} 条</span>
         </span>
         <span className="flex flex-wrap items-center gap-2">
-          {status === "closed" && !ended && <Button size="sm" variant="outline" onClick={() => setN((x) => x + 1)}><RotateCw />重新连接</Button>}
+          {status === "closed" && !ended && <Button size="sm" variant="outline" onClick={setN}><RotateCw />重新连接</Button>}
           {manager && src.kind === "page" && (
             <Button size="sm" variant="outline" asChild><a href={`/api/pages/${pageId}/responses.csv`} download><Download />导出 CSV</a></Button>
           )}
@@ -148,7 +158,7 @@ export function ResultsView({ src, pageId, manager, spec, mine, compact, onCount
               {rows.slice(shown).reverse().map((r, i) => {
                 const f = flat[rows.length - 1 - i];
                 return (
-                  <TableRow key={r.seq} className={fresh.current.has(r.seq) ? "flash-bg" : undefined}>
+                  <TableRow key={r.seq} className={fresh.has(r.seq) ? "flash-bg" : undefined}>
                     <TableCell className="text-muted-foreground tabular-nums">{r.seq}</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground">{fmtTime(r.created_at)}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.respondent.type === "user" ? r.respondent.display_name : <>{r.respondent.nickname} <span className="text-xs text-muted-foreground">匿名</span></>}</TableCell>

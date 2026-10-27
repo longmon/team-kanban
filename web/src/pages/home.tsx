@@ -1,4 +1,4 @@
-// 首页（动态流）与「组织」页：我的组织 + 创建组织（api.md §4.1）
+// 首页（格子墙）与「组织」页：我的组织 + 创建组织（api.md §4.1）
 import { useState, type FormEvent } from "react";
 import { Building2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { post } from "../api";
 import { Link, navigate } from "../router";
 import { Empty, ErrorBox, Field, Page, PageHeader, Panel, ROLE_LABEL, useAction, useSession } from "../ui";
-import { Feed } from "./feed";
+import { Wall } from "./feed";
 import type { Org } from "../types";
 
 export const SLUG_RE = /^[a-z0-9](-?[a-z0-9]){0,39}$/;
@@ -36,14 +36,9 @@ export function Tile({ to, title, desc, slug, role }: { to: string; title: strin
 
 export const TILES = "grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3";
 
-/** 首页：我能看的全部页面的动态流 */
+/** 首页：我能看的全部页面的格子墙 */
 export function Home() {
-  return (
-    <div className="mx-auto w-full max-w-[680px]">
-      <h1 className="sr-only">动态</h1>
-      <Feed />
-    </div>
-  );
+  return <Wall />;
 }
 
 export function OrgsPage() {

@@ -90,6 +90,10 @@ fn block_error(reason: &'static str) -> AppError {
     if reason == "read_only" {
         return AppError::conflict("read_only_page", "只读页面不接受提交");
     }
+    // 截止与「停止收集」共用错误码，view 的 submit_block_reason 用 closed 区分
+    if reason == "closed" {
+        return AppError::conflict("responses_closed", "已截止");
+    }
     let msg = match reason {
         "responses_closed" => "页面已停止接受提交",
         "share_link_exhausted" => "临时链接提交次数已用完",
@@ -115,7 +119,8 @@ async fn submit(st: &AppState, c: &Caller, target: Target<'_>, r: SubmitReq) -> 
     let mut tx = st.db.begin().await?;
     let (seq, version): (i64, i32) = sqlx::query_as(
         "UPDATE pages SET response_seq = response_seq + 1
-          WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND accept_responses RETURNING response_seq, version",
+          WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND accept_responses AND (closes_at IS NULL OR closes_at > now())
+          RETURNING response_seq, version",
     )
     .bind(a.org_id())
     .bind(a.page_id())

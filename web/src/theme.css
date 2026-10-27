@@ -1,100 +1,127 @@
 /*
  * 主题 token（shadcn CSS 变量方案）。整套配色只在这里定义：换配色方向时只替换本文件的变量值。
- * 当前为「一条时间流」方向：纸白底 + 深墨字 + 深海青主色，柠檬黄只当荧光笔/当前选中，珊瑚做警示点缀；
- * 列表无圆角靠分隔线，输入框与弹层 10px，操作条全圆；阴影只给浮动操作条和弹层。
+ * 当前为方向 B「糖纸格」：白底 + 李子墨字 + 葡萄紫主操作色；六种页面类型各有一对「浅底 / 强调」糖纸色，是界面里唯一的大胆。
+ * 格子 24px、题头 28px 大圆角，按钮全胶囊；零阴影（只有浮层一档柔影），白底容器 1px 描边。
  * 规范与对比度核对见 docs/design-system.md，改色值后要按那里的表重新核对。
  */
 :root {
-  /* 圆角：rounded-lg = 10px（输入框、弹层、卡片），rounded-md = 8px（按钮、菜单项），rounded-sm = 6px；chip、操作条 rounded-full */
-  --radius: 10px;
-  /* 正文：系统字体 + 中文系统栈；标题与数字：自托管 Bricolage Grotesque（main.tsx 引入 @fontsource-variable/bricolage-grotesque） */
-  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  --font-heading: "Bricolage Grotesque Variable", "Bricolage Grotesque", var(--font-body);
+  /* 圆角：rounded-lg = 14px（输入框、弹层、白底容器），rounded-md = 12px（菜单项），rounded-sm = 10px；格子 rounded-[24px]、题头 rounded-[28px]、按钮/胶囊 rounded-full */
+  --radius: 14px;
+  /* 拉丁与数字：自托管 Outfit（main.tsx 引入 @fontsource-variable/outfit）；中文走系统栈（不加载中文网络字体） */
+  --font-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+  --font-body: "Outfit Variable", "Outfit", ui-sans-serif, system-ui, -apple-system, "Segoe UI", var(--font-cjk);
+  --font-heading: var(--font-body);
 
-  /* 动效：时长 150–400ms，缓动统一；prefers-reduced-motion 时由 index.css 关闭 */
+  /* 动效：时长 150–500ms，缓动统一；prefers-reduced-motion 时由 index.css 关闭 */
   --dur-fast: 150ms;
   --dur-base: 200ms;
   --dur-slow: 250ms;
+  --dur-flip: 500ms;
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* 票卡填充上涨等「到位」动作 */
+  --ease-rise: cubic-bezier(0.22, 1, 0.36, 1);
   /* 勾选图标弹入等“小回弹”，只用于 ≤ 24px 的小元素 */
   --ease-pop: cubic-bezier(0.3, 1.5, 0.5, 1);
-  /* 轻弹簧（过冲约 5%），只用于按钮松开回弹、操作条弹起 */
+  /* 轻弹簧（过冲约 5%），只用于按钮松开回弹 */
   --ease-spring: linear(0, 0.22 6%, 0.56 14%, 0.86 24%, 1.03 34%, 1.055 42%, 1.04 52%, 1.012 64%, 0.996 78%, 1);
 
-  --background: #fafaf7;
-  --foreground: #141c26;
+  --background: #ffffff;
+  --foreground: #241f2e;
   --card: #ffffff;
-  --card-foreground: #141c26;
+  --card-foreground: #241f2e;
   --popover: #ffffff;
-  --popover-foreground: #141c26;
-  --primary: #0b7a82;
+  --popover-foreground: #241f2e;
+  --primary: #6c4cf5;
   --primary-foreground: #ffffff;
-  --secondary: #f0f1ec;
-  --secondary-foreground: #141c26;
-  --muted: #f0f1ec;
-  --muted-foreground: #5e6672;
-  --accent: #eff1ec;
-  --accent-foreground: #141c26;
+  /* 主色浅底：我投的票卡填充、「你的回答」底、锁定提示图标底 */
+  --primary-soft: #efebff;
+  --secondary: #f7f6f9;
+  --secondary-foreground: #241f2e;
+  --muted: #f7f6f9;
+  --muted-foreground: #6b6577;
+  --accent: #f1eff5;
+  --accent-foreground: #241f2e;
   --destructive: #c2381f;
-  --border: #e4e5e0;
-  --input: #d6d8d2;
-  --ring: #0b7a82;
-  /* 荧光笔（只用于「等你投票」标记和当前选中），上面的字一律深墨 */
-  --highlight: #e9f45c;
-  --highlight-foreground: #141c26;
-  /* 珊瑚：警示点缀（未读点、截止提示的底），不作文字色；上面的字用深墨 */
-  --coral: #ff7a59;
-  /* 图表 5 色：按色弱模拟（protan/deutan/tritan，Machado 2009）挑选，两两 OKLab ΔE ≥ 9.9，与卡片对比 ≥ 3:1 */
-  --chart-1: #0b7a82;
-  --chart-2: #e2562f;
-  --chart-3: #715408;
-  --chart-4: #8970f6;
-  --chart-5: #b67dba;
+  --border: #eeebf2;
+  --input: #dcd8e3;
+  --ring: #6c4cf5;
+  /* 「当前选中 / 提示」浅底（历史版本提示条、待参与计数），上面的字一律李子墨 */
+  --highlight: #efebff;
+  --highlight-foreground: #241f2e;
+  --coral: #f07a22;
+  /* 实时点（正在发生、实时进度） */
+  --live: #22c55e;
+  --live-ring: #dcfce7;
+
+  /* 页面类型糖纸色：-f 饱和浅底（待办格、题头色带）、-l 更浅底（其他格子）、强调色（图标、条、描边）、-ink 作文字用（在 -f 与白底上都 ≥ 4.5:1） */
+  --t-vote: #f07a22;   --t-vote-f: #ffe7d3;   --t-vote-l: #fff6ef;   --t-vote-ink: #9e5627;
+  --t-form: #e14c78;   --t-form-f: #ffe1ea;   --t-form-l: #fff4f7;   --t-form-ink: #ae4064;
+  --t-report: #2a8be0; --t-report-f: #dcefff; --t-report-l: #f2f8ff; --t-report-ink: #286cac;
+  --t-flow: #4a63e6;   --t-flow-f: #e3e8ff;   --t-flow-l: #f4f6ff;   --t-flow-ink: #465cd4;
+  --t-arch: #159c88;   --t-arch-f: #d8f4ee;   --t-arch-l: #f0faf8;   --t-arch-ink: #1a776d;
+  --t-book: #4e9a28;   --t-book-f: #e4f5d7;   --t-book-l: #f5fbf0;   --t-book-ink: #42782a;
+
+  /* 图表 5 色：首色为主色，其余在 OKLCH 里按 protan/deutan/tritan 色弱模拟（Machado 2009）搜索，两两 OKLab ΔE ≥ 8.4，与卡片对比 ≥ 3:1 */
+  --chart-1: #6c4cf5;
+  --chart-2: #da6c1e;
+  --chart-3: #1e907f;
+  --chart-4: #0f92f7;
+  --chart-5: #c83846;
   /* 语义状态色（Callout / Tag / 涨跌），作文字用时在卡片与 12–15% 浅底上都 ≥ 4.5:1 */
   --success: #276d35;
   --warning: #a5481c;
   --info: #2f63a6;
 
-  /* 阴影：只给浮动操作条与弹层；卡片不用阴影（--shadow-card 保留变量名供 OpenUI 组件，值为 1px 线） */
+  /* 零阴影：卡片用 1px 线（--shadow-card 保留变量名供 OpenUI 组件，值为 1px 线）；只有浮层一档柔影 */
   --shadow-card: 0 0 0 1px var(--border);
   --shadow-card-hover: 0 0 0 1px var(--input);
-  --shadow-pop: 0 12px 32px -12px rgb(20 28 38 / 0.28), 0 2px 6px -2px rgb(20 28 38 / 0.08);
-  --shadow-dock: 0 10px 24px -12px rgb(20 28 38 / 0.5);
+  --shadow-pop: 0 16px 40px -16px rgb(36 31 46 / 0.28), 0 2px 8px -2px rgb(36 31 46 / 0.08);
   --shadow-primary: none;
   --shadow-primary-press: none;
 }
 
 .dark {
-  --background: #111518;
-  --foreground: #e8eaec;
-  --card: #181d21;
-  --card-foreground: #e8eaec;
-  --popover: #1c2226;
-  --popover-foreground: #e8eaec;
-  --primary: #3fc1c9;
-  --primary-foreground: #0b1a1c;
-  --secondary: #1f262b;
-  --secondary-foreground: #e8eaec;
-  --muted: #1f262b;
-  --muted-foreground: #9aa3ad;
-  --accent: #222a30;
-  --accent-foreground: #e8eaec;
+  --background: #17141d;
+  --foreground: #edeaf2;
+  --card: #1e1a26;
+  --card-foreground: #edeaf2;
+  --popover: #221e2b;
+  --popover-foreground: #edeaf2;
+  --primary: #9c86ff;
+  --primary-foreground: #17141d;
+  --primary-soft: #2c2547;
+  --secondary: #26212f;
+  --secondary-foreground: #edeaf2;
+  --muted: #26212f;
+  --muted-foreground: #a9a3b5;
+  --accent: #2a2534;
+  --accent-foreground: #edeaf2;
   --destructive: #ff8a6e;
   --border: rgb(255 255 255 / 0.09);
-  --input: rgb(255 255 255 / 0.15);
-  --ring: #3fc1c9;
-  --highlight: #e9f45c;
-  --highlight-foreground: #141c26;
-  --coral: #ff8a6e;
-  --chart-1: #3fc1c9;
-  --chart-2: #ff8a6e;
-  --chart-3: #f8cc52;
-  --chart-4: #6387f5;
-  --chart-5: #bd5eab;
+  --input: rgb(255 255 255 / 0.16);
+  --ring: #9c86ff;
+  --highlight: #2c2547;
+  --highlight-foreground: #edeaf2;
+  --coral: #f59a52;
+  --live: #4ade80;
+  --live-ring: rgb(74 222 128 / 0.2);
+
+  /* 暗色：类型色按 18%（-f）/ 10%（-l）透明度叠在暗底上；文字色提亮到 ≥ 4.5:1 */
+  --t-vote-f: #3e261e;   --t-vote-l: #2d1e1e;   --t-vote-ink: #f59a52;
+  --t-form-f: #3b1e2d;   --t-form-l: #2b1a26;   --t-form-ink: #ef7fa0;
+  --t-report-f: #1a2940; --t-report-l: #192031; --t-report-ink: #6aaeec;
+  --t-flow-f: #202241;   --t-flow-l: #1c1c31;   --t-flow-ink: #8d9cf0;
+  --t-arch-f: #172c30;   --t-arch-l: #172228;   --t-arch-ink: #3cc2ad;
+  --t-book-f: #212c1f;   --t-book-l: #1d211e;   --t-book-ink: #7cc055;
+
+  --chart-1: #9c86ff;
+  --chart-2: #f59d4f;
+  --chart-3: #2ac3bb;
+  --chart-4: #5197c6;
+  --chart-5: #e07084;
   --success: #6fcf8a;
   --warning: #f2b266;
   --info: #84b4f0;
 
-  --shadow-pop: 0 12px 32px -12px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
-  --shadow-dock: 0 10px 24px -10px rgb(0 0 0 / 0.8);
+  --shadow-pop: 0 16px 40px -16px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(255 255 255 / 0.06);
 }

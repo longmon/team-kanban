@@ -116,6 +116,17 @@ DELETE FROM _sqlx_migrations WHERE version = 2;
 COMMIT;
 ```
 
+**卡片字段**（0005）— `pages.closes_at timestamptz?`（截止时间，到期视为截止）、`summary text?`（CHECK 1..300 字符）、`highlights jsonb?`（CHECK：1..4 项数组，每项 `label`/`value` 为 1..20 字符字符串；应用层另校验无多余字段、trim）。均为可空无默认值的 ADD COLUMN（只改元数据）。同一迁移为首页动态流加 `responses (org_id, created_at DESC)`、`page_versions (org_id, created_at DESC)` 两个普通索引。回退到旧镜像前先停 app 再执行：
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+DROP INDEX IF EXISTS responses_org_created_idx, page_versions_org_created_idx;
+ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_highlights_check, DROP CONSTRAINT IF EXISTS pages_summary_check,
+                  DROP COLUMN IF EXISTS highlights, DROP COLUMN IF EXISTS summary, DROP COLUMN IF EXISTS closes_at;
+DELETE FROM _sqlx_migrations WHERE version = 5;
+COMMIT;
+```
+
 **page_groups** — `visibility = 'groups'` 的受众。PK `(page_id, group_id)`，两条复合 FK。visibility 改成别的值时应用清空本表。
 
 **share_links** — `id`、`org_id`、`page_id`（FK `(org_id, page_id)`）、`token_hash UNIQUE`、`token_prefix`（前 6 字符，界面辨认）、`label`、`expires_at NOT NULL`、`max_uses int?`、`use_count int`（CHECK `use_count ≤ max_uses`）、`password_hash?`、`created_by`、`created_at`、`revoked_at?`；`UNIQUE (org_id, page_id, id)` 供 responses 复合外键。**token 只在创建时返回一次**（与 PAT 一致），丢了就新建一个。
@@ -126,6 +137,7 @@ COMMIT;
 ```sql
 UPDATE pages SET response_seq = response_seq + 1
  WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND accept_responses
+   AND (closes_at IS NULL OR closes_at > now())
  RETURNING response_seq, version;
 -- 经临时链接时再原子占用名额（0 行 = 已用完/过期/吊销 → 回滚，409）
 UPDATE share_links SET use_count = use_count + 1
@@ -284,6 +296,7 @@ block_reason = NULL
 if category(page.page_type) == 'read'      -> block_reason = 'read_only'     # 只读类，提交返回 409 read_only_page
 elif principal.via == Pat                  -> block_reason = 'not_allowed'   # PAT 不能提交
 elif !page.accept_responses                -> 'responses_closed'
+elif page.closes_at <= now()               -> 'closed'                      # 截止；提交返回 409 responses_closed（「已截止」）
 elif via_share and link.max_uses and link.use_count >= link.max_uses
                                            -> 'share_link_exhausted'        # 仍可查看
 elif !user and !nickname（仅在提交时检查）  -> 400 nickname_required
@@ -296,7 +309,7 @@ can_view_results = can_manage or page.results_visible_to == 'viewers'
 1. 请求体 ≤ 64 KiB（超出 413），`Content-Type: application/json`（否则 415）。
 2. 限流：IP 维度 30 次/分钟；页面维度 600 次/分钟（429 + `Retry-After`）。
 3. 认证：cookie 会话则校验 CSRF；PAT → 403 `not_allowed`。
-4. `page_access`（上面全部步骤）；`can_submit` 为假 → 409 并给出 `block_reason` 作为错误码（`read_only` 对应错误码 `read_only_page`）。
+4. `page_access`（上面全部步骤）；`can_submit` 为假 → 409 并给出 `block_reason` 作为错误码（`read_only` 对应错误码 `read_only_page`，`closed` 对应 `responses_closed`）。
 5. 校验 body：`data` 必须是 JSON object；未登录必须有 `nickname`（trim 后 1..50 字符，去控制字符）；已登录时 nickname 忽略。
 6. 事务：§3.3 的 seq 分配 + 临时链接名额原子占用（0 行 → 回滚，409 `share_link_exhausted` 或 410）+ INSERT。
 7. 提交后 `notify.send(page_id, seq)` 唤醒长轮询与 SSE。

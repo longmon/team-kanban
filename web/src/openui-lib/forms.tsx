@@ -1,11 +1,12 @@
 // 表单与按钮。字段值经 react-lang 表单状态（useStateField）保存，onAction 时由 data.ts 规范化为 api.md §10 的 values；
 // 各字段的值格式与原 openuiLibrary 一致（CheckBoxGroup / SwitchGroup 为 {name: boolean}，Chips 单选为字符串、多选为数组）。
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ACTION_STEPS, defineComponent, FormNameContext, FormValidationContext, parseStructuredRules, reactive, useCreateFormValidation,
   useFormName, useFormValidation, useGetFieldValue, useIsStreaming, useSetFieldValue, useStateField, useTriggerAction, action,
 } from "@openuidev/react-lang";
 import { Check, CircleAlert } from "lucide-react";
+import { useAnimate } from "motion/react";
 import { z } from "zod";
 import { cn } from "@/lib/utils";
 import { Button as UIButton } from "@/components/ui/button";
@@ -19,6 +20,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Icon, LucideIcon } from "./content";
 import { asArray, InSurface } from "./util";
+import { splitLetter, type Tally } from "../data";
 
 const rulesSchema = z.object({
   required: z.boolean().optional(),
@@ -132,12 +134,91 @@ export const TextArea = defineComponent({
 });
 
 // ---------- 选择 ----------
-// 选项卡（单选/多选）：平面细描边；选中 = 主色描边 + 10% 主色底，颜色短过渡，按下轻压
-const OPTION = "flex cursor-pointer items-start gap-3 rounded-md border bg-card px-3.5 py-3 transition-[background-color,border-color,box-shadow,scale,opacity,filter] hover:border-primary/50 active:scale-[.99] has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/80";
-// 选项卡片：宽屏 2–3 列（网格最宽 max-w-5xl，280px 起一列）；文本输入框最宽 max-w-3xl，不随宽屏拉长
-const OPTION_GRID = "grid min-w-0 max-w-5xl gap-2 sm:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]";
 const FIELD_W = "max-w-3xl";
-const OPTION_ON = "border-primary bg-primary/10 shadow-[inset_0_0_0_0.5px_var(--primary)] hover:border-primary";
+
+/**
+ * 票卡（单选 RadioGroup / 多选 CheckBoxGroup 共用）：≤ 4 项横排大票卡（字母大字、名称、说明），> 4 项自动换成竖排大行。
+ * 选中 = 3px 主色描边 + 白底；已提交锁定后选中项加「你投的」标签、其余置灰（data-dim）；
+ * 已提交或截止且有结果数据时，票卡底部（竖排为左侧）按得票比例涨出填充并显示票数、百分比、领先。
+ * 结果首次出现（刚提交）时整组沿 Y 轴翻面 500ms 露出结果；减少动态时直接切换。
+ */
+function Tickets({ field, items, isOn, control, locked, multi }: {
+  field: string; items: Record<string, unknown>[]; isOn: (v: string) => boolean; multi?: boolean; locked: boolean;
+  /** 每项的输入控件（Radix radio / checkbox，视觉隐藏，承担键盘与读屏） */
+  control: (it: Record<string, unknown>, i: number, id: string, label: string) => ReactNode;
+}) {
+  const uid = useId();
+  const sub = useContext(SubmitContext);
+  const t = sub?.tally?.[field] ?? null;
+  const show = useFlip(!!t);
+  const [scope] = show;
+  const res = show[1] ? t : null;
+  const rows = items.length > 4;
+  const max = res ? Math.max(0, ...Object.values(res.counts)) : 0;
+  return (
+    <div ref={scope} className={cn("tickets grid min-w-0 gap-3.5", rows ? "grid-cols-1" : "grid-cols-[repeat(auto-fit,minmax(min(100%,200px),1fr))]")}
+>
+      {items.map((it, i) => {
+        const id = `${uid}-${i}`;
+        const v = String((multi ? it.name : it.value) ?? "");
+        const label = String(it.label ?? "");
+        const [letter, name] = splitLetter(label, i);
+        const on = isOn(v);
+        const dim = locked && !on;
+        const c = res?.counts[v] ?? 0;
+        const pct = res && res.total ? Math.round((c / res.total) * 100) : 0;
+        const lead = !!res && c > 0 && c === max;
+        return (
+          <label key={i} htmlFor={id} data-on={on || undefined} data-dim={dim || undefined} data-ticket=""
+            className={cn(
+              "ticket relative isolate flex cursor-pointer overflow-hidden rounded-[24px] border-[3px] border-transparent bg-muted transition-[background-color,border-color,opacity,scale] has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/80 active:scale-[.99]",
+              rows ? "min-h-[72px] items-center gap-4 rounded-[18px] px-5 py-3" : "min-h-[220px] flex-col px-5 py-4.5 max-sm:min-h-[150px]",
+              on ? "border-primary bg-card" : "hover:bg-accent",
+              dim && "opacity-70",
+            )}>
+            {res && (
+              <span aria-hidden="true" className={cn("ticket-fill absolute -z-10", rows ? "inset-y-0 left-0 origin-left" : "inset-x-0 bottom-0 origin-bottom", on ? "bg-primary-soft" : "bg-foreground/[0.06]")}
+                style={rows ? { width: `${pct}%` } : { height: `${pct}%` }} />
+            )}
+            {control(it, i, id, label)}
+            <span className={cn("leading-none font-semibold tabular-nums", rows ? "w-8 text-[28px]" : "text-[56px] max-sm:text-[40px]", on ? "text-primary" : "text-muted-foreground")}>{letter}</span>
+            <span className={cn("grid min-w-0 gap-0.5", rows ? "flex-1" : "mt-2.5")}>
+              <span className={cn("leading-snug font-semibold [overflow-wrap:anywhere]", rows ? "text-[15px]" : "text-[18px]")}>{name}</span>
+              {!!it.description && <span className="text-[13px] text-muted-foreground">{String(it.description)}</span>}
+            </span>
+            {res && (
+              <span className={cn("ticket-num flex items-baseline gap-1.5 tabular-nums", rows ? "shrink-0" : "mt-auto pt-3")}>
+                <b className={cn("leading-none font-semibold", rows ? "text-[22px]" : "text-[30px]", on && "text-primary")}>{c}</b>
+                <span className="text-[13px] text-muted-foreground">票，{pct}%{lead && "，领先"}</span>
+              </span>
+            )}
+            {on && locked && (
+              <span className={cn("inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-[12px] font-semibold whitespace-nowrap text-primary-foreground", rows ? "shrink-0" : "absolute top-4 right-4")}>
+                <Check className="size-3.5" strokeWidth={3} />{multi ? "你选的" : "你投的"}
+              </span>
+            )}
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 结果出现：刚从无到有时（提交瞬间）整组翻面——前半程转到侧面，切换内容，后半程从另一侧转回；初次渲染或减少动态时直接显示 */
+function useFlip(show: boolean) {
+  const [scope, animate] = useAnimate<HTMLDivElement>();
+  const [shown, setShown] = useState(show);
+  useEffect(() => {
+    if (show === shown) return;
+    // 不引 ui.tsx（check-examples 在 Node 里加载组件库）；在 effect 里读系统设置
+    if (!show || !scope.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return setShown(show);
+    animate(scope.current, { rotateY: [0, 90], transformPerspective: 2400 }, { duration: 0.25, ease: "easeIn" }).then(() => {
+      setShown(true);
+      if (scope.current) animate(scope.current, { rotateY: [-90, 0], transformPerspective: 2400 }, { duration: 0.25, ease: "easeOut" });
+    });
+  }, [show]); // eslint-disable-line react-hooks/exhaustive-deps
+  return [scope, shown] as const;
+}
 
 export const SelectItem = defineComponent({
   name: "SelectItem",
@@ -195,26 +276,13 @@ export const RadioGroup = defineComponent({
   component: ({ props }) => {
     const f = useField<string>(props.name, props.value, props.rules);
     const lk = useLocked(props.name);
-    const uid = useId();
     const items = itemsOf(props.items);
     if (!items.length) return null;
     const value = lk ? String(lk.v ?? "") : f.value ?? props.defaultValue ?? "";
     return (
-      <UIRadioGroup name={f.name} value={value} onValueChange={(v) => f.set(v)} disabled={f.disabled} className={OPTION_GRID} aria-invalid={f.invalid || undefined}>
-        {items.map((it, i) => {
-          const id = `${uid}-${i}`;
-          const v = String(it.value ?? "");
-          return (
-            <label key={i} htmlFor={id}
-              className={cn(OPTION, value === v && OPTION_ON, lk && value !== v && DIM)}>
-              <RadioGroupItem id={id} value={v} className="mt-0.5" />
-              <span className="grid gap-0.5">
-                <span className="text-sm leading-snug font-semibold">{String(it.label ?? "")}</span>
-                {!!it.description && <span className="text-[13px] text-muted-foreground">{String(it.description)}</span>}
-              </span>
-            </label>
-          );
-        })}
+      <UIRadioGroup name={f.name} value={value} onValueChange={(v) => f.set(v)} disabled={f.disabled} className="block min-w-0" aria-invalid={f.invalid || undefined}>
+        <Tickets field={props.name} items={items} isOn={(v) => value === v} locked={!!lk}
+          control={(it, _i, id, label) => <RadioGroupItem id={id} value={String(it.value ?? "")} aria-label={label} className="sr-only" />} />
       </UIRadioGroup>
     );
   },
@@ -247,30 +315,18 @@ export const CheckBoxGroup = defineComponent({
   description: "",
   component: ({ props }) => {
     const f = useField<Record<string, boolean>>(props.name, props.value, props.rules);
-    const uid = useId();
     const items = useMemo(() => itemsOf(props.items), [props.items]);
     const aggregate = useAggregate(f, items);
     const lk = useLocked(props.name);
     if (!items.length) return null;
     const cur = lk ? (lk.v && typeof lk.v === "object" ? (lk.v as Record<string, boolean>) : {}) : aggregate();
     return (
-      <div className={OPTION_GRID}>
-        {items.map((it, i) => {
-          const id = `${uid}-${i}`;
+      <Tickets field={props.name} items={items} isOn={(n) => !!cur[n]} locked={!!lk} multi
+        control={(it, _i, id, label) => {
           const n = String(it.name);
-          return (
-            <label key={i} htmlFor={id}
-              className={cn(OPTION, cur[n] && OPTION_ON, lk && !cur[n] && DIM)}>
-              <Checkbox id={id} checked={!!cur[n]} disabled={f.disabled} className="mt-0.5"
-                onCheckedChange={(c) => f.set({ ...aggregate(), [n]: c === true })} />
-              <span className="grid gap-0.5">
-                <span className="text-sm leading-snug font-semibold">{String(it.label ?? "")}</span>
-                {!!it.description && <span className="text-[13px] text-muted-foreground">{String(it.description)}</span>}
-              </span>
-            </label>
-          );
-        })}
-      </div>
+          return <Checkbox id={id} checked={!!cur[n]} disabled={f.disabled} aria-label={label} className="sr-only"
+            onCheckedChange={(c) => f.set({ ...aggregate(), [n]: c === true })} />;
+        }} />
     );
   },
 });
@@ -525,7 +581,8 @@ export const FormControl = defineComponent({
 export type SubmitState = { phase: "idle" | "busy" | "done" | "error"; owner: string | null; n: number; error?: string };
 /** locked：已提交（当前看的版本），values 为提交数据里的 values，version 为该版本号 */
 export type Locked = { values: Record<string, unknown>; version: number };
-export const SubmitContext = createContext<{ state: SubmitState; claim: (id: string) => void; readOnly?: boolean; locked?: Locked | null } | null>(null);
+/** tally：票卡显示的结果（已提交或截止且结果对我可见时才有） */
+export const SubmitContext = createContext<{ state: SubmitState; claim: (id: string) => void; readOnly?: boolean; locked?: Locked | null; tally?: Tally | null } | null>(null);
 
 /** 重新触发一次抖动动画（连续失败也能看到） */
 function shake(el: HTMLElement | null) {

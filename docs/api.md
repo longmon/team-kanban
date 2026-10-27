@@ -66,7 +66,12 @@ type Page = {
   url: string;                                          // {PUBLIC_URL}/pages/{id}
   created_by: UserBrief; created_at: string; updated_at: string;
   can_manage: boolean;                                   // 调用者是否页面管理者
-  my_submitted: boolean                                  // 调用者是否已提交该页面的**当前版本**（version 变化后重新为 false）
+  my_submitted: boolean;                                 // 调用者是否已提交该页面的**当前版本**（version 变化后重新为 false）
+  closes_at: string | null;                              // 截止时间；<= 当前时间即已截止（不再接受提交）。「收集中」= accept_responses && (closes_at 为 null 或在未来)
+  summary: string | null;                                // 卡片摘要，1..300 字符
+  highlights: { label: string; value: string }[] | null; // 卡片关键数字，1..4 项，label/value 各 1..20 字符
+  respondent_count: number;                              // **当前版本**的去重参与人数：登录用户按 user_id 去重 + 匿名按昵称去重（含经临时链接的提交）
+  eligible_count: number | null                          // 应参与人数（见 §7.1「应参与人」）；visibility=public 为 null
 }
 
 type Respondent =
@@ -110,7 +115,7 @@ type Response = {
 | 409 | `email_taken` `slug_taken` `name_taken` `already_member` | 唯一冲突 |
 | 409 | `last_owner` | 操作会让组织没有 owner |
 | 409 | `not_org_member` | 加入项目/群组的用户不是组织成员 |
-| 409 | `responses_closed` | 页面不接受提交 |
+| 409 | `responses_closed` | 页面不接受提交（停止收集，或已过截止时间 `closes_at`；后者 message 为「已截止」） |
 | 409 | `read_only_page` | 向只读类页面（report/knowledge/flowchart/architecture）提交 |
 | 409 | `share_link_exhausted` | 临时链接提交次数用完 |
 | 409 | `not_allowed` | PAT 调用提交等不允许的动作 |
@@ -344,6 +349,15 @@ type Pat = {
 | PATCH /api/pages/{id} | cookie, pat:publish | 页面管理者 | 见下 | 200 `Page` |
 | DELETE /api/pages/{id} | cookie, pat:publish | 页面管理者 | – | 204（软删） |
 
+`GET /api/pages` 的 `respondent_count` / `eligible_count` 只对当前页的行计算（LIMIT 之后，一条 SQL 内完成）。
+
+**应参与人**（`eligible_count`、§7.2 `participation.pending` 的集合）：能看到该页面、可以提交的组织内用户，按 user_id 去重：
+- `org` → 组织全体成员；
+- `project` → 在该项目有角色的人：组织 owner/admin + 项目成员 + 被授权到该项目的群组的成员；
+- `groups` → 页面受众群组的成员（不含仅凭管理身份能看到的项目 admin/editor）；
+- `public` → 无此集合，`eligible_count = null`。
+临时链接访问者、匿名提交者不在集合内（但计入 `respondent_count`）。
+
 `GET /api/pages` 范围：调用者有项目角色的项目内、且按可见性能查看的页面（design §5.3）；PAT 时再限定 PAT 范围；给了 `project_id` 只列该项目。`page_type` 为逗号分隔的类型列表（如 `report,knowledge`，前端把大类展开成类型列表），只列这些类型；含非法值 400 `validation_failed`。`q` 按标题模糊搜索（不区分大小写，`%` `_` `\` 按字面匹配），去首尾空白后为空视为不传，超过 100 字符 400 `validation_failed`（field `q`）；可与其它筛选、游标分页同时使用。
 
 创建：
@@ -357,16 +371,25 @@ type Pat = {
   "visibility": "public | org | project | groups",
   "group_ids": ["uuid"],
   "accept_responses": true,
-  "results_visible_to": "managers" }
+  "results_visible_to": "managers",
+  "closes_at": "可选，带时区的 RFC 3339，如 2026-10-31T18:00:00+08:00；必须晚于当前时间",
+  "summary": "可选，卡片摘要，trim 后 1..300 字符",
+  "highlights": [{ "label": "转化率", "value": "12.5%" }] }
 ```
 `visibility="groups"` 时 `group_ids` 必须非空且都属于同一组织（否则 400 `validation_failed`）；其它 visibility 时必须为空或省略。默认：`accept_responses=true`、`results_visible_to="managers"`；`visibility` 必填。服务端**不解析** OpenUI（校验在 MCP 本地做；渲染错误由前端显示）。
 `page_type`：非法值 400 `validation_failed`；只读类省略 `accept_responses` 时写 false，显式 true → 400 `validation_failed`（字段 `accept_responses`）；协作类 → 400「该类型尚未开放」。
 `model`：去首尾空白后 1..100 字符且不含控制字符，否则 400 `validation_failed`（字段 `model`）；省略或空白时 `generated_by` 为 null。存入 `generated_by`，页面查看页与项目页列表显示「由 {generated_by} 生成」。
+卡片字段（不合法均为 400 `validation_failed`，`details.fields` 为对应字段名）：
+- `closes_at`：必须是带时区的 RFC 3339（`2026-10-31 18:00` 这类无时区写法拒绝），且晚于当前时间；到期后视为已截止（§7.2 `closed`，提交 409 `responses_closed`）。
+- `summary`：trim 后 1..300 字符；空白或 null 视为不设置。
+- `highlights`：数组，≤4 项，每项恰好 `{label, value}` 两个字符串字段，trim 后各 1..20 字符；`[]` 或 null 视为不设置（存 null）。DB CHECK 兜底。
 
 更新（全部可选，至少一个）：
 ```json
-{ "title": "...", "model": "GPT-5", "content": "...", "visibility": "...", "group_ids": [], "accept_responses": false, "results_visible_to": "viewers" }
+{ "title": "...", "model": "GPT-5", "content": "...", "visibility": "...", "group_ids": [], "accept_responses": false, "results_visible_to": "viewers",
+  "closes_at": "2026-11-01T00:00:00Z", "summary": "...", "highlights": [] }
 ```
+`closes_at` / `summary` / `highlights`：不传不变，传 `null` 清除（`summary` 传空白、`highlights` 传 `[]` 同样清除）；校验同创建，`closes_at` 设成过去时间同样 400（要立即结束收集用 `accept_responses=false`；延期就传新的未来时间）。
 `kind`、`page_type` 不可改（传了 `page_type` 即 400 `validation_failed`）；只读类传 `accept_responses=true` → 400。`content` 变化时 `version += 1` 并在同一事务保存该版本快照（`page_versions`：title/kind/content），已有提交保留（记录其提交时的 `page_version`）；登录用户每个版本限交一次，新版本可再交。创建页面即保存 v1 快照。`model` 校验同创建，给了就覆盖 `generated_by`（页面被别的模型改过），不给则不变。
 
 ### 7.2 查看 — 给浏览器渲染用
@@ -383,19 +406,27 @@ type PageView = {
   page: { id: string; title: string; kind: PageKind; version: number;
           page_type: PageType; category: PageCategory; generated_by: string | null;
           accept_responses: boolean; results_visible_to: "managers" | "viewers"; updated_at: string;
+          closes_at: string | null; summary: string | null; highlights: { label: string; value: string }[] | null;
           project: { id: string; name: string }; org: { id: string; name: string } };
   content:                                               // 所查看版本的内容；version/title 为该版本的快照（page.* 为当前页面）
     | { kind: "openui"; spec: string; version: number; title: string }
     | { kind: "html"; frame_url: string; frame_origin: string; version: number; title: string };   // frame_url 10 分钟内有效
   viewer: { type: "user"; user_id: string; display_name: string } | { type: "anonymous" };
   can_submit: boolean;
-  submit_block_reason: null | "read_only" | "responses_closed" | "share_link_exhausted" | "already_submitted";   // read_only 最先判断；already_submitted 最后判断
+  submit_block_reason: null | "read_only" | "not_allowed" | "responses_closed" | "closed" | "share_link_exhausted" | "already_submitted";
+                                                         // 判断顺序即此顺序：read_only 最先，closed（closes_at 已到）在 responses_closed 之后、already_submitted 之前
   can_view_results: boolean;
   can_manage: boolean;
   my_submitted: boolean;                                 // 登录用户是否已提交**当前版本**；匿名与临时链接访问（/api/s/{token}）恒为 false
   my_response: null | { seq: number; page_version: number; data: object; created_at: string };   // 登录用户对**所查看版本**的提交（多条取最新）；匿名与临时链接访问恒为 null
   versions: null | { version: number; created_at: string }[];   // 所有版本，按 version 降序；临时链接访问为 null
-  share_link: null | { id: string; label: string; expires_at: string; remaining_uses: number | null }
+  share_link: null | { id: string; label: string; expires_at: string; remaining_uses: number | null };
+  participation: null | {                                // 仅组织内登录用户、非临时链接访问时给出；临时链接（/api/s/{token}）、匿名、组织外用户为 null
+    eligible_count: number | null;                       // 同 Page.eligible_count（public 为 null）
+    respondent_count: number;                            // 同 Page.respondent_count（当前版本）
+    pending: null | { id: string; display_name: string }[]   // 应参与人（§7.1）中尚未提交**当前版本**的用户，按 display_name 排序，最多 50 个；
+                                                         // 仅调用者 can_view_results 时给出，否则 null；public 页面也为 null
+  }
 }
 ```
 匿名访问非 public 页面 → 404（前端在未登录时提示「登录后可能可见」并给登录入口）。
@@ -408,6 +439,26 @@ type PageView = {
   "my_response": { "seq": 3, "page_version": 1, "data": { "action": "提交", "form": "vote", "values": { "choice": "B" }, "params": {} }, "created_at": "…" },
   "versions": [ { "version": 2, "created_at": "…" }, { "version": 1, "created_at": "…" } ], "share_link": null }
 ````GET /api/s/{token}` 错误：404、410 `share_link_expired|share_link_revoked`、401 `share_password_required`。frame_url 过期后前端重新调用 view 端点。
+
+### 7.2.1 最近动态 — `GET /api/activity`
+
+鉴权 `cookie`、`pat:publish`、`pat:read_responses`；登录。`?limit=`（1..50，默认 30，越界 400 `validation_failed`）`&project_id=`（可选，只看该项目）。无游标。
+```ts
+type Activity = {
+  type: "published" | "updated" | "submitted";
+  at: string;
+  version: number;                                       // published/updated：产生的版本号；submitted：提交时的 page_version
+  page: { id: string; title: string; page_type: PageType; project: { id: string; name: string } };   // title 为页面当前标题
+  actor: null | { kind: "user"; name: string }           // name = display_name
+              | { kind: "anonymous"; name: string }      // name = 昵称
+}
+// 200
+{ "items": Activity[] }   // 按 at 倒序
+```
+- 范围与 `GET /api/pages` 完全一致（同一可见性 SQL，PAT 时同样限定 PAT 的组织/项目；无项目角色的项目看不到；已删页面/项目/组织不出现）。
+- `published`/`updated` 来自页面版本快照：`version = 1` 为 published，`> 1` 为 updated；actor 为产生该版本的用户（经 PAT 发布即 PAT 所属用户）。0004 回填的历史快照没有记录用户，actor 为 null，且旧页面只有当前版本一条（可能直接是 updated）。
+- `submitted` 来自提交；只有调用者对该页 `can_view_results`（页面管理者，或 `results_visible_to = viewers`）时才给 actor，否则 actor 为 null（前端显示「有人」）。
+- 实现上限：每个组织、每类事件只在最近 1000 条里按可见性筛选；调用者能看到的事件全部比这更旧时，结果可能少于 limit。
 
 ### 7.3 html 原文 — 仅 PAGES_ORIGIN
 
@@ -436,7 +487,7 @@ type PageView = {
 // 201
 { "id": "uuid", "seq": 12, "created_at": "..." }
 ```
-带 cookie 时需 `X-CSRF-Token`。检查顺序见 design §5.3。错误：400 `validation_failed|nickname_required`、404、409 `read_only_page|responses_closed|share_link_exhausted|not_allowed|already_submitted`、410、413、429。
+带 cookie 时需 `X-CSRF-Token`。检查顺序见 design §5.3。已过 `closes_at` → 409 `responses_closed`（message「已截止」；view 里对应 `submit_block_reason = "closed"`）。错误：400 `validation_failed|nickname_required`、404、409 `read_only_page|responses_closed|share_link_exhausted|not_allowed|already_submitted`、410、413、429。
 限交：经 `/api/pages/{id}/responses` 提交的登录用户，对同一页面同一 `version` 已有提交（含其经临时链接的提交）→ 409 `already_submitted`；页面更新出新版本后可再交。经临时链接（`/api/s/{token}/responses`）与匿名提交不限次数（临时链接仍受 `max_uses`）。PAT 本就不能提交（`not_allowed`）。
 
 ### 8.2 长轮询拉取 — agent 与网页共用
@@ -630,7 +681,7 @@ type AuditEntry = {
 
 ### get_ui_guide
 - 入参：`{ kind?: "openui" | "html", server?: string }`（kind 缺省两者都给；server 缺省取默认或第一个，不询问）
-- 出参：纯文本（不是 JSON）：design §8.2 的内容。OpenUI 部分取自 `GET /openui/prompt.md`。
+- 出参：纯文本（不是 JSON）：design §8.2 的内容。OpenUI 部分取自 `GET /openui/prompt.md`。末尾固定附「卡片信息」规则（summary / closes_at / highlights 的用法）。
 
 ### list_projects
 - 入参：`{ server?: string }`
@@ -652,15 +703,19 @@ type AuditEntry = {
     visibility?: Visibility,    // 默认 "project"；给了 groups（含 profile 默认 groups）时默认 "groups"
     groups?: string[],          // 群组 UUID 或群组名（大小写不敏感）；给了就发到这些群组，此时 visibility 只能是 groups 或不填
     accept_responses?: boolean, // vote 默认 true；只读类默认 false 且不能为 true
-    results_visible_to?: "managers" | "viewers" }  // 默认 "managers"
+    results_visible_to?: "managers" | "viewers",   // 默认 "managers"
+    closes_at?: string,         // 截止时间：只接受带时区的 ISO 8601 / RFC 3339（如 "2026-10-31T18:00:00+08:00"），须晚于现在；本地时间由 agent 按用户时区换算后带偏移
+    summary?: string,           // 卡片摘要，1..300 字符
+    highlights?: { label: string, value: string }[] }   // 关键数字，≤4 项，各 1..20 字符
   ```
+  原样透传给 `POST /api/pages`，由服务端校验。工具描述与 get_ui_guide 引导：所有页面给一句话 summary；收集类（vote）设 closes_at；报告类给 2–4 个 highlights。
   `spec`/`html`/`file_path` 恰好一个，且与 kind 匹配。目标按 §14.0 解析；群组名经 `GET /api/orgs/{org_id}/groups` 解析（大小写不敏感，找不到报错）。
 - 选型（写在工具描述与 INSTRUCTIONS 里）：用户明确指定类型时照用；否则只给人看、不需要回复 → `report` / `knowledge` / `flowchart` / `architecture`（流程图、架构图用 `Diagram` 写 Mermaid），需要对方选择或填写 → `vote`；拿不准时需要回复选 vote，不需要选 report。
 - 本地校验（kind=openui）：design §8.3；失败返回 `isError`，text 为 `openui_invalid:` + 错误列表（每条 `行:列 code message`，取自 parser `meta.errors` 与 unresolved 名称）。只读类 spec 含 `@ToAssistant` 或 `Form(` → `page_type_mismatch:`，不调服务端。
 - 出参：`{ server, id, url, version, visibility, page_type, category, warnings: string[], next_step }`（`POST /api/pages`）；`next_step` 提示下一步（只读类：「把 url 发给用户即可，无需等待」；收集类：用 get_responses 等待）；或 §14.0 的「需要选择」
 
 ### update_page
-- 入参：`{ server?: string, page_id: string, title?, model?, spec?, html?, file_path?, visibility?, groups?, accept_responses?, results_visible_to? }`；至少一个可选字段。`model` 同 publish_page（改内容时传自己的模型名称），给了就覆盖页面的 `generated_by`。内容类入参须与页面 kind 一致（先 `GET /api/pages/{id}` 取 kind），openui 同样本地校验。
+- 入参：`{ server?: string, page_id: string, title?, model?, spec?, html?, file_path?, visibility?, groups?, accept_responses?, results_visible_to?, closes_at?, summary?, highlights? }`；至少一个可选字段。`closes_at` / `summary` 传空字符串发送 null（清除），`highlights` 传 `[]` 清除。`model` 同 publish_page（改内容时传自己的模型名称），给了就覆盖页面的 `generated_by`。内容类入参须与页面 kind 一致（先 `GET /api/pages/{id}` 取 kind），openui 同样本地校验。
 - 出参：同 publish_page（`PATCH /api/pages/{id}`）。改内容时同样按页面 page_type 做只读 lint。
 
 ### create_share_link

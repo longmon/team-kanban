@@ -1,7 +1,7 @@
 // 通用小部件与 hooks；视觉组件来自 shadcn/ui（components/ui）
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast as sonner } from "sonner";
-import { BookOpen, Check, CircleAlert, Copy, FileChartColumn, FileText, Network, Vote, Workflow } from "lucide-react";
+import { BookOpen, Check, CircleAlert, ClipboardList, Copy, FileChartColumn, Layers, Vote, Workflow } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -171,6 +171,22 @@ export function useOwnOrg(orgId: string | undefined) {
   useEffect(() => {
     if (orgId && me?.orgs.some((o) => o.id === orgId)) setCurrentOrg(orgId);
   }, [orgId, me]);
+}
+
+/** 详情页所属项目（顶栏项目胶囊据此高亮）：详情页挂载时设置、卸载时清掉 */
+let activeProject: string | null = null;
+const apListeners = new Set<() => void>();
+export function useActiveProject(id?: string) {
+  useEffect(() => {
+    if (id === undefined) return;
+    activeProject = id;
+    apListeners.forEach((l) => l());
+    return () => {
+      activeProject = null;
+      apListeners.forEach((l) => l());
+    };
+  }, [id]);
+  return useSyncExternalStore((l) => (apListeners.add(l), () => void apListeners.delete(l)), () => activeProject);
 }
 
 // ---------- 主题（亮/暗） ----------
@@ -437,13 +453,87 @@ export const PAGE_TYPE_LABEL: Record<string, string> = {
   general: "通用", report: "报告", knowledge: "知识库", flowchart: "流程图", architecture: "架构图", vote: "投票",
   requirement: "需求对接", task: "任务页", task_tree: "任务树",
 };
-const PAGE_TYPE_ICON: Record<string, typeof FileText> = {
-  report: FileChartColumn, knowledge: BookOpen, flowchart: Workflow, architecture: Network, vote: Vote,
+/** 页面类型 → 六种糖纸色调（index.css [data-tone]）。通用页按大类：收集类算表单，只读类算知识库；任务类暂归表单 */
+export type Tone = "vote" | "form" | "report" | "flow" | "arch" | "book";
+export function toneOf(type: string, category?: string): Tone {
+  switch (type) {
+    case "vote": return "vote";
+    case "report": return "report";
+    case "flowchart": return "flow";
+    case "architecture": return "arch";
+    case "knowledge": return "book";
+    case "general": return category === "read" ? "book" : "form";
+    default: return "form";
+  }
+}
+/** 六个线性类型图标 */
+export const TONE_ICON: Record<Tone, typeof Vote> = {
+  vote: Vote, form: ClipboardList, report: FileChartColumn, flow: Workflow, arch: Layers, book: BookOpen,
 };
-/** 页面类型图标 + 中文名（徽标内用） */
-export function PageTypeTag({ type }: { type: string }) {
-  const Icon = PAGE_TYPE_ICON[type] ?? FileText;
-  return <><Icon className="size-3.5" />{PAGE_TYPE_LABEL[type] ?? type}</>;
+/** 圆角方块里的类型图标（格子、题头、动态）；白底 + 类型强调色 */
+export function ToneIcon({ tone, className }: { tone: Tone; className?: string }) {
+  const Icon = TONE_ICON[tone];
+  return (
+    <span data-tone={tone} aria-hidden="true" className={cn("grid size-[30px] shrink-0 place-items-center rounded-[10px] bg-card text-tone-ink", className)}>
+      <Icon className="size-4" />
+    </span>
+  );
+}
+
+// ---------- 截止与倒计时 ----------
+/** 每分钟（整分）刷新一次的当前时间；页面不可见时不刷新，回来立即刷新 */
+const nowListeners = new Set<() => void>();
+let nowVal = Date.now();
+let nowTimer = 0;
+const schedule = () => {
+  clearTimeout(nowTimer);
+  nowTimer = window.setTimeout(tickNow, 60000 - (Date.now() % 60000) + 50);
+};
+const tickNow = () => {
+  nowVal = Date.now();
+  nowListeners.forEach((l) => l());
+  schedule();
+};
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && nowListeners.size && tickNow());
+const subscribeNow = (l: () => void) => {
+  if (!nowListeners.size) (nowVal = Date.now()), schedule();
+  nowListeners.add(l);
+  return () => {
+    nowListeners.delete(l);
+    if (!nowListeners.size) clearTimeout(nowTimer);
+  };
+};
+export const useNow = () => useSyncExternalStore(subscribeNow, () => nowVal);
+export const isClosed = (closesAt: string | null | undefined, now = Date.now()) => !!closesAt && new Date(closesAt).getTime() <= now;
+/** 剩余时间：「2 天 3 时」「5 时 20 分」「12 分」；已过返回 null */
+export function fmtLeft(closesAt: string, now = Date.now()): string | null {
+  const m = Math.floor((new Date(closesAt).getTime() - now) / 60000);
+  if (m < 0) return null;
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+  return d ? `${d} 天 ${h} 时` : h ? `${h} 时 ${mm} 分` : `${Math.max(mm, 1)} 分`;
+}
+/** 截止时间短格式：今天 18:00 / 明天 18:00 / 周四 18:00 / 10月31日 18:00 */
+export function fmtDue(iso: string, now = new Date()) {
+  const d = new Date(iso), hm = d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const days = Math.round((dayStart(d) - dayStart(now)) / 864e5);
+  if (days === 0) return `今天 ${hm}`;
+  if (days === 1) return `明天 ${hm}`;
+  if (days > 1 && days < 7) return `周${"日一二三四五六"[d.getDay()]} ${hm}`;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+}
+
+/** 头像底色：白字在上面都 ≥ 4.5:1（亮暗模式通用） */
+const AVATAR_BG = ["#6c4cf5", "#9e5627", "#ae4064", "#286cac", "#1a776d", "#42782a"];
+/** 名字首字头像（圆形）；颜色按名字稳定取色；muted：未参与的人（灰底） */
+export function Initial({ name, className, muted }: { name: string; className?: string; muted?: boolean }) {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return (
+    <span title={name} className={cn("grid size-7 shrink-0 place-items-center rounded-full text-[12px] font-semibold text-white ring-2 ring-card", muted && "bg-muted text-muted-foreground", className)}
+      style={muted ? undefined : { background: AVATAR_BG[h % AVATAR_BG.length] }}>
+      {name.slice(0, 1).toUpperCase()}
+    </span>
+  );
 }
 export const CATEGORY_LABEL: Record<string, string> = { read: "只读", collect: "收集", collab: "协作" };
 /** 大类 → 包含的页面类型（列表筛选展开成 ?page_type=）。协作类尚未开放，不列 */

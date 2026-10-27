@@ -757,3 +757,213 @@ async fn bridge_lock_script_injected() {
     }
     assert!(body.ends_with("</script>"), "无 </body> 时追加在末尾");
 }
+
+#[tokio::test]
+async fn closes_at_summary_highlights() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let future = "2099-01-01T10:00:00+08:00";
+    let base = json!({ "project_id": w.proj, "title": "t", "kind": "openui", "content": "root = Stack([])", "visibility": "project" });
+    let with = |k: &str, v: Value| {
+        let mut b = base.clone();
+        b[k] = v;
+        b
+    };
+    let long = "字".repeat(21);
+    for (field, b) in [
+        ("closes_at", with("closes_at", json!("2001-01-01T00:00:00Z"))),
+        ("closes_at", with("closes_at", json!("2099-01-01 18:00"))),
+        ("closes_at", with("closes_at", json!("明天"))),
+        ("summary", with("summary", json!("x".repeat(301)))),
+        ("highlights", with("highlights", json!({ "label": "a", "value": "b" }))),
+        ("highlights", with("highlights", json!(vec![json!({ "label": "a", "value": "1" }); 5]))),
+        ("highlights", with("highlights", json!([{ "label": long, "value": "1" }]))),
+        ("highlights", with("highlights", json!([{ "label": "a", "value": 1 }]))),
+        ("highlights", with("highlights", json!([{ "label": " ", "value": "1" }]))),
+        ("highlights", with("highlights", json!([{ "label": "a", "value": "1", "x": 1 }]))),
+        ("highlights", with("highlights", json!(["a"]))),
+    ] {
+        let r = h.req(&w.owner, "POST", "/api/pages", Some(b)).await;
+        assert_eq!((r.status, r.code()), (400, "validation_failed".into()), "{}", r.text());
+        assert!(r.json()["error"]["details"]["fields"].get(field).is_some(), "{}", r.text());
+    }
+    let mut b = with("closes_at", json!(future));
+    b["summary"] = json!("  本周五前选出技术方案  ");
+    b["highlights"] = json!([{ "label": " 选项 ", "value": "3" }, { "label": "预算", "value": "¥12万" }]);
+    let r = h.req(&w.owner, "POST", "/api/pages", Some(b)).await.ok(201);
+    let id = s(&r["id"]);
+    assert_eq!(r["closes_at"], "2099-01-01T02:00:00.000Z");
+    assert_eq!(r["summary"], "本周五前选出技术方案");
+    assert_eq!(r["highlights"], json!([{ "label": "选项", "value": "3" }, { "label": "预算", "value": "¥12万" }]));
+    // 缺省全为 null
+    let plain = h.req(&w.owner, "POST", "/api/pages", Some(base.clone())).await.ok(201);
+    assert_eq!((plain["closes_at"].clone(), plain["summary"].clone(), plain["highlights"].clone()), (Value::Null, Value::Null, Value::Null));
+    // view.page 带三项
+    let v = h.req(&w.viewer, "GET", &format!("/api/pages/{id}/view"), None).await.ok(200);
+    assert_eq!((v["page"]["closes_at"].clone(), v["page"]["summary"].clone()), (json!("2099-01-01T02:00:00.000Z"), json!("本周五前选出技术方案")));
+    // PATCH：过去时间拒绝；不传不变；null 清除；[] 视为清除
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "closes_at": "2001-01-01T00:00:00Z" }))).await;
+    assert_eq!((r.status, r.code()), (400, "validation_failed".into()));
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "title": "t2" }))).await.ok(200);
+    assert_eq!(r["summary"], "本周五前选出技术方案");
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "closes_at": null, "summary": null, "highlights": [] }))).await.ok(200);
+    assert_eq!((r["closes_at"].clone(), r["summary"].clone(), r["highlights"].clone()), (Value::Null, Value::Null, Value::Null));
+    let meta: Value = sqlx::query_scalar("SELECT meta FROM audit_log WHERE action = 'page.update' ORDER BY id DESC LIMIT 1").fetch_one(&h.db).await.unwrap();
+    assert_eq!(meta["fields"], json!(["closes_at", "summary", "highlights"]));
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "highlights": [{ "label": "a", "value": "b" }] }))).await.ok(200);
+    assert_eq!(r["highlights"], json!([{ "label": "a", "value": "b" }]));
+    // DB CHECK 兜底
+    for bad in [r#"[]"#, r#"{"label":"a","value":"b"}"#, r#"[{"label":"a"}]"#, r#"[{"label":"123456789012345678901","value":"b"}]"#, r#"[{"label":1,"value":"b"}]"#] {
+        let r = sqlx::query("UPDATE pages SET highlights = $1::jsonb WHERE id = $2::uuid").bind(bad).bind(&id).execute(&h.db).await;
+        assert!(r.is_err(), "CHECK 应拒绝 {bad}");
+    }
+    assert!(sqlx::query("UPDATE pages SET summary = '' WHERE id = $1::uuid").bind(&id).execute(&h.db).await.is_err());
+}
+
+#[tokio::test]
+async fn closed_pages_block_submit() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let page = publish_with(&h, &w.owner, json!({ "project_id": w.proj, "title": "t", "kind": "openui", "content": "root = Stack([])", "visibility": "public", "closes_at": "2099-01-01T00:00:00Z" })).await;
+    h.req(&w.viewer, "POST", &format!("/api/pages/{page}/responses"), Some(json!({ "data": { "x": 1 } }))).await.ok(201);
+    let v = h.req(&w.viewer, "GET", &format!("/api/pages/{page}/view"), None).await.ok(200);
+    assert_eq!(v["submit_block_reason"], "already_submitted");
+    // 到期（直接改库模拟时间流逝）
+    sqlx::query("UPDATE pages SET closes_at = now() - interval '1 minute' WHERE id = $1::uuid").bind(&page).execute(&h.db).await.unwrap();
+    let v = h.req(&w.viewer, "GET", &format!("/api/pages/{page}/view"), None).await.ok(200);
+    assert_eq!((v["can_submit"].clone(), v["submit_block_reason"].clone()), (json!(false), json!("closed")), "closed 优先于 already_submitted");
+    let v = h.req(&C::anon(), "GET", &format!("/api/pages/{page}/view"), None).await.ok(200);
+    assert_eq!(v["submit_block_reason"], "closed");
+    let r = submit_anon(&h, &page).await;
+    assert_eq!((r.status, r.code()), (409, "responses_closed".into()));
+    assert_eq!(r.json()["error"]["message"], "已截止");
+    // 临时链接同样拒绝
+    let link = h.req(&w.owner, "POST", &format!("/api/pages/{page}/share-links"), Some(json!({ "expires_in": 3600 }))).await.ok(201);
+    let token = s(&link["url"]).rsplit('/').next().unwrap().to_string();
+    let r = h.req(&C::anon(), "POST", &format!("/api/s/{token}/responses"), Some(json!({ "data": {}, "nickname": "n" }))).await;
+    assert_eq!((r.status, r.code()), (409, "responses_closed".into()));
+    // 停止收集仍优先报 responses_closed
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "accept_responses": false }))).await.ok(200);
+    assert_eq!(h.req(&C::anon(), "GET", &format!("/api/pages/{page}/view"), None).await.ok(200)["submit_block_reason"], "responses_closed");
+    // 延期后恢复
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "accept_responses": true, "closes_at": "2099-01-01T00:00:00Z" }))).await.ok(200);
+    submit_anon(&h, &page).await.ok(201);
+}
+
+#[tokio::test]
+async fn participation_counts() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    // 项目授权群组：grouped 经群组获得 viewer
+    h.req(&w.owner, "PUT", &format!("/api/projects/{}/groups/{}", w.proj, w.grp), Some(json!({ "role": "viewer" }))).await.ok(200);
+    let public = publish(&h, &w.owner, &w.proj, "public", &[]).await;
+    let org = publish(&h, &w.owner, &w.proj, "org", &[]).await;
+    let project = publish(&h, &w.owner, &w.proj, "project", &[]).await;
+    let groups = publish(&h, &w.owner, &w.proj, "groups", &[&w.grp]).await;
+    let list = h.req(&w.owner, "GET", "/api/pages", None).await.ok(200);
+    let count = |id: &str| list["items"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap()["eligible_count"].clone();
+    // org：4 个成员；project：owner(组织 owner) + viewer(项目成员) + grouped(授权群组)；groups：grouped
+    assert_eq!((count(&public), count(&org), count(&project), count(&groups)), (Value::Null, json!(4), json!(3), json!(1)));
+
+    // respondent_count：当前版本，登录用户按 user_id、匿名按昵称去重
+    for nick in ["甲", "甲", "乙"] {
+        h.req(&C::anon(), "POST", &format!("/api/pages/{public}/responses"), Some(json!({ "data": {}, "nickname": nick }))).await.ok(201);
+    }
+    h.req(&w.viewer, "POST", &format!("/api/pages/{public}/responses"), Some(json!({ "data": {} }))).await.ok(201);
+    let link = h.req(&w.owner, "POST", &format!("/api/pages/{public}/share-links"), Some(json!({ "expires_in": 3600 }))).await.ok(201);
+    let token = s(&link["url"]).rsplit('/').next().unwrap().to_string();
+    h.req(&w.viewer, "POST", &format!("/api/s/{token}/responses"), Some(json!({ "data": {} }))).await.ok(201);
+    let got = h.req(&w.owner, "GET", &format!("/api/pages/{public}"), None).await.ok(200);
+    assert_eq!((got["respondent_count"].clone(), got["response_count"].clone()), (json!(3), json!(5)));
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{public}"), Some(json!({ "content": "root = Stack([Text(\"v2\")])" }))).await.ok(200);
+    h.req(&C::anon(), "POST", &format!("/api/pages/{public}/responses"), Some(json!({ "data": {}, "nickname": "甲" }))).await.ok(201);
+    let got = h.req(&w.owner, "GET", &format!("/api/pages/{public}"), None).await.ok(200);
+    assert_eq!(got["respondent_count"], 1, "只算当前版本");
+
+    // participation：project 页面，viewer 已交
+    h.req(&w.viewer, "POST", &format!("/api/pages/{project}/responses"), Some(json!({ "data": {} }))).await.ok(201);
+    let v = h.req(&w.owner, "GET", &format!("/api/pages/{project}/view"), None).await.ok(200);
+    let names = |v: &Value| v["participation"]["pending"].as_array().unwrap().iter().map(|u| s(&u["display_name"])).collect::<Vec<_>>();
+    assert_eq!((v["participation"]["eligible_count"].clone(), v["participation"]["respondent_count"].clone()), (json!(3), json!(1)));
+    assert_eq!(names(&v), vec!["grouped", "owner"]);
+    assert_eq!(v["participation"]["pending"][0]["id"], w.grouped.user_id.as_str());
+    // 无结果权限：pending 为 null，计数照给
+    let v = h.req(&w.viewer, "GET", &format!("/api/pages/{project}/view"), None).await.ok(200);
+    assert_eq!((v["participation"]["pending"].clone(), v["participation"]["respondent_count"].clone()), (Value::Null, json!(1)));
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{project}"), Some(json!({ "results_visible_to": "viewers" }))).await.ok(200);
+    let v = h.req(&w.viewer, "GET", &format!("/api/pages/{project}/view"), None).await.ok(200);
+    assert_eq!(names(&v), vec!["grouped", "owner"]);
+    // 临时链接访问（即便是组织内用户）、匿名、组织外登录用户：participation 整体为 null
+    let link = h.req(&w.owner, "POST", &format!("/api/pages/{project}/share-links"), Some(json!({ "expires_in": 3600 }))).await.ok(201);
+    let token = s(&link["url"]).rsplit('/').next().unwrap().to_string();
+    assert_eq!(h.req(&w.owner, "GET", &format!("/api/s/{token}"), None).await.ok(200)["participation"], Value::Null);
+    assert_eq!(h.req(&C::anon(), "GET", &format!("/api/s/{token}"), None).await.ok(200)["participation"], Value::Null);
+    assert_eq!(h.req(&C::anon(), "GET", &format!("/api/pages/{public}/view"), None).await.ok(200)["participation"], Value::Null);
+    assert_eq!(h.req(&w.outsider, "GET", &format!("/api/pages/{public}/view"), None).await.ok(200)["participation"], Value::Null);
+    // 组织内无项目角色的成员看 public 页：照常给计数
+    assert_eq!(h.req(&w.member, "GET", &format!("/api/pages/{public}/view"), None).await.ok(200)["participation"]["respondent_count"], 1);
+    // public：eligible_count 与 pending 均为 null
+    let v = h.req(&w.owner, "GET", &format!("/api/pages/{public}/view"), None).await.ok(200);
+    assert_eq!(v["participation"], json!({ "eligible_count": null, "respondent_count": 1, "pending": null }));
+    // groups 页面
+    let v = h.req(&w.owner, "GET", &format!("/api/pages/{groups}/view"), None).await.ok(200);
+    assert_eq!(names(&v), vec!["grouped"]);
+}
+
+#[tokio::test]
+async fn activity_feed() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let page = publish(&h, &w.owner, &w.proj, "project", &[]).await;
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "content": "root = Stack([Text(\"v2\")])" }))).await.ok(200);
+    h.req(&w.viewer, "POST", &format!("/api/pages/{page}/responses"), Some(json!({ "data": {} }))).await.ok(201);
+    let pubp = publish(&h, &w.owner, &w.proj, "public", &[]).await;
+    submit_anon(&h, &pubp).await.ok(201);
+    // viewer 看不到的：另一个项目、groups 页面
+    let proj2 = create_project(&h, &w.owner, &w.org, "p2").await;
+    let hidden = publish(&h, &w.owner, &proj2, "org", &[]).await;
+    let hidden_g = publish(&h, &w.owner, &w.proj, "groups", &[&w.grp]).await;
+    let feed = async |c: C, q: String| h.req(&c, "GET", &format!("/api/activity{q}"), None).await.ok(200)["items"].as_array().unwrap().clone();
+    let ev = |items: &[Value]| items.iter().map(|e| (s(&e["type"]), s(&e["page"]["id"]), e["version"].as_i64().unwrap())).collect::<Vec<_>>();
+    let mine = feed(w.owner.clone(), String::new()).await;
+    assert_eq!(
+        ev(&mine),
+        vec![
+            ("published".into(), hidden_g.clone(), 1),
+            ("published".into(), hidden.clone(), 1),
+            ("submitted".into(), pubp.clone(), 1),
+            ("published".into(), pubp.clone(), 1),
+            ("submitted".into(), page.clone(), 2),
+            ("updated".into(), page.clone(), 2),
+            ("published".into(), page.clone(), 1),
+        ]
+    );
+    assert_eq!(mine[0]["actor"], json!({ "kind": "user", "name": "owner" }));
+    assert_eq!(mine[2]["actor"], json!({ "kind": "anonymous", "name": "路人" }));
+    assert_eq!(mine[4]["actor"], json!({ "kind": "user", "name": "viewer" }));
+    assert_eq!(mine[4]["page"]["project"], json!({ "id": w.proj, "name": "p" }));
+    assert_eq!(mine[4]["page"]["page_type"], "general");
+    // viewer：只见自己能看到的页面；无结果权限时 actor 为 null
+    let vf = feed(w.viewer.clone(), String::new()).await;
+    assert_eq!(ev(&vf).iter().map(|e| e.1.clone()).filter(|p| p == &hidden || p == &hidden_g).count(), 0);
+    assert_eq!(vf.len(), 5);
+    assert!(vf.iter().filter(|e| e["type"] == "submitted").all(|e| e["actor"].is_null()));
+    assert_eq!(vf[1]["actor"]["name"], "owner");
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "results_visible_to": "viewers" }))).await.ok(200);
+    let vf = feed(w.viewer.clone(), String::new()).await;
+    assert_eq!(vf.iter().find(|e| e["type"] == "submitted" && e["page"]["id"] == page.as_str()).unwrap()["actor"]["name"], "viewer");
+    // 无项目角色的组织成员什么也看不到（与 list_pages 一致）；limit / project_id
+    assert!(feed(w.member.clone(), String::new()).await.is_empty());
+    assert_eq!(feed(w.owner.clone(), "?limit=2".into()).await.len(), 2);
+    assert_eq!(ev(&feed(w.owner.clone(), format!("?project_id={proj2}")).await), vec![("published".into(), hidden.clone(), 1)]);
+    for q in ["?limit=0", "?limit=51"] {
+        assert_eq!(h.req(&w.owner, "GET", &format!("/api/activity{q}"), None).await.status, 400);
+    }
+    assert_eq!(h.req(&C::anon(), "GET", "/api/activity", None).await.status, 401);
+    // PAT 限定项目
+    let (pat, _) = create_pat(&h, &w.owner, &["read_responses"], Some(&w.org), Some(&proj2)).await;
+    assert_eq!(ev(&feed(pat, String::new()).await), vec![("published".into(), hidden.clone(), 1)]);
+    // 删除的页面不再出现
+    h.req(&w.owner, "DELETE", &format!("/api/pages/{hidden}"), None).await.ok(204);
+    assert!(!feed(w.owner.clone(), String::new()).await.iter().any(|e| e["page"]["id"] == hidden.as_str()));
+}

@@ -75,6 +75,7 @@ pub fn api_router() -> Router<AppState> {
             get(pages::get_page).patch(pages::update_page).delete(pages::delete_page).layer(DefaultBodyLimit::max(PAGE_BODY_LIMIT)),
         )
         .route("/pages/{id}/view", get(pages::view_page))
+        .route("/activity", get(pages::activity))
         .route("/pages/{id}/share-links", get(pages::list_share_links).post(pages::create_share_link))
         .route("/share-links/{id}", delete(pages::revoke_share_link))
         .route("/s/{token}", get(pages::view_share))

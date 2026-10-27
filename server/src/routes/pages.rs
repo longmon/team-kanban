@@ -47,13 +47,18 @@ struct PageListRow {
     group_ids: Vec<Uuid>,
     role: Option<String>,
     my_submitted: bool,
+    closes_at: Option<DateTime<Utc>>,
+    summary: Option<String>,
+    highlights: Option<Value>,
+    respondent_count: i64,
+    eligible_count: Option<i64>,
 }
 
 /// $1 = 调用者 user_id
 fn page_select() -> String {
     format!(
         "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.generated_by, p.version, p.visibility, p.accept_responses, p.results_visible_to,
-                p.response_seq, p.created_by, u.display_name AS creator_name, p.created_at, p.updated_at,
+                p.response_seq, p.created_by, u.display_name AS creator_name, p.created_at, p.updated_at, p.closes_at, p.summary, p.highlights,
                 COALESCE((SELECT array_agg(pg.group_id ORDER BY pg.group_id) FROM page_groups pg
                            WHERE pg.org_id = p.org_id AND pg.page_id = p.id), '{{}}') AS group_ids,
                 {} AS role,
@@ -69,6 +74,36 @@ fn page_select() -> String {
     )
 }
 
+/// 能看到页面且可以提交的组织内用户集合（SELECT user_id，已去重）。参数为外层列表达式；public 为空集（计数给 null）。
+/// org → 组织成员；project → 有项目角色者（组织 owner/admin + 项目成员 + 授权群组成员）；groups → 页面受众群组成员
+fn eligible_sql(org: &str, proj: &str, page: &str, vis: &str) -> String {
+    format!(
+        "SELECT em.user_id FROM memberships em
+          WHERE em.org_id = {org} AND ({vis} = 'org' OR ({vis} = 'project' AND em.role IN ('owner', 'admin')))
+         UNION
+         SELECT epm.user_id FROM project_members epm WHERE {vis} = 'project' AND epm.project_id = {proj}
+         UNION
+         SELECT egm.user_id FROM project_groups epg JOIN group_members egm ON egm.org_id = epg.org_id AND egm.group_id = epg.group_id
+          WHERE {vis} = 'project' AND epg.org_id = {org} AND epg.project_id = {proj}
+         UNION
+         SELECT ggm.user_id FROM page_groups gpg JOIN group_members ggm ON ggm.org_id = gpg.org_id AND ggm.group_id = gpg.group_id
+          WHERE {vis} = 'groups' AND gpg.org_id = {org} AND gpg.page_id = {page}"
+    )
+}
+
+/// respondent_count / eligible_count 两列；x 为带 id/org_id/project_id/visibility/version 列的页面别名
+fn counts_sql(x: &str) -> String {
+    format!(
+        "(SELECT count(DISTINCT cr.user_id) + count(DISTINCT cr.nickname) FILTER (WHERE cr.user_id IS NULL)
+            FROM responses cr WHERE cr.page_id = {x}.id AND cr.page_version = {x}.version) AS respondent_count,
+         CASE WHEN {x}.visibility = 'public' THEN NULL ELSE (SELECT count(*) FROM ({}) ce) END AS eligible_count",
+        eligible_sql(&format!("{x}.org_id"), &format!("{x}.project_id"), &format!("{x}.id"), &format!("{x}.visibility"))
+    )
+}
+
+/// list_pages / activity 共用的可见性条件（作用于 page_select 的输出列）
+const VISIBLE: &str = "(role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group)))";
+
 impl PageListRow {
     fn json(&self, public_url: &str) -> Value {
         json!({
@@ -83,12 +118,15 @@ impl PageListRow {
             "created_at": ts(&self.created_at), "updated_at": ts(&self.updated_at),
             "can_manage": matches!(self.role.as_deref(), Some("admin" | "editor")),
             "my_submitted": self.my_submitted,
+            "closes_at": ts_opt(&self.closes_at), "summary": self.summary, "highlights": self.highlights,
+            "respondent_count": self.respondent_count, "eligible_count": self.eligible_count,
         })
     }
 }
 
 async fn page_by_id(st: &AppState, org_id: Uuid, page_id: Uuid, uid: Uuid) -> AppResult<Value> {
-    let row: PageListRow = sqlx::query_as(&format!("{} WHERE p.org_id = $2 AND p.id = $3 AND p.deleted_at IS NULL", page_select()))
+    let row: PageListRow =
+        sqlx::query_as(&format!("SELECT x.*, {} FROM ({} WHERE p.org_id = $2 AND p.id = $3 AND p.deleted_at IS NULL) x", counts_sql("x"), page_select()))
         .bind(uid)
         .bind(org_id)
         .bind(page_id)
@@ -120,14 +158,16 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
         t => t.map(|t| format!("%{}%", t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))),
     };
     // ponytail: 跨所有项目扫描再按角色过滤；单用户页面数很大时给 project_id 走索引
+    // 计数只对 LIMIT 之后的当前页行计算
     let sql = format!(
-        "SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
+        "SELECT x.*, {} FROM (SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
              AND ($2::uuid IS NULL OR p.org_id = $2) AND ($3::uuid IS NULL OR p.project_id = $3)
              AND ($4::uuid IS NULL OR p.project_id = $4) AND ($5::uuid IS NULL OR p.id < $5)
              AND ($7::text[] IS NULL OR p.page_type = ANY($7))
-             AND ($8::text IS NULL OR p.title ILIKE $8 ESCAPE '\\')) x
-          WHERE role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group))
-          ORDER BY id DESC LIMIT $6",
+             AND ($8::text IS NULL OR p.title ILIKE $8 ESCAPE '\\')) y
+          WHERE {VISIBLE}
+          ORDER BY id DESC LIMIT $6) x ORDER BY x.id DESC",
+        counts_sql("x"),
         page_select()
     );
     let rows: Vec<PageListRow> = sqlx::query_as(&sql)
@@ -143,6 +183,101 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
         .await?;
     let (rows, next) = paginate(rows, page.limit(), |r| r.id.to_string());
     Ok(Json(list(rows.iter().map(|r| r.json(&st.cfg.public_url)).collect(), next)))
+}
+
+#[derive(Deserialize)]
+pub struct ActivityQuery {
+    limit: Option<i64>,
+    project_id: Option<Uuid>,
+}
+
+#[derive(FromRow)]
+struct ActivityRow {
+    etype: String,
+    at: DateTime<Utc>,
+    version: i32,
+    page_id: Uuid,
+    title: String,
+    page_type: String,
+    project_id: Uuid,
+    project_name: String,
+    actor_name: Option<String>,
+    nickname: Option<String>,
+    can_view_results: bool,
+}
+
+/// 动态流每个组织每类事件最多检查的最近事件数
+const ACTIVITY_SCAN: i64 = 1000;
+
+/// 最近动态：调用者能看到的页面（与 list_pages 同一可见性 SQL）上的发布/改版/提交事件，按时间倒序
+pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQuery>) -> J {
+    let uid = require_user(&c, ANY_SCOPE)?;
+    let pat = c.p.pat();
+    let limit = q.limit.unwrap_or(30);
+    if !(1..=50).contains(&limit) {
+        return Err(AppError::field("limit", "范围 1..50"));
+    }
+    // 每个所在组织、每类事件各沿 (org_id, created_at DESC) 索引取最近 ACTIVITY_SCAN 条，逐条过可见性，够 limit 条即停；再合并取前 limit 条。
+    // 可见性子查询带 OFFSET 0：阻止规划器把它摊平成对整个组织页面的哈希连接（那样会全扫 responses）。
+    // ponytail: 扫描窗口封顶保证最坏耗时；调用者可见的事件都比窗口旧时动态会变少，真遇到再给页面可见性做物化
+    let vis = |ev: &str| {
+        format!(
+            "CROSS JOIN LATERAL ({} WHERE p.org_id = mm.org_id AND p.id = {ev}.page_id AND p.deleted_at IS NULL AND m.user_id IS NOT NULL
+                AND ($3::uuid IS NULL OR p.project_id = $3) AND ($4::uuid IS NULL OR p.project_id = $4) OFFSET 0) x",
+            page_select()
+        )
+    };
+    let page_cols = "x.title, x.page_type, x.project_id, (x.role IN ('admin', 'editor') OR x.results_visible_to = 'viewers') AS can_view_results";
+    let sql = format!(
+        "SELECT e.etype, e.at, e.version, e.page_id, e.title, e.page_type, e.project_id, pr.name AS project_name,
+                u.display_name AS actor_name, e.nickname, e.can_view_results
+           FROM memberships mm
+           JOIN orgs mo ON mo.id = mm.org_id AND mo.deleted_at IS NULL
+           CROSS JOIN LATERAL (
+             (SELECT CASE WHEN v.version = 1 THEN 'published' ELSE 'updated' END AS etype, v.created_at AS at, v.version, v.page_id,
+                     v.created_by AS actor_id, NULL::text AS nickname, {page_cols}
+                FROM (SELECT page_id, version, created_by, created_at FROM page_versions
+                       WHERE org_id = mm.org_id ORDER BY created_at DESC LIMIT {ACTIVITY_SCAN}) v {}
+               WHERE {VISIBLE}
+               ORDER BY v.created_at DESC LIMIT $5)
+             UNION ALL
+             (SELECT 'submitted', r.created_at, r.page_version, r.page_id, r.user_id, r.nickname, {page_cols}
+                FROM (SELECT page_id, page_version, user_id, nickname, created_at FROM responses
+                       WHERE org_id = mm.org_id ORDER BY created_at DESC LIMIT {ACTIVITY_SCAN}) r {}
+               WHERE {VISIBLE}
+               ORDER BY r.created_at DESC LIMIT $5)) e
+           JOIN projects pr ON pr.id = e.project_id
+           LEFT JOIN users u ON u.id = e.actor_id
+          WHERE mm.user_id = $1 AND ($2::uuid IS NULL OR mm.org_id = $2)
+          ORDER BY e.at DESC LIMIT $5",
+        vis("v"),
+        vis("r")
+    );
+    let rows: Vec<ActivityRow> = sqlx::query_as(&sql)
+        .bind(uid)
+        .bind(pat.and_then(|p| p.org_id))
+        .bind(pat.and_then(|p| p.project_id))
+        .bind(q.project_id)
+        .bind(limit)
+        .fetch_all(&st.db)
+        .await?;
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            // 提交者名字仅对能看该页结果的调用者给出
+            let actor = match (&r.actor_name, &r.nickname) {
+                _ if r.etype == "submitted" && !r.can_view_results => Value::Null,
+                (Some(n), _) => json!({ "kind": "user", "name": n }),
+                (None, Some(n)) => json!({ "kind": "anonymous", "name": n }),
+                _ => Value::Null,
+            };
+            json!({
+                "type": r.etype, "at": ts(&r.at), "version": r.version, "actor": actor,
+                "page": { "id": r.page_id, "title": r.title, "page_type": r.page_type, "project": { "id": r.project_id, "name": r.project_name } },
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "items": items })))
 }
 
 // ---------------------------------------------------------------- 校验
@@ -167,6 +302,48 @@ fn check_model(v: Option<&str>) -> AppResult<Option<String>> {
         return Err(AppError::field("model", "长度需在 1..100 字符且不含控制字符"));
     }
     Ok(Some(t.to_string()))
+}
+
+/// 区分「没传」(None) 与「传了 null」(Some(None))
+fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// 截止时间：带时区的 RFC 3339，必须晚于现在
+fn check_closes_at(v: Option<&str>) -> AppResult<Option<DateTime<Utc>>> {
+    let Some(v) = v else { return Ok(None) };
+    let t = DateTime::parse_from_rfc3339(v.trim()).map_err(|_| AppError::field("closes_at", "必须是带时区的 RFC 3339 时间"))?.with_timezone(&Utc);
+    if t <= Utc::now() {
+        return Err(AppError::field("closes_at", "不能早于当前时间"));
+    }
+    Ok(Some(t))
+}
+
+/// 卡片摘要：trim 后 1..300 字符；空白视为清除
+fn check_summary(v: Option<&str>) -> AppResult<Option<String>> {
+    match v.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => text_field("summary", t, 1, 300).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// 关键数字：≤4 项，每项恰好 {label, value}，trim 后 1..20 字符；null / [] 视为清除
+fn check_highlights(v: Option<&Value>) -> AppResult<Option<Value>> {
+    let bad = || AppError::field("highlights", "必须是不超过 4 项的数组，每项为 {label, value}，均为 1..20 字符的字符串");
+    let items = match v {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(a)) if a.len() <= 4 => a,
+        _ => return Err(bad()),
+    };
+    let mut out = vec![];
+    for it in items {
+        let o = it.as_object().filter(|o| o.len() == 2).ok_or_else(bad)?;
+        let f = |k: &str| {
+            o.get(k).and_then(Value::as_str).map(str::trim).filter(|t| (1..=20).contains(&t.chars().count())).map(str::to_string).ok_or_else(bad)
+        };
+        out.push(json!({ "label": f("label")?, "value": f("value")? }));
+    }
+    Ok((!out.is_empty()).then_some(Value::Array(out)))
 }
 
 fn read_only_accept() -> AppError {
@@ -236,6 +413,9 @@ pub struct CreateReq {
     group_ids: Option<Vec<Uuid>>,
     accept_responses: Option<bool>,
     results_visible_to: Option<String>,
+    closes_at: Option<String>,
+    summary: Option<String>,
+    highlights: Option<Value>,
 }
 
 pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): JsonBody<CreateReq>) -> AppResult<(StatusCode, Json<Value>)> {
@@ -245,6 +425,9 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     let page_type = r.page_type.as_deref().unwrap_or("general");
     check_page_type(page_type)?;
     let model = check_model(r.model.as_deref())?;
+    let closes_at = check_closes_at(r.closes_at.as_deref())?;
+    let summary = check_summary(r.summary.as_deref())?;
+    let highlights = check_highlights(r.highlights.as_ref())?;
     let read_only = match page_category(page_type) {
         "collab" => return Err(AppError::field("page_type", "该类型尚未开放")),
         c => c == "read",
@@ -260,8 +443,9 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     let mut tx = st.db.begin().await?;
     let groups = check_groups(&mut tx, ctx.org_id(), &r.visibility, r.group_ids.as_deref()).await?;
     sqlx::query(
-        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat, page_type, generated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat, page_type, generated_by,
+                            closes_at, summary, highlights)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(id)
     .bind(ctx.org_id())
@@ -276,6 +460,9 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     .bind(c.p.pat().map(|p| p.id))
     .bind(page_type)
     .bind(&model)
+    .bind(closes_at)
+    .bind(&summary)
+    .bind(&highlights)
     .execute(&mut *tx)
     .await?;
     set_groups(&mut tx, ctx.org_id(), id, &groups).await?;
@@ -315,6 +502,13 @@ pub struct UpdateReq {
     group_ids: Option<Vec<Uuid>>,
     accept_responses: Option<bool>,
     results_visible_to: Option<String>,
+    /// 以下三项：传 null 清除，不传不变
+    #[serde(default, deserialize_with = "nullable")]
+    closes_at: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable")]
+    summary: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable")]
+    highlights: Option<Option<Value>>,
 }
 
 pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<UpdateReq>) -> J {
@@ -331,7 +525,13 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         r.group_ids.is_some(),
         r.accept_responses.is_some(),
         r.results_visible_to.is_some(),
+        r.closes_at.is_some(),
+        r.summary.is_some(),
+        r.highlights.is_some(),
     ])?;
+    let closes_at = r.closes_at.as_ref().map(|v| check_closes_at(v.as_deref())).transpose()?;
+    let summary = r.summary.as_ref().map(|v| check_summary(v.as_deref())).transpose()?;
+    let highlights = r.highlights.as_ref().map(|v| check_highlights(v.as_ref())).transpose()?;
     let title = r.title.as_deref().map(|t| text_field("title", t, 1, 200)).transpose()?;
     if let Some(v) = &r.visibility {
         check_visibility(v)?;
@@ -368,7 +568,9 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         "UPDATE pages SET title = COALESCE($3, title), content = COALESCE($4, content),
                 version = version + CASE WHEN $4::text IS NULL THEN 0 ELSE 1 END,
                 visibility = $5, accept_responses = COALESCE($6, accept_responses),
-                results_visible_to = COALESCE($7, results_visible_to), generated_by = COALESCE($8, generated_by), updated_at = now()
+                results_visible_to = COALESCE($7, results_visible_to), generated_by = COALESCE($8, generated_by),
+                closes_at = CASE WHEN $9 THEN $10 ELSE closes_at END, summary = CASE WHEN $11 THEN $12 ELSE summary END,
+                highlights = CASE WHEN $13 THEN $14 ELSE highlights END, updated_at = now()
           WHERE org_id = $1 AND id = $2",
     )
     .bind(ctx.org_id())
@@ -379,6 +581,12 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     .bind(r.accept_responses)
     .bind(&r.results_visible_to)
     .bind(&model)
+    .bind(closes_at.is_some())
+    .bind(closes_at.flatten())
+    .bind(summary.is_some())
+    .bind(summary.clone().flatten())
+    .bind(highlights.is_some())
+    .bind(highlights.clone().flatten())
     .execute(&mut *tx)
     .await?;
     if new_groups != old_groups {
@@ -396,6 +604,9 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         ("accept_responses", r.accept_responses.is_some()),
         ("results_visible_to", r.results_visible_to.is_some()),
         ("model", model.is_some()),
+        ("closes_at", closes_at.is_some()),
+        ("summary", summary.is_some()),
+        ("highlights", highlights.is_some()),
     ] {
         if present {
             fields.push(name);
@@ -535,6 +746,37 @@ async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
     };
     // 登录用户（非临时链接）每个版本限交一次
     let block_reason = a.block_reason().or(my_submitted.then_some("already_submitted"));
+    // 参与情况：仅组织内登录用户、非临时链接访问时给出（外部人不应看到组织规模），否则整体 null；
+    // 未交名单再限能看结果者（public 页面无「应交」集合，同为 null）
+    let participation = if a.user_id().is_some() && a.share().is_none() && p.org_role.is_some() {
+        let (respondent_count, eligible_count): (i64, Option<i64>) =
+            sqlx::query_as(&format!("SELECT {} FROM pages x WHERE x.org_id = $1 AND x.id = $2", counts_sql("x")))
+                .bind(a.org_id())
+                .bind(a.page_id())
+                .fetch_one(&st.db)
+                .await?;
+        let pending = if a.can_view_results() && eligible_count.is_some() {
+            let rows: Vec<(Uuid, String)> = sqlx::query_as(&format!(
+                "SELECT u.id, u.display_name FROM pages x
+                   CROSS JOIN LATERAL ({}) e
+                   JOIN users u ON u.id = e.user_id
+                  WHERE x.org_id = $1 AND x.id = $2
+                    AND NOT EXISTS (SELECT 1 FROM responses r WHERE r.page_id = x.id AND r.user_id = e.user_id AND r.page_version = x.version)
+                  ORDER BY u.display_name, u.id LIMIT 50",
+                eligible_sql("x.org_id", "x.project_id", "x.id", "x.visibility")
+            ))
+            .bind(a.org_id())
+            .bind(a.page_id())
+            .fetch_all(&st.db)
+            .await?;
+            Some(rows.iter().map(|(id, n)| brief(*id, n)).collect::<Vec<_>>())
+        } else {
+            None
+        };
+        json!({ "eligible_count": eligible_count, "respondent_count": respondent_count, "pending": pending })
+    } else {
+        Value::Null
+    };
     let share = a.share().map(|l| {
         json!({ "id": l.id, "label": l.label, "expires_at": ts(&l.expires_at), "remaining_uses": l.max_uses.map(|m| (m - l.use_count).max(0)) })
     });
@@ -543,6 +785,7 @@ async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
             "id": p.id, "title": p.title, "kind": p.kind, "version": p.version,
             "page_type": p.page_type, "category": page_category(&p.page_type), "generated_by": p.generated_by,
             "accept_responses": p.accept_responses, "results_visible_to": p.results_visible_to, "updated_at": ts(&p.updated_at),
+            "closes_at": ts_opt(&p.closes_at), "summary": p.summary, "highlights": p.highlights,
             "project": { "id": p.project_id, "name": p.project_name }, "org": { "id": p.org_id, "name": p.org_name },
         },
         "content": content,
@@ -555,6 +798,7 @@ async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
         "my_response": my_response,
         "versions": versions,
         "share_link": share,
+        "participation": participation,
     })))
 }
 

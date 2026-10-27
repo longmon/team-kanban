@@ -297,6 +297,9 @@ pub struct PageRow {
     pub results_visible_to: String,
     pub response_seq: i64,
     pub updated_at: DateTime<Utc>,
+    pub closes_at: Option<DateTime<Utc>>,
+    pub summary: Option<String>,
+    pub highlights: Option<serde_json::Value>,
     pub project_name: String,
     pub org_name: String,
     pub org_role: Option<String>,
@@ -327,7 +330,7 @@ impl PageRow {
 async fn load_page(db: &PgPool, page_id: Uuid, user: Option<Uuid>) -> AppResult<Option<PageRow>> {
     let sql = format!(
         "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.generated_by, p.version, p.visibility, p.accept_responses,
-                p.results_visible_to, p.response_seq, p.updated_at, pr.name AS project_name, o.name AS org_name,
+                p.results_visible_to, p.response_seq, p.updated_at, p.closes_at, p.summary, p.highlights, pr.name AS project_name, o.name AS org_name,
                 m.role AS org_role, {} AS role,
                 EXISTS (SELECT 1 FROM page_groups pg
                           JOIN group_members gm ON gm.org_id = pg.org_id AND gm.group_id = pg.group_id
@@ -516,6 +519,8 @@ pub async fn page_access(db: &PgPool, cfg: &Config, c: &Caller, target: Target<'
         Some("not_allowed")
     } else if !page.accept_responses {
         Some("responses_closed")
+    } else if page.closes_at.is_some_and(|t| t <= Utc::now()) {
+        Some("closed")
     } else if share.as_ref().is_some_and(|l| l.max_uses.is_some_and(|m| l.use_count >= m)) {
         Some("share_link_exhausted")
     } else {

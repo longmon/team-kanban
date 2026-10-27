@@ -57,6 +57,14 @@ const HTML_GUIDE: &str = "\
 - 外部用户不在项目里：发布后用 create_share_link 生成临时链接，或 visibility=public。
 ";
 
+const CARD_GUIDE: &str = "\
+## 卡片信息（看板首页的格子卡片）
+- 所有页面都给 `summary`：一句话（≤300 字）说明这是什么、要读者做什么，例如「请在周五前为三个技术方案投票」。
+- 收集类（vote）页面设 `closes_at` 截止时间：带时区的 ISO 8601，如 `2026-10-31T18:00:00+08:00`，必须晚于现在；到期后不再接受提交，卡片显示「已截止」。
+- 报告类页面给 2–4 个 `highlights` 关键数字：`[{\"label\": \"转化率\", \"value\": \"12.5%\"}]`，label、value 各 ≤20 字，最多 4 项。
+- update_page 可改这三项：closes_at / summary 传空字符串清除，highlights 传 [] 清除。
+";
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 enum Kind {
@@ -88,6 +96,15 @@ fn check_read_only_spec(page_type: &str, spec: &str) -> R<()> {
         ));
     }
     Ok(())
+}
+
+/// 卡片上的一个关键数字
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Highlight {
+    /// 名称，1..20 字符，如 "转化率"
+    label: String,
+    /// 数值（字符串，可带单位），1..20 字符，如 "12.5%"
+    value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -153,6 +170,13 @@ struct PublishArgs {
     accept_responses: Option<bool>,
     /// 谁能看结果，默认 managers
     results_visible_to: Option<ResultsVisibleTo>,
+    /// 截止时间，带时区的 ISO 8601 / RFC 3339，如 "2026-10-31T18:00:00+08:00"（不接受不带时区的本地时间；
+    /// 用户说「周五 18 点」时按用户所在时区换算后带上偏移）。必须晚于现在，到期后不再接受提交。收集类（vote）页面应设置
+    closes_at: Option<String>,
+    /// 卡片摘要：一句话说明页面是什么、要读者做什么，1..300 字符。所有页面都应提供
+    summary: Option<String>,
+    /// 卡片上的关键数字，最多 4 项。报告类页面给 2–4 个最重要的指标
+    highlights: Option<Vec<Highlight>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -174,6 +198,12 @@ struct UpdateArgs {
     groups: Option<Vec<String>>,
     accept_responses: Option<bool>,
     results_visible_to: Option<ResultsVisibleTo>,
+    /// 截止时间，带时区的 ISO 8601 / RFC 3339（同 publish_page），必须晚于现在；传空字符串 "" 清除截止时间
+    closes_at: Option<String>,
+    /// 卡片摘要，1..300 字符；传空字符串 "" 清除
+    summary: Option<String>,
+    /// 关键数字，最多 4 项，整体替换；传 [] 清除
+    highlights: Option<Vec<Highlight>>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -778,6 +808,8 @@ impl Kanban {
             }
             out += HTML_GUIDE;
         }
+        out += "\n";
+        out += CARD_GUIDE;
         Ok(out)
     }
 
@@ -821,6 +853,7 @@ impl Kanban {
             "project_id": project["id"], "title": a.title, "kind": kind, "page_type": page_type, "content": content,
             "model": a.model, "visibility": visibility,
             "accept_responses": a.accept_responses, "results_visible_to": a.results_visible_to,
+            "closes_at": a.closes_at, "summary": a.summary, "highlights": a.highlights,
         });
         if !group_ids.is_empty() {
             body["group_ids"] = json!(group_ids);
@@ -841,6 +874,9 @@ impl Kanban {
             && a.groups.is_none()
             && a.accept_responses.is_none()
             && a.results_visible_to.is_none()
+            && a.closes_at.is_none()
+            && a.summary.is_none()
+            && a.highlights.is_none()
         {
             return Err("invalid_argument: 至少提供一个要修改的字段".into());
         }
@@ -874,6 +910,15 @@ impl Kanban {
             if !v.is_null() {
                 body[k] = v;
             }
+        }
+        // 空字符串 → null（清除）
+        for (k, v) in [("closes_at", a.closes_at), ("summary", a.summary)] {
+            if let Some(v) = v {
+                body[k] = if v.trim().is_empty() { Value::Null } else { v.into() };
+            }
+        }
+        if let Some(h) = a.highlights {
+            body["highlights"] = json!(h);
         }
         let page = self
             .api(&s, Method::PATCH, &path, &[], Some(body), None)
@@ -914,6 +959,7 @@ const INSTRUCTIONS: &str = "Team Kanban：把报告、知识文档、流程图/�
 发布前先按用户意图选 page_type（用户指定了类型就照用）：只给人看、不需要回复 → report / knowledge / flowchart / architecture\
 （只读页面，不能放 Form 或 @ToAssistant 按钮，发完把 url 交给用户即可，不要调用 get_responses 等待）；\
 需要对方选择或填写 → vote，发布后用 get_responses 等待。流程图、架构图用 Diagram 组件写 Mermaid。拿不准时：需要回复选 vote，不需要选 report。\
+每个页面都给一句话 summary；vote 页面设 closes_at 截止时间；报告给 2–4 个 highlights 关键数字。\
 本机可能配置了多个服务器（profile）、组织、项目和群组。目标选择规则：用户指明了就带上 server/org/project/groups；\
 用户没指明时，只有一个候选的工具会自动用，有多个候选时工具返回 {\"need_selection\": ...} 和候选列表——这时不要猜，\
 把候选展示给用户，问清发到哪个服务器、哪个项目或群组，再带参数重试。默认服务器只在用户用 `tkanban default` 显式设置过时才生效。\
@@ -967,6 +1013,8 @@ flowchart 流程/步骤/决策分支（用 Diagram 组件写 Mermaid）、archit
 发布后把 url 交给用户即可，不要调用 get_responses 等待。需要对方选择或填写 → vote（投票、表单、问卷、确认单），发布后用 get_responses(wait_seconds=25) 等待。\
 拿不准时：需要回复选 vote，不需要回复选 report。\
 model 必填：填你自己（生成内容的 AI）的模型名称，例如 \"Claude Opus 5.5\"、\"GPT-5\"，按你自己的实际身份填写，不要编造；页面上会显示「由 model 生成」。\
+卡片信息：所有页面都给一句话 summary；收集类（vote）页面设 closes_at 截止时间（带时区的 ISO 8601，如 2026-10-31T18:00:00+08:00，须晚于现在）；\
+报告类给 2–4 个 highlights 关键数字（[{label, value}]，各 ≤20 字）。\
 目标按 服务器 → 组织 → 项目 逐级定位：用户指明的用 server/org/project/groups 传入；profile 里配置的默认 org/project/groups 视为已指定；\
 某一级只有一个候选会自动选；有多个候选时返回 {\"need_selection\": \"server|org|project|group\", \"candidates\": [...]}（不是错误）——\
 此时不要猜，把候选告诉用户、问清发到哪个服务器/项目/群组后带参数重试。给了 groups（群组名或 UUID）就发到这些群组（visibility=groups），\
@@ -982,7 +1030,8 @@ OpenUI 会先在本地校验，失败时返回 openui_invalid 与逐条 `行:列
 
     #[tool(
         description = "更新已发布页面（链接不变，已有提交保留；内容变化时 version+1 并保存为新版本，用户可切换查看历史版本；登录用户每个版本限交一次，已提交者可对新版本再交）。server 传 publish_page 返回的 server（多个服务器时必需）。至少给一个要改的字段；内容须与页面 kind 一致，OpenUI 同样本地校验。\
-改了内容时传 model：你自己（生成内容的 AI）的模型名称，例如 \"Claude Opus 5.5\"、\"GPT-5\"，按你自己的实际身份填写，不要编造。"
+改了内容时传 model：你自己（生成内容的 AI）的模型名称，例如 \"Claude Opus 5.5\"、\"GPT-5\"，按你自己的实际身份填写，不要编造。\
+也可改卡片信息 closes_at（带时区的 ISO 8601，须晚于现在）/ summary / highlights：closes_at、summary 传空字符串清除，highlights 传 [] 清除。"
     )]
     async fn update_page(
         &self,

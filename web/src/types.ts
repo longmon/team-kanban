@@ -27,6 +27,22 @@ export type Page = {
   can_manage: boolean;
   /** 当前用户是否已提交过（后端未返回时按 false） */
   my_submitted?: boolean;
+  /** 截止时间（到点后拒收）；以下字段旧后端没有，缺失时前端降级 */
+  closes_at?: string | null;
+  summary?: string | null;
+  highlights?: Highlight[] | null;
+  /** 当前版本去重参与人数 */
+  respondent_count?: number;
+  /** 可提交的组织内人数（public 页面为 null） */
+  eligible_count?: number | null;
+};
+export type Highlight = { label: string; value: string };
+export type Participation = { eligible_count: number | null; respondent_count: number; pending: UserBrief[] | null };
+/** GET /api/activity */
+export type Activity = {
+  type: "published" | "updated" | "submitted"; at: string; version: number;
+  page: { id: string; title: string; page_type: PageType; project: { id: string; name: string } };
+  actor: { kind: "user" | "anonymous"; name: string } | null;
 };
 /** GET /api/me/projects（跨组织，不分页） */
 export type MyProject = {
@@ -79,12 +95,13 @@ export type PageView = {
     page_type: PageType; category: PageCategory; generated_by: string | null;
     accept_responses: boolean; results_visible_to: "managers" | "viewers"; updated_at: string;
     project: { id: string; name: string }; org: { id: string; name: string };
+    closes_at?: string | null; summary?: string | null; highlights?: Highlight[] | null;
   };
   /** 所查看版本的内容（version/title 为该版本快照；旧后端无这两个字段时按当前版本处理） */
   content: ({ kind: "openui"; spec: string } | { kind: "html"; frame_url: string; frame_origin: string }) & { version?: number; title?: string };
   viewer: { type: "user"; user_id: string; display_name: string } | { type: "anonymous" };
   can_submit: boolean;
-  submit_block_reason: null | "read_only" | "responses_closed" | "share_link_exhausted" | "already_submitted";
+  submit_block_reason: null | "read_only" | "responses_closed" | "closed" | "share_link_exhausted" | "already_submitted";
   can_view_results: boolean;
   can_manage: boolean;
   my_submitted?: boolean;
@@ -93,6 +110,8 @@ export type PageView = {
   /** 全部版本（降序）；临时链接为 null */
   versions?: { version: number; created_at: string }[] | null;
   share_link: null | { id: string; label: string; expires_at: string; remaining_uses: number | null };
+  /** 参与进度（旧后端无） */
+  participation?: Participation | null;
 };
 
 export type MyResponse = { seq: number; page_version: number; data: Record<string, unknown>; created_at: string };

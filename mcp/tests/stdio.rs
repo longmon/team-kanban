@@ -529,6 +529,33 @@ async fn page_type_required_and_read_only_lint() {
 }
 
 #[tokio::test]
+async fn card_fields_pass_through() {
+    let (url, st) = start_mock().await;
+    let c = client(&url, TOKEN).await;
+    let (_, guide) = call(&c, "get_ui_guide", json!({ "kind": "html" })).await;
+    assert!(guide.contains("closes_at") && guide.contains("highlights") && guide.contains("summary"), "{guide}");
+    let r = ok_json(call(&c, "publish_page", json!({ "page_type": "vote", "model": "Claude Opus 5.5", "project": PROJECT, "title": "t",
+        "spec": include_str!("../guide/vote.oui"), "closes_at": "2099-10-31T18:00:00+08:00", "summary": "请投票",
+        "highlights": [{ "label": "选项", "value": "3" }] })).await);
+    let id = r["id"].as_str().unwrap().to_string();
+    {
+        let m = st.0.lock().unwrap();
+        let w = &m.writes[0];
+        assert_eq!((w["closes_at"].as_str(), w["summary"].as_str()), (Some("2099-10-31T18:00:00+08:00"), Some("请投票")));
+        assert_eq!(w["highlights"], json!([{ "label": "选项", "value": "3" }]));
+    }
+    // 只改卡片信息也算有修改；空字符串 / [] 发成清除
+    ok_json(call(&c, "update_page", json!({ "page_id": id, "closes_at": "", "summary": " ", "highlights": [] })).await);
+    {
+        let m = st.0.lock().unwrap();
+        assert_eq!(m.writes[1], json!({ "closes_at": null, "summary": null, "highlights": [] }));
+    }
+    ok_json(call(&c, "update_page", json!({ "page_id": id, "closes_at": "2099-11-01T00:00:00Z" })).await);
+    assert_eq!(st.0.lock().unwrap().writes[2], json!({ "closes_at": "2099-11-01T00:00:00Z" }));
+    c.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn invalid_pat_is_reported() {
     let (url, _) = start_mock().await;
     let c = client(&url, "arp_bad").await;
