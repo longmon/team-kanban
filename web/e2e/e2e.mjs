@@ -315,7 +315,7 @@ await step("list-filter-by-type", async () => {
   if ((await ind.evaluate((e) => getComputedStyle(e).transitionDuration)).split(",")[0].trim() !== "0.25s") throw new Error("chip indicator has no slide transition");
   await filters.getByRole("button", { name: "只读", exact: true }).click();
   await onPressed();
-  await page.locator(".list-title", { hasText: "流程图" }).waitFor();
+  await page.waitForFunction(() => document.querySelectorAll(".list-title").length === 3);
   const titles = async () => (await page.locator(".list-title").allTextContents()).sort();
   let t = await titles();
   if (JSON.stringify(t) !== JSON.stringify(["只读报告", "流程图", "知识库"].sort())) throw new Error("只读: " + t);
