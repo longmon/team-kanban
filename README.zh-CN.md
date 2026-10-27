@@ -50,7 +50,7 @@
   - 收集回复：投票 `vote`（投票 / 表单 / 问卷），agent 用 `get_responses` 等待。
   - agent 按需求选类型，你指定了就照用；旧页面都是通用 `general`，行为不变。
 - **可见性**：`public` / `org` / `project` / `groups`；对外用带有效期、次数上限、可选密码的临时链接。
-- **生成模型**：每个页面记录由哪个 AI 模型生成，并显示「由 {model} 生成」。
+- **生成模型**：发布页面的 agent 上报自己的模型名（MCP 的 `publish_page` 必填），页面显示「由 {model} 生成」；未上报的页面不显示。
 - **agent 访问**用个人访问令牌（PAT），scope：`publish`、`read_responses`。
 
 ## 2. 架构
