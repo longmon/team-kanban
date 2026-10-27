@@ -15,7 +15,8 @@ services:
       retries: 20
     restart: unless-stopped
 
-  app:
+  team-kanban-mcp-server:
+    container_name: team-kanban
     build:
       context: .
       dockerfile: server/Dockerfile
@@ -46,7 +47,7 @@ services:
     image: caddy:2-alpine
     network_mode: host # 直接监听宿主 80/443，由 firewalld 控制来源（docker 端口发布会绕过 firewalld）
     depends_on:
-      app:
+      team-kanban-mcp-server:
         condition: service_healthy
     environment:
       PUBLIC_HOST: ${PUBLIC_HOST:?需要设置 PUBLIC_HOST}

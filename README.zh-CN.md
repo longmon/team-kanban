@@ -107,7 +107,7 @@ mcp/                    本机 tkanban 二进制：多服务器 profile 命令�
   src/                  main.rs cli.rs config.rs openui.rs
   vendor/lang-core.js   打包好的 @openuidev/lang-core，由 rquickjs 内嵌执行做本地校验
 docs/                   design.md、api.md、design-system.md
-docker-compose.yml      pg / app / caddy 三个服务
+docker-compose.yml      pg / team-kanban-mcp-server / caddy 三个服务
 Caddyfile               两个主机名反代到 127.0.0.1:8080，只信任 Cloudflare 段的真实 IP
 ```
 
@@ -308,7 +308,7 @@ PUBLIC_HOST=localhost   # 仅为通过 compose 校验，本地不起 caddy
 PAGES_HOST=localhost
 EOF
 chmod 600 .env
-docker compose up -d --build pg app
+docker compose up -d --build pg team-kanban-mcp-server
 ```
 
 打开 <http://127.0.0.1:8080> 注册账号 → 建组织 → 建项目 → 在「令牌」页创建 PAT，然后按 [3.2](#32-连接服务器) 用 `--url http://127.0.0.1:8080` 连接。
@@ -320,9 +320,9 @@ docker compose up -d --build pg app
 常用命令：
 
 ```bash
-docker compose logs -f app          # 看日志
+docker compose logs -f team-kanban-mcp-server          # 看日志
 docker compose down                 # 停止（数据留在 pgdata 卷里；加 -v 会一并删除）
-git pull && docker compose up -d --build pg app   # 更新
+git pull && docker compose up -d --build pg team-kanban-mcp-server   # 更新
 ```
 
 ### 4.2 使用外部 PostgreSQL
@@ -459,8 +459,8 @@ scripts/deploy.sh user@host
 
 ```bash
 cd /opt/agent-relay
-docker compose ps                    # pg / app / caddy 都应为 healthy
-docker compose logs --tail=100 app   # 应有 listening on 0.0.0.0:8080，无「迁移失败」
+docker compose ps                    # pg / team-kanban-mcp-server / caddy 都应为 healthy
+docker compose logs --tail=100 team-kanban-mcp-server   # 应有 listening on 0.0.0.0:8080，无「迁移失败」
 docker compose logs --tail=50 caddy  # 证书是否签发成功
 curl --noproxy '*' -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/   # 期望 200
 ```
@@ -521,7 +521,7 @@ docker compose exec -T pg pg_dump -U postgres relay | gzip > backups/relay-$(dat
 | `PRIMARY_HOST` | `PUBLIC_HOST` | `PUBLIC_HOST` 写了多个时，指定哪个是主站 |
 | `PG_PASSWORD` | `relay` | Postgres 密码，只在 `pgdata` 卷首次创建时生效 |
 
-注意：compose 下 `app` 的 `TRUST_PROXY` 默认是 `1`，与二进制自身默认的 `0` 不同。
+注意：compose 下 `team-kanban-mcp-server` 的 `TRUST_PROXY` 默认是 `1`，与二进制自身默认的 `0` 不同。
 
 ## 5. 测试
 
