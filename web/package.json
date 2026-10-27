@@ -11,12 +11,14 @@
     "check": "tsx scripts/check-examples.ts && tsx scripts/check-data.ts"
   },
   "dependencies": {
+    "@animate-ui/react": "2.3.0",
     "@fontsource-variable/nunito": "5.3.0",
     "@openuidev/react-lang": "1.0.1",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "1.61.0",
     "mermaid": "11.17.2",
+    "motion": "14.6.0",
     "radix-ui": "1.8.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
