@@ -108,7 +108,7 @@ mcp/                    Local tkanban binary: multi-server profile CLI + stdio M
   src/                  main.rs cli.rs config.rs openui.rs
   vendor/lang-core.js   bundled @openuidev/lang-core, executed in embedded rquickjs for local validation
 docs/                   design.md, api.md, design-system.md
-docker-compose.yml      three services: pg / team-kanban-mcp-server / caddy
+docker-compose.yml      three services: pg / mcp-server / caddy
 Caddyfile               reverse-proxies both host names to 127.0.0.1:8080; trusts real IPs only from Cloudflare ranges
 ```
 
@@ -309,7 +309,7 @@ PUBLIC_HOST=localhost   # only to pass compose validation; caddy is not started 
 PAGES_HOST=localhost
 EOF
 chmod 600 .env
-docker compose up -d --build pg team-kanban-mcp-server
+docker compose up -d --build pg mcp-server
 ```
 
 Open <http://127.0.0.1:8080>, register, create an org and a project, then create a PAT on the Tokens page and continue with [3.2](#32-connect-to-a-server) using `--url http://127.0.0.1:8080`.
@@ -321,9 +321,9 @@ Open <http://127.0.0.1:8080>, register, create an org and a project, then create
 Common commands:
 
 ```bash
-docker compose logs -f team-kanban-mcp-server          # logs
+docker compose logs -f mcp-server          # logs
 docker compose down                 # stop (data stays in the pgdata volume; add -v to wipe it)
-git pull && docker compose up -d --build pg team-kanban-mcp-server   # update
+git pull && docker compose up -d --build pg mcp-server   # update
 ```
 
 ### 4.2 Using an external PostgreSQL
@@ -460,8 +460,8 @@ On the server:
 
 ```bash
 cd /opt/agent-relay
-docker compose ps                    # pg / team-kanban-mcp-server / caddy should all be healthy
-docker compose logs --tail=100 team-kanban-mcp-server   # expect "listening on 0.0.0.0:8080" and no 迁移失败 (migration failed)
+docker compose ps                    # pg / mcp-server / caddy should all be healthy
+docker compose logs --tail=100 mcp-server   # expect "listening on 0.0.0.0:8080" and no 迁移失败 (migration failed)
 docker compose logs --tail=50 caddy  # were certificates issued?
 curl --noproxy '*' -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/   # expect 200
 ```
@@ -522,7 +522,7 @@ Used only by `docker-compose.yml` / Caddy:
 | `PRIMARY_HOST` | `PUBLIC_HOST` | The canonical main host when `PUBLIC_HOST` lists several |
 | `PG_PASSWORD` | `relay` | Postgres password, applied only when the `pgdata` volume is first created |
 
-Note: under compose, `team-kanban-mcp-server` defaults to `TRUST_PROXY=1`, unlike the binary's own default of `0`.
+Note: under compose, `mcp-server` defaults to `TRUST_PROXY=1`, unlike the binary's own default of `0`.
 
 ## 5. Testing
 

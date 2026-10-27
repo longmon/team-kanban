@@ -431,7 +431,7 @@ Strict-Transport-Security 由 Caddy 加
 ### 7.5 部署
 
 - `Dockerfile` 三阶段：`node:22-alpine` 构建 web（`OPENUI_TELEMETRY_DISABLED=1 npm ci && npm run build`）→ `rust:1-alpine` 构建 server（rust-embed 嵌入 `web/dist`，`SQLX_OFFLINE=true` 用提交到仓库的 `.sqlx/`）→ `alpine` 运行（非 root，仅一个二进制）。
-- `docker-compose.yml`：`team-kanban-mcp-server`（容器名 team-kanban，端口只绑 127.0.0.1:8080）+ `pg`（postgres:17-alpine，命名卷，健康检查）；app 启动时自动跑迁移。
+- `docker-compose.yml`：`mcp-server`（容器名 team-kanban-mcp-server，端口只绑 127.0.0.1:8080）+ `pg`（postgres:17-alpine，命名卷，健康检查）；app 启动时自动跑迁移。
 - 外网：Caddy 反代两个主机名到同一 app：
   ```
   relay.example.com { reverse_proxy 127.0.0.1:8080 }

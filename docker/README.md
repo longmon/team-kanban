@@ -29,8 +29,8 @@ services:
       retries: 20
     restart: unless-stopped
 
-  team-kanban-mcp-server:
-    container_name: team-kanban
+  mcp-server:
+    container_name: team-kanban-mcp-server
     image: DOCKERHUB_NAMESPACE/team-kanban-mcp-server:latest
     depends_on:
       pg:
@@ -111,7 +111,7 @@ You need **two host names** pointing to the server, e.g. `kanban.example.com` (m
 
    ```
    kanban.example.com, pages.example.com {
-   	reverse_proxy team-kanban-mcp-server:8080
+   	reverse_proxy mcp-server:8080
    }
    ```
 
@@ -143,16 +143,16 @@ Point `DATABASE_URL` at your database and drop the `pg` service. Requirements:
 - An empty database and an account that can create and alter tables in it.
 - **No TLS**: the server is currently built without TLS for database connections, so managed databases that enforce `sslmode=require` cannot be used. Keep the database on a private network.
 - No PgBouncer in transaction mode (migrations use a session-level advisory lock).
-- PostgreSQL on the Docker host: use `host.docker.internal` and, on Linux, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the `team-kanban-mcp-server` service.
+- PostgreSQL on the Docker host: use `host.docker.internal` and, on Linux, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the `mcp-server` service.
 
 ## Operations
 
-- **Upgrade**: `docker compose pull team-kanban-mcp-server && docker compose up -d team-kanban-mcp-server`. Migrations run at startup; back up first. Rolling back to an older image after a new migration has run requires reverting that migration manually.
+- **Upgrade**: `docker compose pull mcp-server && docker compose up -d mcp-server`. Migrations run at startup; back up first. Rolling back to an older image after a new migration has run requires reverting that migration manually.
 - **Backup**: `docker compose exec -T pg pg_dump -U postgres -Fc kanban > kanban-$(date +%F).dump`
 - **Restore**: `docker compose exec -T pg pg_restore -U postgres -d kanban --clean < kanban-YYYY-MM-DD.dump`
-- **Logs**: `docker compose logs -f team-kanban-mcp-server`
+- **Logs**: `docker compose logs -f mcp-server`
 - **Health check**: `GET /healthz` returns 200.
-- **Single instance only**: rate limiting and long-poll notifications are in-process. Run one `team-kanban-mcp-server` container per database.
+- **Single instance only**: rate limiting and long-poll notifications are in-process. Run one `mcp-server` container per database.
 
 ---
 
@@ -237,13 +237,13 @@ codex mcp add team-kanban -- tkanban mcp                             # Codex
 - 一个空库，连接账号要能在库里建表、改表。
 - **不支持加密连接**：服务端目前没有编译数据库 TLS 支持，强制 `sslmode=require` 的托管数据库连不上，数据库请放在内网。
 - 不要接 PgBouncer 的事务模式（迁移用了会话级的 advisory lock）。
-- PostgreSQL 装在宿主机上时，主机名写 `host.docker.internal`；Linux 上还要给 `team-kanban-mcp-server` 服务加 `extra_hosts: ["host.docker.internal:host-gateway"]`。
+- PostgreSQL 装在宿主机上时，主机名写 `host.docker.internal`；Linux 上还要给 `mcp-server` 服务加 `extra_hosts: ["host.docker.internal:host-gateway"]`。
 
 ### 运维
 
-- **升级**：`docker compose pull team-kanban-mcp-server && docker compose up -d team-kanban-mcp-server`。启动时会自动迁移，升级前先备份；新迁移执行后再回退旧镜像，需要先手动撤销那次迁移。
+- **升级**：`docker compose pull mcp-server && docker compose up -d mcp-server`。启动时会自动迁移，升级前先备份；新迁移执行后再回退旧镜像，需要先手动撤销那次迁移。
 - **备份**：`docker compose exec -T pg pg_dump -U postgres -Fc kanban > kanban-$(date +%F).dump`
 - **恢复**：`docker compose exec -T pg pg_restore -U postgres -d kanban --clean < kanban-YYYY-MM-DD.dump`
-- **日志**：`docker compose logs -f team-kanban-mcp-server`
+- **日志**：`docker compose logs -f mcp-server`
 - **健康检查**：`GET /healthz` 返回 200。
-- **只能单实例**：限流和长轮询通知都在进程内，一个数据库只跑一个 `team-kanban-mcp-server` 容器。
+- **只能单实例**：限流和长轮询通知都在进程内，一个数据库只跑一个 `mcp-server` 容器。
