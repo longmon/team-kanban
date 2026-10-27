@@ -52,7 +52,8 @@ const HTML_GUIDE: &str = "\
 - 一个自包含的完整 HTML 文档：内联 CSS/JS；图表用内联 SVG 或从 CDN 引入库。
 - 页面运行在沙箱 iframe 中，不能用 cookie / localStorage / 弹窗。
 - 回传数据：`<form data-kanban>…<button>提交</button></form>` 会被自动接管，按字段 name 序列化（同名多值成数组，忽略文件字段），表单内显示「提交中… / 已提交 / 提交失败」；或在脚本里调用 `kanban.submit({任意 JSON})`，返回 Promise<{seq}>。
-- 每次提交都是一条新记录，之后用 get_responses 拉取。
+- 投票、表单等收集类页面优先用 OpenUI；必须用 html 时一律写成 `<form data-kanban>`，每个选项控件带 name/value 并用 label 包裹，用户提交后会自动回填答案、高亮已选、置灰其余并锁定。自写 `kanban.submit` 的页面需自行读取 `kanban.init.my_response` 回显。
+- 每个版本每位登录用户只能提交一次（update_page 改内容会生成新版本，可再交）；每次提交是一条新记录，之后用 get_responses 拉取。
 - 外部用户不在项目里：发布后用 create_share_link 生成临时链接，或 visibility=public。
 ";
 
@@ -980,7 +981,7 @@ OpenUI 会先在本地校验，失败时返回 openui_invalid 与逐条 `行:列
     }
 
     #[tool(
-        description = "更新已发布页面（链接不变，已有提交保留；内容变化时 version+1）。server 传 publish_page 返回的 server（多个服务器时必需）。至少给一个要改的字段；内容须与页面 kind 一致，OpenUI 同样本地校验。\
+        description = "更新已发布页面（链接不变，已有提交保留；内容变化时 version+1 并保存为新版本，用户可切换查看历史版本；登录用户每个版本限交一次，已提交者可对新版本再交）。server 传 publish_page 返回的 server（多个服务器时必需）。至少给一个要改的字段；内容须与页面 kind 一致，OpenUI 同样本地校验。\
 改了内容时传 model：你自己（生成内容的 AI）的模型名称，例如 \"Claude Opus 5.5\"、\"GPT-5\"，按你自己的实际身份填写，不要编造。"
     )]
     async fn update_page(

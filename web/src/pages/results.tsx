@@ -1,13 +1,14 @@
 // 提交结果：SSE 实时表格 + 计数条 + CSV 导出（api.md §8.3、§8.4，design §7.4）
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, Inbox, RotateCw } from "lucide-react";
+import { Check, Download, Inbox, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { ApiError, get, shareGrant } from "../api";
-import { cellText, flattenData, tallies, unionColumns } from "../data";
+import { cellText, colLabel, flattenData, specLabels, tallies, unionColumns, valLabel } from "../data";
 import { Link } from "../router";
 import { AuthCard, Empty, ErrorBox, fmtTime, Loading, Notice, Page, PageHeader, TableCard, useLoad, useOwnOrg } from "../ui";
+import { Crumbs } from "./view";
 import { CountUp } from "../openui-lib/util";
 import type { PageView, Response } from "../types";
 import type { Source } from "./view";
@@ -22,9 +23,9 @@ export function ResultsPage({ id }: { id: string }) {
   const v = view.data!;
   return (
     <Page>
-      <PageHeader crumbs={<><span>{v.page.org.name}</span><span>{v.page.project.name}</span><Link to={`/pages/${id}`}>{v.page.title}</Link></>} title="提交结果" />
+      <PageHeader crumbs={<><Crumbs view={v} /><Link to={`/pages/${id}`}>{v.page.title}</Link></>} title="提交结果" />
       {v.can_view_results
-        ? <ResultsView src={{ kind: "page", id }} pageId={id} manager={v.can_manage} />
+        ? <ResultsView src={{ kind: "page", id }} pageId={id} manager={v.can_manage} spec={v.content.kind === "openui" ? v.content.spec : undefined} />
         : <Notice tone="warning">结果仅对页面管理者可见。</Notice>}
     </Page>
   );
@@ -33,7 +34,15 @@ export function ResultsPage({ id }: { id: string }) {
 type Status = "connecting" | "live" | "reconnecting" | "closed";
 const STATUS_TEXT: Record<Status, string> = { connecting: "连接中…", live: "实时更新中", reconnecting: "重新连接中…", closed: "连接已断开" };
 
-export function ResultsView({ src, pageId, manager }: { src: Source; pageId: string; manager: boolean }) {
+/**
+ * spec：OpenUI 原文，用来把字段名/选项值显示成标签；mine：我刚提交的数据（扁平化前），对应选项条播一次确认动效；
+ * compact：详情页内嵌（窄栏），统计与明细上下排
+ */
+export function ResultsView({ src, pageId, manager, spec, mine, compact, onCount }: {
+  src: Source; pageId: string; manager: boolean; spec?: string; mine?: Record<string, unknown> | null; compact?: boolean; onCount?: (n: number) => void;
+}) {
+  const labels = useMemo(() => (spec ? specLabels(spec) : null), [spec]);
+  const mineFlat = useMemo(() => (mine ? flattenData(mine) : null), [mine]);
   const [rows, setRows] = useState<Response[]>([]);
   const [status, setStatus] = useState<Status>("connecting");
   const [pageEvent, setPageEvent] = useState<{ version: number; accept_responses: boolean } | null>(null);
@@ -68,9 +77,15 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
     return () => es.close();
   }, [src.kind === "page" ? src.id : src.token, pageId, n]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => void (status !== "connecting" && onCount?.(rows.length)), [rows.length, status]); // eslint-disable-line react-hooks/exhaustive-deps
   const flat = useMemo(() => rows.map((r) => flattenData(r.data ?? {})), [rows]);
   const cols = useMemo(() => unionColumns(flat), [flat]);
   const counts = useMemo(() => tallies(flat, cols), [flat, cols]);
+  // OpenUI 提交是 {action, form, values, params}：action = 触发提交的按钮文字（显示为「操作」），
+  // form = 表单内部名（如 "f"、"vote"），对用户没有意义，网页明细不显示；CSV 导出保持原样
+  const openui = rows.length > 0 && rows.every((r) => r.data && typeof r.data.values === "object" && r.data.values !== null && !Array.isArray(r.data.values));
+  const shownCols = openui ? cols.filter((c) => c !== "form") : cols;
+  const label = (c: string) => (openui && c === "action" ? "操作" : colLabel(c, labels));
   const shown = rows.length > MAX_ROWS ? rows.length - MAX_ROWS : 0;
 
   return (
@@ -97,17 +112,20 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
       )}
 
       {/* 宽屏：左侧统计、右侧明细 */}
-      <div className={cn("grid items-start gap-4", counts.length > 0 && rows.length > 0 && "xl:grid-cols-[360px_minmax(0,1fr)]")}>
+      <div className={cn("grid items-start gap-4", !compact && counts.length > 0 && rows.length > 0 && "xl:grid-cols-[360px_minmax(0,1fr)]")}>
       {counts.length > 0 && (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3 xl:grid-cols-1">
+        <div className={cn("grid gap-3", compact ? "grid-cols-1" : "grid-cols-[repeat(auto-fill,minmax(280px,1fr))] xl:grid-cols-1")}>
           {counts.map(({ col, counts }) => {
             const max = Math.max(...counts.map((c) => c[1]));
             const total = counts.reduce((a, c) => a + c[1], 0);
             return (
               <div key={col} className="tally surface p-4">
-                <div className="tally-title mb-3 font-mono text-[13px] font-semibold">{col}</div>
+                <div className="tally-title mb-3 text-[13px] font-semibold" data-col={col} title={col}>{label(col)}</div>
                 <div className="grid gap-2.5">
-                  {counts.map(([v, c]) => <TallyRow key={v} v={v} c={c} max={max} total={total} />)}
+                  {counts.map(([v, c]) => {
+                    const m = mineFlat?.[col];
+                    return <TallyRow key={v} v={valLabel(col, v, labels)} c={c} max={max} total={total} mine={m === v || (Array.isArray(m) && m.includes(v))} />;
+                  })}
                 </div>
               </div>
             );
@@ -123,7 +141,7 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead>#</TableHead><TableHead>时间</TableHead><TableHead>提交者</TableHead><TableHead>来源</TableHead><TableHead>版本</TableHead>
-                {cols.map((c) => <TableHead key={c} className="font-mono">{c}</TableHead>)}
+                {shownCols.map((c) => <TableHead key={c} data-col={c} title={c}>{label(c)}</TableHead>)}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -136,7 +154,11 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
                     <TableCell className="whitespace-nowrap">{r.respondent.type === "user" ? r.respondent.display_name : <>{r.respondent.nickname} <span className="text-xs text-muted-foreground">匿名</span></>}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.share_link ? `链接：${r.share_link.label || "未命名"}` : "—"}</TableCell>
                     <TableCell className="text-muted-foreground">v{r.page_version}</TableCell>
-                    {cols.map((c) => <TableCell key={c} className="max-w-80 min-w-32 break-words whitespace-pre-wrap">{cellText(f[c])}</TableCell>)}
+                    {shownCols.map((c) => {
+                      const v = f[c];
+                      const shown = typeof v === "string" ? valLabel(c, v, labels) : Array.isArray(v) && v.every((x) => typeof x === "string") ? v.map((x) => valLabel(c, x, labels)) : v;
+                      return <TableCell key={c} className="max-w-80 min-w-32 break-words whitespace-pre-wrap">{cellText(shown)}</TableCell>;
+                    })}
                   </TableRow>
                 );
               })}
@@ -151,8 +173,8 @@ export function ResultsView({ src, pageId, manager }: { src: Source; pageId: str
   );
 }
 
-/** 计数条：首次出现从 0 生长；新提交到达时宽度 360ms 过渡、数字滚动、整行闪一下底色 */
-function TallyRow({ v, c, max, total }: { v: string; c: number; max: number; total: number }) {
+/** 计数条：首次出现从 0 生长；新提交到达时宽度 360ms 过渡、数字滚动、整行闪一下底色；mine：我刚选的项，勾描边画出 + 闪一次底色 */
+function TallyRow({ v, c, max, total, mine }: { v: string; c: number; max: number; total: number; mine?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const prev = useRef(c);
   useEffect(() => {
@@ -164,12 +186,15 @@ function TallyRow({ v, c, max, total }: { v: string; c: number; max: number; tot
     el.classList.add("flash-bg");
   }, [c]);
   return (
-    <div ref={ref} className="tally-row -mx-2 grid grid-cols-[minmax(60px,35%)_1fr_auto] items-center gap-3 rounded-md px-2 text-[13px]">
-      <span className="truncate" title={v}>{v}</span>
+    <div ref={ref} data-mine={mine || undefined} className={cn("tally-row -mx-2 grid grid-cols-[minmax(60px,35%)_1fr_auto] items-center gap-3 rounded-md px-2 py-0.5 text-[13px]", mine && "flash-bg font-semibold")}>
+      <span className="flex min-w-0 items-center gap-1" title={v}>
+        {mine && <Check strokeWidth={3} aria-label="我的选择" className="check-draw size-3.5 shrink-0 text-primary" />}
+        <span className="truncate">{v}</span>
+      </span>
       <span className="h-2 overflow-hidden rounded-full bg-muted">
         <span className="bar-grow block h-full rounded-full bg-primary transition-[width] duration-[360ms]" style={{ width: `${(c / max) * 100}%` }} />
       </span>
-      <span className="text-right tabular-nums"><CountUp value={c} className="tally-n" /><span className="ml-1.5 text-xs text-muted-foreground">{Math.round((c / total) * 100)}%</span></span>
+      <span className="text-right tabular-nums"><CountUp value={c} className="tally-n font-heading font-semibold" /><span className="ml-1.5 text-xs text-muted-foreground">{Math.round((c / total) * 100)}%</span></span>
     </div>
   );
 }

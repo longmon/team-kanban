@@ -1,23 +1,16 @@
 import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { Check, ChevronsUpDown, KeyRound, LayoutGrid, LogOut, Moon, Sun, UserRound } from "lucide-react";
-import "@fontsource-variable/nunito";
+import "@fontsource-variable/bricolage-grotesque";
 import { AnimateUIProvider } from "@animate-ui/react/provider";
+import { MotionConfig } from "motion/react";
 import "./index.css";
-import { post } from "./api";
 import { Link, match, navigate, useLocation } from "./router";
-import { cn } from "@/lib/utils";
-import { Loading, Page, SessionProvider, setCurrentOrg, useCurrentOrgId, useSession, useTheme, WRAP } from "./ui";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Header } from "./shell";
+import { Loading, Page, REDUCED, SessionProvider, useSession, useTheme } from "./ui";
 import { Toaster } from "@/components/ui/sonner";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ForgotPassword, Login, Register, ResetPassword, VerifyEmail } from "./pages/auth";
 import { AcceptInvite } from "./pages/invite";
-import { Home } from "./pages/home";
+import { Home, OrgsPage } from "./pages/home";
 import { OrgPage } from "./pages/org";
 import { ProjectPage } from "./pages/project";
 import { PageViewRoute, ShareViewRoute } from "./pages/view";
@@ -28,6 +21,7 @@ import { AccountSettings, TokenSettings } from "./pages/settings";
 type Route = [pattern: string, render: (p: Record<string, string>) => ReactNode, auth: boolean];
 const routes: Route[] = [
   ["/", () => <Home />, true],
+  ["/orgs", () => <OrgsPage />, true],
   ["/login", () => <Login />, false],
   ["/register", () => <Register />, false],
   ["/verify-email", () => <VerifyEmail />, false],
@@ -52,117 +46,6 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return loading || !me ? <Page><Loading /></Page> : <>{children}</>;
 }
 
-/** 标识：两个节点之间的一次转发 */
-function BrandMark() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-6 shrink-0" aria-hidden="true">
-      <rect width="24" height="24" rx="6.5" className="fill-primary" />
-      <path d="M8 16 16 8" className="stroke-primary-foreground/45" strokeWidth="1.6" strokeLinecap="round" strokeDasharray="1.8 2.6" />
-      <circle cx="7.5" cy="16.5" r="2.6" className="fill-primary-foreground" />
-      <circle cx="16.5" cy="7.5" r="2.6" className="fill-primary-foreground" />
-    </svg>
-  );
-}
-
-function OrgSwitcher({ orgSlug }: { orgSlug: string }) {
-  const { me } = useSession();
-  const lastId = useCurrentOrgId();
-  // 路径里的组织优先；其余页面（页面查看、结果、设置）用页面所属组织或最近一次进入的组织
-  const bySlug = orgSlug ? me!.orgs.find((o) => o.slug === orgSlug) : undefined;
-  const cur = bySlug ?? me!.orgs.find((o) => o.id === lastId);
-  useEffect(() => {
-    if (bySlug) setCurrentOrg(bySlug.id);
-  }, [bySlug]);
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label="切换组织" className="max-w-[200px] gap-1.5 px-2 font-medium max-sm:max-w-[150px]">
-          <span className="truncate">{cur ? cur.name : "选择组织"}</span>
-          <ChevronsUpDown className="size-3.5 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-60">
-        <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">组织</DropdownMenuLabel>
-        {me!.orgs.map((o) => (
-          <DropdownMenuItem key={o.id} onSelect={() => navigate(`/o/${o.slug}`)}>
-            <span className="grid size-5 place-items-center rounded-md bg-primary/15 text-[11px] font-bold text-foreground">{o.name.slice(0, 1).toUpperCase()}</span>
-            <span className="flex-1 truncate">{o.name}</span>
-            {o.id === cur?.id && <Check className="text-primary" />}
-          </DropdownMenuItem>
-        ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={() => navigate("/")}><LayoutGrid />全部组织</DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-function Header() {
-  const { me, setMe } = useSession();
-  const theme = useTheme();
-  const path = useLocation().split("?")[0];
-  const orgSlug = path.match(/^\/o\/([^/]+)/)?.[1] ?? "";
-  const logout = async () => {
-    await post("/auth/logout").catch(() => {});
-    setMe(null);
-    navigate("/login");
-  };
-  const dark = theme.mode === "dark";
-  return (
-    <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur-md supports-[backdrop-filter]:bg-background/70">
-      <div className={cn(WRAP, "flex h-14 items-center gap-1.5")}>
-        <Link to="/" className="flex shrink-0 items-center gap-2.5 rounded-md pr-1 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/80" aria-label="Team Kanban 首页">
-          <BrandMark />
-          <span className="text-[15px] font-bold max-sm:hidden">Team Kanban</span>
-        </Link>
-        {me && me.orgs.length > 0 && (
-          <>
-            <span className="text-lg font-light text-border select-none max-sm:hidden" aria-hidden="true">/</span>
-            <OrgSwitcher orgSlug={orgSlug} />
-          </>
-        )}
-        <span className="flex-1" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="切换亮/暗色" onClick={() => theme.setMode(dark ? "light" : "dark")}>
-              {dark ? <Sun /> : <Moon />}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{dark ? "切换到亮色" : "切换到暗色"}</TooltipContent>
-        </Tooltip>
-        {me ? (
-          <>
-            <Button variant="ghost" size="sm" asChild className={path.startsWith("/settings/tokens") ? "bg-accent max-sm:hidden" : "text-muted-foreground max-sm:hidden"}>
-              <Link to="/settings/tokens">令牌</Link>
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-2 px-1.5" aria-label="账号菜单">
-                  <Avatar className="size-6"><AvatarFallback className="text-[11px] font-semibold">{me.user.display_name.slice(0, 1).toUpperCase()}</AvatarFallback></Avatar>
-                  <span className="max-w-[120px] truncate max-md:hidden">{me.user.display_name}</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuLabel className="grid gap-0.5">
-                  <span className="truncate">{me.user.display_name}</span>
-                  <span className="truncate text-xs font-normal text-muted-foreground">{me.user.email}</span>
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => navigate("/settings/account")}><UserRound />账号设置</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => navigate("/settings/tokens")}><KeyRound />访问令牌</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={logout}><LogOut />退出登录</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>
-        ) : !/^\/(login|register|forgot-password|reset-password)/.test(path) && (
-          <Button size="sm" variant="outline" asChild><Link to={"/login?next=" + encodeURIComponent(path)}>登录</Link></Button>
-        )}
-      </div>
-    </header>
-  );
-}
-
 function App() {
   const loc = useLocation();
   const path = loc.split("?")[0].replace(/\/+$/, "") || "/";
@@ -173,7 +56,7 @@ function App() {
     const p = match(pattern, path);
     if (p) {
       // 路由切换时内容区淡入一次（key 变化才重新挂载）
-      body = <div key={loc} className="page-enter">{auth ? <RequireAuth>{render(p)}</RequireAuth> : render(p)}</div>;
+      body = <div key={path} className="page-enter">{auth ? <RequireAuth>{render(p)}</RequireAuth> : render(p)}</div>;
       break;
     }
   }
@@ -186,7 +69,7 @@ function App() {
           <Link to="/settings/account" className="font-medium underline underline-offset-4">重发验证邮件</Link>
         </div>
       )}
-      <main className={cn(WRAP, "pt-8 pb-16 max-sm:pt-5")}>{body}</main>
+      <main className="w-full px-4 pt-8 pb-28 sm:px-6 max-sm:pt-5">{body}</main>
       <Toaster theme={mode} position="bottom-center" toastOptions={{ classNames: { toast: "toast" } }} />
     </>
   );
@@ -203,7 +86,14 @@ function AuthNotFound() {
 
 // 减少动态：animate-ui 默认只去位移、仍保留淡入淡出；按设计规范 §5 时长归零，这里把它的动效节奏压到 1%（近乎瞬时，弹簧同比加速）。
 // ponytail: 只在加载时读一次系统设置，运行中切换需刷新页面
-const tempo = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0.01 : 1;
+// motion 自己的组件（动态流、操作条、结果条）同样处理：减少动态时默认过渡时长归零，各组件另外跳过入场（ui.tsx REDUCED）
+const tempo = REDUCED ? 0.01 : 1;
 createRoot(document.getElementById("root")!).render(
-  <StrictMode><AnimateUIProvider tempo={tempo} reducedMotion="user"><SessionProvider><App /></SessionProvider></AnimateUIProvider></StrictMode>,
+  <StrictMode>
+    <AnimateUIProvider tempo={tempo} reducedMotion="user">
+      <MotionConfig reducedMotion="user" transition={REDUCED ? { duration: 0 } : undefined}>
+        <SessionProvider><App /></SessionProvider>
+      </MotionConfig>
+    </AnimateUIProvider>
+  </StrictMode>,
 );

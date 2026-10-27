@@ -82,3 +82,15 @@ export const nicknameStore = {
   get: () => { try { return localStorage.getItem("relay_nickname") ?? ""; } catch { return ""; } },
   set: (v: string) => { try { localStorage.setItem("relay_nickname", v); } catch { /* ignore */ } },
 };
+
+// 匿名访客（含临时链接访问）的提交记录：按 页面+版本 记住，再次打开同一版本时锁定（服务端不限匿名提交，见 api.md §8.1）
+export type StoredResponse = { seq: number; page_version: number; data: Record<string, unknown>; created_at: string };
+const respKey = (pageId: string, version: number) => `relay_resp_${pageId}_v${version}`;
+export const responseStore = {
+  get: (pageId: string, version: number): StoredResponse | null => {
+    try { return JSON.parse(localStorage.getItem(respKey(pageId, version)) ?? "null"); } catch { return null; }
+  },
+  set: (pageId: string, version: number, r: StoredResponse) => {
+    try { localStorage.setItem(respKey(pageId, version), JSON.stringify(r)); } catch { /* 隐私模式：不记住 */ }
+  },
+};

@@ -133,10 +133,12 @@ async fn live_smoke() {
     let r = responses_json(&call(&c, "get_responses", json!({ "page_id": hid })).await.1);
     assert_eq!(r["responses"][0]["data"], json!({ "name": "张三" }));
 
-    // 8. update_page：内容变化 version+1，旧 frame_url 失效
+    // 8. update_page：内容变化 version+1，旧 frame_url 仍返回 v1 历史内容
     let up = ok_json(call(&c, "update_page", json!({ "page_id": hid, "title": "报名表 v2", "html": "<!doctype html><p>closed</p>", "accept_responses": false })).await);
     assert_eq!(up["version"], 2);
-    assert_eq!(http.get(frame_url).send().await.unwrap().status(), 404);
+    let old = http.get(frame_url).send().await.unwrap();
+    assert_eq!(old.status(), 200);
+    assert!(!old.text().await.unwrap().contains("closed"));
 
     // 9. list_pages
     let l = ok_json(call(&c, "list_pages", json!({ "project": slug })).await);

@@ -37,10 +37,16 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-info: var(--info);
+  --color-highlight: var(--highlight);
+  --color-highlight-foreground: var(--highlight-foreground);
+  --color-coral: var(--coral);
+  --font-heading: var(--font-heading);
   --shadow-card: var(--shadow-card);
   --shadow-card-hover: var(--shadow-card-hover);
   --shadow-primary: var(--shadow-primary);
   --shadow-primary-press: var(--shadow-primary-press);
+  --shadow-pop: var(--shadow-pop);
+  --shadow-dock: var(--shadow-dock);
   --ease-standard: var(--ease-standard);
   --ease-pop: var(--ease-pop);
   /* transition / transition-colors 等不写 duration 时的默认值 */
@@ -58,8 +64,9 @@
     line-height: 1.55;
   }
   code { @apply font-mono text-[0.88em]; }
-  /* 标题字重 600–700，层级靠字号与颜色 */
-  h1, h2, h3 { font-family: var(--font-heading); }
+  /* 标题与数字用 Bricolage Grotesque（中文回退系统字体），字重 600–700，层级靠字号与颜色 */
+  h1, h2, h3, .font-heading { font-family: var(--font-heading); }
+  h1, h2 { letter-spacing: -0.01em; }
   /* tw-animate-css 的进出动画（Select 弹层、chip 勾等）默认用统一缓动与时长；类名里写 duration-* 的仍以类名为准。Dialog / Dropdown / Tooltip / Tabs / Accordion 由 animate-ui（motion）驱动 */
   .animate-in, .animate-out { --tw-ease: var(--ease-standard); --tw-duration: var(--dur-base); }
 }
@@ -100,8 +107,10 @@
 @keyframes submit-glow { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 45%, transparent); } to { box-shadow: 0 0 0 10px transparent; } }
 @keyframes bar-grow { from { transform: scaleX(0); } }
 @keyframes flash-bg { from { background-color: color-mix(in srgb, var(--primary) 12%, transparent); } }
+/* 荧光笔从左到右刷出（底色是 background-image，按 background-size 生长） */
+@keyframes mark-sweep { from { background-size: 0% 100%; } }
 @layer components {
-  .page-enter { animation: page-enter var(--dur-slow) var(--ease-standard) both; }
+  .page-enter { animation: page-enter var(--dur-slow) var(--ease-standard) backwards; }
   .shake { animation: shake 300ms var(--ease-standard); }
   /* 列表依次入场：每项错开 30ms，第 9 项起同时（总长 ≤ 540ms）；列表容器换 key 时重播 */
   .list > * { animation: rise 300ms var(--ease-standard) backwards; }
@@ -127,6 +136,9 @@
   /* 结果条首次出现时从 0 生长；新数据到达时整行闪一下底色 */
   .bar-grow { transform-origin: left center; animation: bar-grow 360ms var(--ease-standard); }
   .flash-bg { animation: flash-bg 600ms var(--ease-standard); }
+  /* 「等你投票」荧光笔：柠檬底 + 深墨字；.mark-sweep 时 400ms 从左刷出（只在首屏首次出现时加这个类） */
+  .hl { @apply rounded-[3px] px-1 font-semibold text-highlight-foreground; background: linear-gradient(var(--highlight), var(--highlight)) left / 100% 100% no-repeat; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .mark-sweep { animation: mark-sweep 400ms var(--ease-standard) 120ms backwards; }
 }
 /* 按钮：按下 75ms 缩到 .97（button.tsx），松开时位移/缩放走 320ms 弹簧，颜色/阴影仍是标准过渡。顺序与 button.tsx 的 transition-[…] 一致 */
 [data-slot=button]:not(:active) {
@@ -140,16 +152,16 @@
 /* animate-ui 对话框入场是 perspective 翻转 + 模糊，播完后行内样式停在 "perspective(500px) rotateX(0deg) scale(1)" / "blur(0px)"，
    3D 合成层会让静止时文字发虚；只在这个静止值上清掉（进出动画过程中值不同，不受影响） */
 [data-slot=dialog-content][style*="rotateX(0deg) scale(1)"] { transform: none !important; filter: none !important; }
-/* 卡片表面：暖色软阴影代替描边 */
-@utility surface { @apply rounded-xl bg-card text-card-foreground shadow-card; }
-/* 可点击卡片/列表行：悬停抬起 2px（translate 属性，不与入场动画的 transform 冲突）+ 阴影加深，键盘焦点有清晰焦点环 */
-@utility lift { @apply transition-[translate,box-shadow] outline-none hover:-translate-y-0.5 hover:shadow-card-hover focus-visible:ring-[3px] focus-visible:ring-ring/80; }
+/* 卡片表面：白底 + 1px 线（shadow-card 即 1px border 色描边），不用投影 */
+@utility surface { @apply rounded-lg bg-card text-card-foreground shadow-card; }
+/* 可点击卡片：悬停只加深描边（不位移），键盘焦点有清晰焦点环 */
+@utility lift { @apply transition-[box-shadow] outline-none hover:shadow-card-hover focus-visible:ring-[3px] focus-visible:ring-ring/80; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; transition-delay: 0s !important; animation-delay: 0s !important; }
   /* 减少动态：去掉位移/缩放，只保留颜色与阴影变化 */
-  .lift:hover, [data-slot=button]:active, .page-enter, .shake, .list > *, .bar-grow { transform: none !important; translate: none !important; scale: none !important; }
-  .skeleton-shimmer, .flash-bg, .submit-glow::after, .check-draw path { animation: none !important; }
+  [data-slot=button]:active, .page-enter, .shake, .list > *, .bar-grow { transform: none !important; translate: none !important; scale: none !important; }
+  .skeleton-shimmer, .flash-bg, .submit-glow::after, .check-draw path, .mark-sweep { animation: none !important; }
   ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
 }
 
@@ -177,9 +189,9 @@
   .sub-title { @apply mt-2 text-[13px] font-medium text-muted-foreground; }
   .pick-row { @apply flex items-center justify-between gap-2 border-b py-2 text-sm last:border-0; }
 
-  /* 列表行（页面、群组） */
-  .list { @apply grid gap-2.5; }
-  .list-row { @apply surface lift grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-6 gap-y-2 overflow-hidden px-5 py-3.5 max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:px-4; }
+  /* 列表行（群组等）：无圆角，靠分隔线 */
+  .list { @apply grid border-t; }
+  .list-row { @apply grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-6 gap-y-2 border-b py-3.5 max-sm:grid-cols-[minmax(0,1fr)_auto]; }
   .list-main { @apply flex min-w-0 flex-col gap-1.5; }
   .list-title { @apply w-fit max-w-full truncate text-[15px] font-semibold text-foreground; }
   a.list-title { @apply underline-offset-4 hover:underline; }
@@ -187,7 +199,7 @@
   .list-stat { @apply min-w-[72px] text-right text-[13px] whitespace-nowrap text-muted-foreground max-sm:min-w-0 max-sm:self-start; }
   .list-stat b { @apply mr-0.5 font-semibold text-foreground tabular-nums; }
   .list-actions { @apply flex justify-end gap-1.5 max-sm:col-span-full max-sm:flex-wrap max-sm:justify-start; }
-  .list-expand { @apply col-span-full -mx-5 -mb-3.5 mt-1.5 border-t bg-muted/40 p-5 max-sm:-mx-4 max-sm:p-4; }
+  .list-expand { @apply col-span-full mt-1.5 rounded-lg bg-muted/60 p-5 max-sm:p-4; }
 }
 
 /* 图表悬停高亮时系列透明度平滑过渡 */
@@ -196,4 +208,4 @@
 /* toast：成功/失败图标着色，进出由 sonner 自带动画 */
 [data-sonner-toast][data-type=success] [data-icon] { color: var(--success); }
 [data-sonner-toast][data-type=error] [data-icon] { color: var(--destructive); }
-[data-sonner-toast] { box-shadow: var(--shadow-card-hover) !important; border-radius: calc(var(--radius) - 2px) !important; }
+[data-sonner-toast] { box-shadow: var(--shadow-pop) !important; border-radius: var(--radius) !important; }

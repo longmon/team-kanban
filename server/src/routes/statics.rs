@@ -77,11 +77,13 @@ async fn html_page(State(st): State<AppState>, Path((page_id, version)): Path<(S
     if exp <= Utc::now().timestamp() || !hmac_verify(&st.cfg.secret_key, &format!("h|{page_id}|{version}|{exp}"), &sig) {
         return not_found();
     }
-    let content: Option<String> = match sqlx::query_scalar(
-        "SELECT p.content FROM pages p
+    let content: Option<Option<String>> = match sqlx::query_scalar(
+        "SELECT CASE WHEN p.version = $2 THEN p.content
+                     ELSE (SELECT v.content FROM page_versions v WHERE v.page_id = p.id AND v.version = $2) END
+           FROM pages p
            JOIN projects pr ON pr.org_id = p.org_id AND pr.id = p.project_id AND pr.deleted_at IS NULL
            JOIN orgs o ON o.id = p.org_id AND o.deleted_at IS NULL
-          WHERE p.id = $1 AND p.version = $2 AND p.kind = 'html' AND p.deleted_at IS NULL",
+          WHERE p.id = $1 AND p.kind = 'html' AND p.deleted_at IS NULL",
     )
     .bind(page_id)
     .bind(version)
@@ -94,7 +96,7 @@ async fn html_page(State(st): State<AppState>, Path((page_id, version)): Path<(S
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
-    let Some(html) = content else { return not_found() };
+    let Some(Some(html)) = content else { return not_found() };
     let public = &st.cfg.public_url;
     let csp = format!("sandbox allow-scripts allow-forms; frame-ancestors {public}");
     (
@@ -110,7 +112,7 @@ async fn html_page(State(st): State<AppState>, Path((page_id, version)): Path<(S
         .into_response()
 }
 
-/// 桥接脚本（api.md §9）：window.kanban.submit、<form data-kanban> 接管、relay:resize。
+/// 桥接脚本（api.md §9）：window.kanban.submit、<form data-kanban> 接管（含按 my_response 回填锁定）、relay:resize。
 /// window.relay / data-relay / data-relay-status 是历史名称，为兼容已发布的旧页面保留；relay:* 消息类型同理。
 const BRIDGE: &str = r#"<script>(function(){
 var P=__ORIGIN__,n=0,w={};
@@ -119,15 +121,34 @@ window.kanban=window.relay={submit:function(data){return new Promise(function(re
 window.addEventListener("message",function(e){
 if(e.source!==parent)return;var d=e.data;if(!d||d.v!==1)return;
 if(d.type==="relay:submit_result"&&w[d.req_id]){var c=w[d.req_id];delete w[d.req_id];if(d.ok)c[0]({seq:d.seq});else c[1](new Error(d.error&&d.error.code||"error"));}
-else if(d.type==="relay:init"){window.kanban.init=d;}
+else if(d.type==="relay:init"){window.kanban.init=d;var m=d.my_response;if(m&&m.data)forms().forEach(function(f){lock(f,m.data,m.page_version);});}
 });
+function forms(){return [].slice.call(document.querySelectorAll("form[data-kanban],form[data-relay]"));}
+var css=0;
+function lock(f,data,ver){
+if(!css){css=1;var st=document.createElement("style");st.textContent=":where([data-kanban-selected]){outline:2px solid #2563eb;outline-offset:2px;border-radius:4px;font-weight:600}:where([data-kanban-dimmed]){opacity:.45;cursor:not-allowed}";(document.head||document.documentElement).appendChild(st);}
+var idx={},msg="已提交（第 "+ver+" 版）";
+[].forEach.call(f.elements,function(el){
+var k=el.name,t=(el.type||"").toLowerCase(),c=t==="radio"||t==="checkbox";
+if(k&&Object.prototype.hasOwnProperty.call(data,k)&&t!=="file"&&t!=="submit"&&t!=="button"){
+var a=[].concat(data[k]).map(String);
+if(c)el.checked=a.indexOf(el.value)>=0;
+else if(el.tagName==="SELECT")[].forEach.call(el.options,function(o){o.selected=a.indexOf(o.value)>=0;});
+else{idx[k]=idx[k]||0;el.value=a[idx[k]++]||"";}
+}
+if(c&&el.labels&&el.labels[0]){var l=el.labels[0];l.removeAttribute(el.checked?"data-kanban-dimmed":"data-kanban-selected");l.setAttribute(el.checked?"data-kanban-selected":"data-kanban-dimmed","");}
+if(t==="submit"||(el.tagName==="BUTTON"&&!el.getAttribute("type"))){if(el.tagName==="BUTTON")el.textContent=msg;else el.value=msg;}
+el.disabled=true;
+});
+f.setAttribute("data-kanban-status","submitted");
+}
 function ser(f){var o={};new FormData(f).forEach(function(v,k){if(typeof v!=="string")return;if(Object.prototype.hasOwnProperty.call(o,k)){if(!Array.isArray(o[k]))o[k]=[o[k]];o[k].push(v);}else o[k]=v;});return o;}
 document.addEventListener("submit",function(e){
 var f=e.target;if(!f||!f.hasAttribute||!(f.hasAttribute("data-kanban")||f.hasAttribute("data-relay")))return;e.preventDefault();
 var b=f.querySelectorAll("button,input[type=submit]"),s=f.querySelector("[data-kanban-status],[data-relay-status]");
 if(!s){s=document.createElement("div");s.setAttribute("data-kanban-status","");f.appendChild(s);}
 b.forEach(function(x){x.disabled=true;});s.textContent="提交中…";
-window.kanban.submit(ser(f)).then(function(){s.textContent="已提交";},function(err){s.textContent="提交失败："+err.message;}).then(function(){b.forEach(function(x){x.disabled=false;});});
+var d=ser(f);window.kanban.submit(d).then(function(){s.textContent="已提交";lock(f,d,(window.kanban.init||{}).version);},function(err){s.textContent="提交失败："+err.message;b.forEach(function(x){x.disabled=false;});});
 },true);
 function size(){post({type:"relay:resize",height:Math.ceil(document.documentElement.scrollHeight)});}
 if(window.ResizeObserver)new ResizeObserver(size).observe(document.documentElement);

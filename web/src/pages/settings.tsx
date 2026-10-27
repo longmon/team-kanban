@@ -1,13 +1,76 @@
 // PAT 管理（api.md §6）与账号设置（§3）
 import { useState, type FormEvent } from "react";
-import { KeyRound } from "lucide-react";
+import { Check, Copy, KeyRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { del, get, patch, post, qs } from "../api";
-import { CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, NativeSelect, Notice, Page, PageHeader, Panel, TableCard, toast, useAction, useLoad, useSession } from "../ui";
+import { Link } from "../router";
+import { CheckField, copyText, CopyText, Empty, ErrorBox, Field, fmtTime, NativeSelect, Notice, Page, PageHeader, Panel, TableCard, toast, useAction, useLoad, useSession } from "../ui";
 import type { Paged, Pat, Project, Scope, UserFull } from "../types";
+
+/** MCP 接入片段（README §3.2–3.3）：服务器地址取当前站点，令牌由 tkanban add 交互输入，不写进片段 */
+export const mcpSnippet = () =>
+  `tkanban add team-kanban --url ${location.origin} --default\nclaude mcp add team-kanban -s user -- "$(command -v tkanban)" mcp`;
+
+export function McpSnippet() {
+  const [done, setDone] = useState(false);
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[13px] font-medium">MCP 配置（终端执行，按提示粘贴令牌）</span>
+        <Button size="xs" variant="outline" onClick={() => copyText(mcpSnippet(), "已复制配置").then(() => setDone(true))}>{done ? <Check /> : <Copy />}{done ? "已复制" : "复制配置"}</Button>
+      </div>
+      <pre className="overflow-x-auto rounded-lg border bg-muted/60 px-3 py-2.5 font-mono text-[12.5px] leading-relaxed">{mcpSnippet()}</pre>
+      <p className="text-xs text-muted-foreground">需要先安装 tkanban 命令行，见项目 README。Codex 等其他客户端：注册 stdio 服务器，命令 tkanban，参数 mcp。</p>
+    </div>
+  );
+}
+
+/** 空动态流：引导接入 agent（建令牌 + 复制 MCP 配置） */
+export function AgentOnboarding({ title = "还没有页面", note }: { title?: string; note?: string }) {
+  const { me } = useSession();
+  const [token, setToken] = useState<string | null>(null);
+  const a = useAction();
+  const create = () =>
+    a.run(async () => {
+      const r = await post<{ pat: Pat; token: string }>("/tokens", { name: `agent ${new Date().toLocaleDateString("zh-CN")}`, scopes: ["publish", "read_responses"], expires_in: 7776000 });
+      setToken(r.token);
+    });
+  if (me && me.orgs.length === 0)
+    return (
+      <section className="grid gap-3 border-y py-8">
+        <h2 className="text-xl font-bold">先加入一个组织</h2>
+        <p className="text-sm text-muted-foreground">agent 发布的页面归属某个组织下的项目。创建一个组织，或打开同事发给你的邀请链接。</p>
+        <div><Button asChild><Link to="/orgs">创建组织</Link></Button></div>
+      </section>
+    );
+  return (
+    <section className="grid gap-5 border-y py-8" aria-label="接入 agent">
+      <div className="grid gap-1.5">
+        <h2 className="text-xl font-bold">{title}</h2>
+        <p className="text-sm text-muted-foreground">{note ?? "页面由你的 AI agent 通过 MCP 发布到这里。两步接入："}</p>
+      </div>
+      <ol className="grid gap-5">
+        <li className="grid gap-2">
+          <span className="text-[13px] font-medium">1. 创建令牌（发布页面 + 读取提交，90 天有效）</span>
+          {token ? (
+            <div className="grid gap-2"><Notice tone="warning">令牌只显示这一次，请立即复制。</Notice><CopyText text={token} /></div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={create} loading={a.busy} disabled={a.busy}><KeyRound />创建令牌</Button>
+              <Button variant="ghost" asChild><Link to="/settings/tokens">自定义范围</Link></Button>
+            </div>
+          )}
+          <ErrorBox error={a.error} />
+        </li>
+        <li><McpSnippet /></li>
+      </ol>
+      <p className="text-[13px] text-muted-foreground">配置好后，对 agent 说「把这份周报发布到看板」，页面会出现在这里。</p>
+    </section>
+  );
+}
 
 const SCOPES: [Scope, string][] = [["publish", "发布页面（publish）"], ["read_responses", "读取提交（read_responses）"]];
 const PAT_EXPIRES: [string, string][] = [["2592000", "30 天"], ["7776000", "90 天"], ["31536000", "1 年"], ["", "永不过期"]];
@@ -43,7 +106,7 @@ export function TokenSettings() {
         desc={<>令牌供本机 agent 的 MCP 使用（环境变量 <code>TEAM_KANBAN_TOKEN</code>）。令牌的权限不会超过你本人的当前权限。</>} />
       <div className="split">
       <div className="stack">
-      <CheckField checked={showRevoked} onChange={setShowRevoked}>显示已吊销</CheckField>
+      <CheckField checked={showRevoked} onChange={setShowRevoked}>显示已撤销</CheckField>
       <ErrorBox error={list.error} />
       {!!list.data?.items.length && <TableCard>
         <Table>
@@ -54,12 +117,12 @@ export function TokenSettings() {
                 <TableCell><span className="font-medium">{p.name}</span><div className="muted small mono">arp_{p.token_prefix}…</div></TableCell>
                 <TableCell>{p.org ? p.org.name : "全部组织"}{p.project && ` / ${p.project.name}`}</TableCell>
                 <TableCell><div className="flex flex-wrap gap-1">{p.scopes.map((x) => <Badge key={x} variant="secondary" className="font-mono">{x}</Badge>)}</div></TableCell>
-                <TableCell className="nowrap">{p.revoked_at ? "已吊销" : p.expires_at ? fmtTime(p.expires_at) : "永不"}</TableCell>
+                <TableCell className="nowrap">{p.revoked_at ? "已撤销" : p.expires_at ? fmtTime(p.expires_at) : "永不"}</TableCell>
                 <TableCell className="nowrap">{fmtTime(p.last_used_at)}</TableCell>
                 <TableCell className="text-right">
                   {!p.revoked_at && (
                     <Button size="sm" variant="ghost-destructive" disabled={a.busy}
-                      onClick={() => confirm(`吊销令牌「${p.name}」？使用它的 agent 会立即失去访问权限。`) && a.run(async () => (await del(`/tokens/${p.id}`), list.reload()))}>吊销</Button>
+                      onClick={() => confirm(`撤销令牌「${p.name}」？使用它的 agent 会立即失去访问权限。`) && a.run(async () => (await del(`/tokens/${p.id}`), list.reload()))}>撤销</Button>
                   )}
                 </TableCell>
               </TableRow>
@@ -95,6 +158,7 @@ export function TokenSettings() {
             <CopyText text={token} />
           </div>
         )}
+        <McpSnippet />
       </Panel>
       </div>
     </Page>

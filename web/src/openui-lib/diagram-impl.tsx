@@ -20,7 +20,7 @@ function themeVariables() {
   return {
     darkMode: isDark(),
     background: v("--card"),
-    fontFamily: "Nunito Variable, Nunito, PingFang SC, Hiragino Sans GB, Microsoft YaHei, Noto Sans SC, sans-serif",
+    fontFamily: "system-ui, -apple-system, Segoe UI, PingFang SC, Hiragino Sans GB, Microsoft YaHei, Noto Sans SC, sans-serif",
     fontSize: "14px",
     primaryColor: v("--card"),
     primaryTextColor: v("--foreground"),

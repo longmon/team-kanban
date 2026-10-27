@@ -358,9 +358,10 @@ async fn sse_stream() {
     assert!(buf.contains(r#"{"reason":"not_found"}"#));
 
     // Last-Event-ID 优先于 since；share 版需要 results_visible_to=viewers
-    let page = publish(&h, &w.owner, &w.proj, "project", &[]).await;
-    for _ in 0..3 {
-        h.req(&w.viewer, "POST", &format!("/api/pages/{page}/responses"), Some(json!({ "data": {} }))).await.ok(201);
+    // 登录用户每版本限交一次：用三个不同用户
+    let page = publish(&h, &w.owner, &w.proj, "org", &[]).await;
+    for u in [&w.viewer, &w.owner, &w.member] {
+        h.req(u, "POST", &format!("/api/pages/{page}/responses"), Some(json!({ "data": {} }))).await.ok(201);
     }
     let r = h.req(&w.owner, "POST", &format!("/api/pages/{page}/share-links"), Some(json!({ "expires_in": 600 }))).await.ok(201);
     let token = s(&r["url"]).rsplit('/').next().unwrap().to_string();
@@ -374,7 +375,7 @@ async fn sse_stream() {
     // 吊销链接 → 下次事件时 end
     let link_id = s(&r["share_link"]["id"]);
     h.req(&w.owner, "DELETE", &format!("/api/share-links/{link_id}"), None).await.ok(204);
-    h.req(&w.viewer, "POST", &format!("/api/pages/{page}/responses"), Some(json!({ "data": {} }))).await.ok(201);
+    h.req(&w.grouped, "POST", &format!("/api/pages/{page}/responses"), Some(json!({ "data": {} }))).await.ok(201);
     read_until(&mut body, &mut buf, "event: end").await;
 }
 
@@ -437,9 +438,21 @@ async fn html_pages_origin() {
     assert_eq!(h.raw(&C::anon(), "GET", &path.replace("/1?", "/2?"), None, &pages_host).await.status, 404);
     assert_eq!(h.raw(&C::anon(), "GET", &path, None, &[("host", "relay.test")]).await.status, 404);
     assert_eq!(h.raw(&C::anon(), "GET", "/api/auth/me", None, &pages_host).await.status, 404);
-    // 更新内容后旧版本 URL 失效
+    // 更新内容后旧版本 URL 仍返回旧版本内容（历史版本取自 page_versions），新版本 URL 返回新内容
     h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "content": "<p>v2</p>" }))).await.ok(200);
-    assert_eq!(h.raw(&C::anon(), "GET", &path, None, &pages_host).await.status, 404);
+    let r = h.raw(&C::anon(), "GET", &path, None, &pages_host).await;
+    assert_eq!(r.status, 200);
+    assert!(r.text().contains("<input name=a>") && !r.text().contains("v2"));
+    let v2 = s(&h.req(&C::anon(), "GET", &format!("/api/pages/{page}/view"), None).await.ok(200)["content"]["frame_url"]);
+    let r = h.raw(&C::anon(), "GET", v2.strip_prefix("http://pages.test").unwrap(), None, &pages_host).await;
+    assert!(r.text().contains("<p>v2</p>"), "{}", r.text());
+    // 历史版本 v1 的签名 URL 通过 ?version=1 拿到
+    let v1 = s(&h.req(&C::anon(), "GET", &format!("/api/pages/{page}/view?version=1"), None).await.ok(200)["content"]["frame_url"]);
+    let r = h.raw(&C::anon(), "GET", v1.strip_prefix("http://pages.test").unwrap(), None, &pages_host).await;
+    assert!(r.text().contains("<input name=a>"), "{}", r.text());
+    // 不存在的版本即使签名有效也 404
+    let v9 = v1.replace("/1?", "/9?");
+    assert_eq!(h.raw(&C::anon(), "GET", v9.strip_prefix("http://pages.test").unwrap(), None, &pages_host).await.status, 404);
     // 主站安全头
     let r = h.raw(&C::anon(), "GET", "/api/auth/me", None, &[("host", "relay.test")]).await;
     assert!(r.header("content-security-policy").contains("frame-src http://pages.test"));
@@ -597,4 +610,150 @@ async fn long_poll_not_woken_by_page_event() {
     let body: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
     assert_eq!(body["responses"][0]["seq"], 1);
     assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn list_my_submitted_and_title_search() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let mk = |title: &str| json!({ "project_id": w.proj, "title": title, "kind": "openui", "content": "root = Stack([])", "visibility": "project" });
+    let a = publish_with(&h, &w.owner, mk("Weekly Report")).await;
+    let b = publish_with(&h, &w.owner, mk("100% done_x")).await;
+    let mine = |v: Value, id: &str| v["items"].as_array().unwrap().iter().find(|p| s(&p["id"]) == id).unwrap()["my_submitted"].clone();
+    let titles = |v: Value| v["items"].as_array().unwrap().iter().map(|p| s(&p["title"])).collect::<Vec<_>>();
+
+    // my_submitted：提交前 false、提交后 true、别的用户仍 false
+    assert_eq!(mine(h.req(&w.viewer, "GET", "/api/pages", None).await.ok(200), &a), false);
+    assert_eq!(h.req(&w.viewer, "GET", &format!("/api/pages/{a}/view"), None).await.ok(200)["my_submitted"], false);
+    h.req(&w.viewer, "POST", &format!("/api/pages/{a}/responses"), Some(json!({ "data": { "v": 1 } }))).await.ok(201);
+    assert_eq!(mine(h.req(&w.viewer, "GET", "/api/pages", None).await.ok(200), &a), true);
+    assert_eq!(mine(h.req(&w.viewer, "GET", "/api/pages", None).await.ok(200), &b), false);
+    assert_eq!(h.req(&w.viewer, "GET", &format!("/api/pages/{a}/view"), None).await.ok(200)["my_submitted"], true);
+    assert_eq!(mine(h.req(&w.owner, "GET", "/api/pages", None).await.ok(200), &a), false);
+    assert_eq!(h.req(&w.owner, "GET", &format!("/api/pages/{a}/view"), None).await.ok(200)["my_submitted"], false);
+
+    // q：命中（不区分大小写、去空白）、未命中、% 与 _ 转义、超长、空串视为不传
+    assert_eq!(titles(h.req(&w.owner, "GET", "/api/pages?q=%20weekly%20", None).await.ok(200)), vec!["Weekly Report"]);
+    assert_eq!(titles(h.req(&w.owner, "GET", "/api/pages?q=nothing", None).await.ok(200)).len(), 0);
+    assert_eq!(titles(h.req(&w.owner, "GET", "/api/pages?q=%25", None).await.ok(200)), vec!["100% done_x"]);
+    assert_eq!(titles(h.req(&w.owner, "GET", "/api/pages?q=e_k", None).await.ok(200)).len(), 0);
+    assert_eq!(titles(h.req(&w.owner, "GET", "/api/pages?q=e_x", None).await.ok(200)), vec!["100% done_x"]);
+    assert_eq!(titles(h.req(&w.owner, "GET", "/api/pages?q=%20", None).await.ok(200)).len(), 2);
+    assert_eq!(titles(h.req(&w.owner, "GET", &format!("/api/pages?project_id={}&q=report", w.proj), None).await.ok(200)), vec!["Weekly Report"]);
+    let r = h.req(&w.owner, "GET", &format!("/api/pages?q={}", "x".repeat(101)), None).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.text().contains("\"q\""), "{}", r.text());
+}
+
+#[tokio::test]
+async fn page_versions_and_one_submit_per_version() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let page = publish_with(&h, &w.owner, json!({ "project_id": w.proj, "title": "t1", "kind": "openui", "content": "root = Stack([])", "visibility": "project" })).await;
+    let hr = &h;
+    let view = |c: &C, q: &str| {
+        let (c, url) = (c.clone(), format!("/api/pages/{page}/view{q}"));
+        async move { hr.req(&c, "GET", &url, None).await }
+    };
+    let sub = |c: &C, v: i64| {
+        let (c, url) = (c.clone(), format!("/api/pages/{page}/responses"));
+        async move { hr.req(&c, "POST", &url, Some(json!({ "data": { "choice": v } }))).await }
+    };
+    let mine = |v: Value| v["items"].as_array().unwrap().iter().find(|p| s(&p["id"]) == page).unwrap()["my_submitted"].clone();
+
+    // 创建即有 v1 快照
+    let rows: Vec<(i32, String, Option<uuid::Uuid>)> =
+        sqlx::query_as("SELECT version, content, created_by FROM page_versions WHERE page_id = $1::uuid ORDER BY version").bind(&page).fetch_all(&h.db).await.unwrap();
+    assert_eq!(rows, vec![(1, "root = Stack([])".to_string(), Some(w.owner.user_id.parse().unwrap()))]);
+    let v = view(&w.viewer, "").await.ok(200);
+    assert_eq!((v["my_submitted"].clone(), v["my_response"].clone(), v["can_submit"].clone()), (json!(false), Value::Null, json!(true)));
+    assert_eq!(v["versions"].as_array().unwrap().len(), 1);
+    assert_eq!(v["content"]["version"], 1);
+
+    // 同版本重复提交 409；临时链接不受限
+    sub(&w.viewer, 1).await.ok(201);
+    let r = sub(&w.viewer, 2).await;
+    assert_eq!((r.status, r.code()), (409, "already_submitted".into()));
+    let v = view(&w.viewer, "").await.ok(200);
+    assert_eq!((v["my_submitted"].clone(), v["can_submit"].clone(), v["submit_block_reason"].clone()), (json!(true), json!(false), json!("already_submitted")));
+    assert_eq!((v["my_response"]["seq"].clone(), v["my_response"]["page_version"].clone(), v["my_response"]["data"].clone()), (json!(1), json!(1), json!({ "choice": 1 })));
+    assert_eq!(mine(h.req(&w.viewer, "GET", "/api/pages", None).await.ok(200)), true);
+    let r = h.req(&w.owner, "POST", &format!("/api/pages/{page}/share-links"), Some(json!({ "expires_in": 600 }))).await.ok(201);
+    let token = s(&r["url"]).rsplit('/').next().unwrap().to_string();
+    for _ in 0..2 {
+        h.req(&w.outsider, "POST", &format!("/api/s/{token}/responses"), Some(json!({ "data": {} }))).await.ok(201);
+    }
+    let sv = h.req(&w.viewer, "GET", &format!("/api/s/{token}?version=1"), None).await.ok(200);
+    assert_eq!((sv["my_response"].clone(), sv["versions"].clone(), sv["can_submit"].clone()), (Value::Null, Value::Null, json!(true)));
+
+    // 只改标题不出新版本；改内容出 v2，旧提交保留，新版本可再交
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "title": "t1b" }))).await.ok(200);
+    h.req(&w.owner, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "title": "t2", "content": "root = Stack([TextContent(\"v2\")])" }))).await.ok(200);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM page_versions WHERE page_id = $1::uuid").bind(&page).fetch_one(&h.db).await.unwrap();
+    assert_eq!(n, 2);
+    let v = view(&w.viewer, "").await.ok(200);
+    assert_eq!((v["my_submitted"].clone(), v["my_response"].clone(), v["can_submit"].clone()), (json!(false), Value::Null, json!(true)));
+    assert_eq!(v["versions"].as_array().unwrap().iter().map(|x| x["version"].as_i64().unwrap()).collect::<Vec<_>>(), vec![2, 1]);
+    assert_eq!((v["content"]["version"].clone(), v["content"]["title"].clone()), (json!(2), json!("t2")));
+    assert_eq!(mine(h.req(&w.viewer, "GET", "/api/pages", None).await.ok(200)), false);
+
+    // ?version=1：历史内容 + 该版本的我的提交；当前版本仍未提交
+    let v = view(&w.viewer, "?version=1").await.ok(200);
+    assert_eq!((v["content"]["spec"].clone(), v["content"]["title"].clone(), v["page"]["version"].clone()), (json!("root = Stack([])"), json!("t1"), json!(2)));
+    assert_eq!((v["my_response"]["data"].clone(), v["my_submitted"].clone()), (json!({ "choice": 1 }), json!(false)));
+    assert_eq!(view(&w.viewer, "?version=3").await.status, 404);
+    assert_eq!(view(&w.viewer, "?version=0").await.status, 404);
+    assert_eq!(view(&w.outsider, "?version=1").await.status, 404);
+
+    sub(&w.viewer, 3).await.ok(201);
+    assert_eq!(sub(&w.viewer, 4).await.code(), "already_submitted");
+    let v = view(&w.viewer, "").await.ok(200);
+    assert_eq!((v["my_response"]["page_version"].clone(), v["my_response"]["data"].clone()), (json!(2), json!({ "choice": 3 })));
+    assert_eq!(mine(h.req(&w.viewer, "GET", "/api/pages", None).await.ok(200)), true);
+    // 匿名（临时链接）提交不限
+    for _ in 0..2 {
+        h.req(&C::anon(), "POST", &format!("/api/s/{token}/responses"), Some(json!({ "data": {}, "nickname": "n" }))).await.ok(201);
+    }
+    let res = h.req(&w.owner, "GET", &format!("/api/pages/{page}/responses"), None).await.ok(200);
+    assert_eq!(res["total"], 6);
+
+    // 回填：模拟旧代码插入的页面（无快照）后重跑 0004
+    let old = uuid::Uuid::now_v7();
+    sqlx::query("DROP TABLE page_versions").execute(&h.db).await.unwrap();
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 4").execute(&h.db).await.unwrap();
+    sqlx::query(
+        "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, created_by, version)
+         VALUES ($1, $2::uuid, $3::uuid, 'old', 'openui', 'root = Stack([])', 'public', $4::uuid, 5)",
+    )
+    .bind(old)
+    .bind(&w.org)
+    .bind(&w.proj)
+    .bind(&w.owner.user_id)
+    .execute(&h.db)
+    .await
+    .unwrap();
+    relay::MIGRATOR.run(&h.db).await.unwrap();
+    let rows: Vec<(uuid::Uuid, i32, String)> = sqlx::query_as("SELECT page_id, version, title FROM page_versions ORDER BY page_id").fetch_all(&h.db).await.unwrap();
+    assert_eq!(rows, vec![(page.parse().unwrap(), 2, "t2".to_string()), (old, 5, "old".to_string())]);
+    let v = view(&C::anon(), "").await;
+    assert_eq!(v.status, 404);
+    let v = h.req(&w.owner, "GET", &format!("/api/pages/{old}/view"), None).await.ok(200);
+    assert_eq!(v["versions"], json!([{ "version": 5, "created_at": v["page"]["updated_at"] }]));
+    // 删除页面级联删除快照
+    sqlx::query("DELETE FROM pages WHERE id = $1").bind(old).execute(&h.db).await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM page_versions WHERE page_id = $1").bind(old).fetch_one(&h.db).await.unwrap();
+    assert_eq!(n, 0);
+}
+
+#[tokio::test]
+async fn bridge_lock_script_injected() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let page = publish_with(&h, &w.owner, json!({ "project_id": w.proj, "title": "h", "kind": "html", "content": "<form data-kanban></form>", "visibility": "public" })).await;
+    let url = s(&h.req(&C::anon(), "GET", &format!("/api/pages/{page}/view"), None).await.ok(200)["content"]["frame_url"]);
+    let body = h.raw(&C::anon(), "GET", url.strip_prefix(PUBLIC).unwrap(), None, &[]).await.text();
+    for needle in ["d.my_response", "data-kanban-selected", "data-kanban-dimmed", ":where([data-kanban-selected])", "已提交（第 ", "\"data-kanban-status\",\"submitted\"", "lock(f,d,(window.kanban.init||{}).version)"] {
+        assert!(body.contains(needle), "缺少 {needle}");
+    }
+    assert!(body.ends_with("</script>"), "无 </body> 时追加在末尾");
 }

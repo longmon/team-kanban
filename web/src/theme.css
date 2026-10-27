@@ -1,14 +1,15 @@
 /*
  * 主题 token（shadcn CSS 变量方案）。整套配色只在这里定义：换配色方向时只替换本文件的变量值。
- * 当前为「陶土」方向：暖白底 + 哑光橙主色，主按钮深棕字，卡片与主按钮带很轻的暖色阴影，其余组件平面细描边。
+ * 当前为「一条时间流」方向：纸白底 + 深墨字 + 深海青主色，柠檬黄只当荧光笔/当前选中，珊瑚做警示点缀；
+ * 列表无圆角靠分隔线，输入框与弹层 10px，操作条全圆；阴影只给浮动操作条和弹层。
  * 规范与对比度核对见 docs/design-system.md，改色值后要按那里的表重新核对。
  */
 :root {
-  /* 圆角：卡片 rounded-xl = 20px，按钮/输入框 rounded-md = 14px，徽标全圆 */
-  --radius: 16px;
-  /* 拉丁与数字用自托管 Nunito（main.tsx 引入 @fontsource-variable/nunito），中文走系统字体 */
-  --font-body: "Nunito Variable", "Nunito", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  --font-heading: var(--font-body);
+  /* 圆角：rounded-lg = 10px（输入框、弹层、卡片），rounded-md = 8px（按钮、菜单项），rounded-sm = 6px；chip、操作条 rounded-full */
+  --radius: 10px;
+  /* 正文：系统字体 + 中文系统栈；标题与数字：自托管 Bricolage Grotesque（main.tsx 引入 @fontsource-variable/bricolage-grotesque） */
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-heading: "Bricolage Grotesque Variable", "Bricolage Grotesque", var(--font-body);
 
   /* 动效：时长 150–400ms，缓动统一；prefers-reduced-motion 时由 index.css 关闭 */
   --dur-fast: 150ms;
@@ -17,75 +18,83 @@
   --ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
   /* 勾选图标弹入等“小回弹”，只用于 ≤ 24px 的小元素 */
   --ease-pop: cubic-bezier(0.3, 1.5, 0.5, 1);
-  /* 轻弹簧（过冲约 5%），只用于按钮松开回弹 */
+  /* 轻弹簧（过冲约 5%），只用于按钮松开回弹、操作条弹起 */
   --ease-spring: linear(0, 0.22 6%, 0.56 14%, 0.86 24%, 1.03 34%, 1.055 42%, 1.04 52%, 1.012 64%, 0.996 78%, 1);
 
-  --background: #fbf6f1;
-  --foreground: #4a382d;
-  --card: #fffdfa;
-  --card-foreground: #4a382d;
-  --popover: #fffdfa;
-  --popover-foreground: #4a382d;
-  --primary: #e58a4e;
-  --primary-foreground: #2e1405;
-  --secondary: #f4ebe2;
-  --secondary-foreground: #4a382d;
-  --muted: #f4ebe2;
-  --muted-foreground: #7a6254;
-  --accent: #f6ede4;
-  --accent-foreground: #4a382d;
-  --destructive: #be3a2e;
-  --border: #eee1d4;
-  --input: #e6d6c7;
-  --ring: #b85a1f;
-  /* 图表 5 色：设计稿色相，按色弱模拟（protan/deutan/tritan）调过明度，两两 OKLab ΔE ≥ 8 */
-  --chart-1: #e07a3a;
-  --chart-2: #79ba8a;
-  --chart-3: #d64a77;
-  --chart-4: #549cc0;
-  --chart-5: #7e63bc;
-  /* 语义状态色（Callout / Tag / 涨跌），作文字用时在卡片与 12% 浅底上都 ≥ 4.5:1 */
-  --success: #36732e;
-  --warning: #96501b;
-  --info: #33679f;
+  --background: #fafaf7;
+  --foreground: #141c26;
+  --card: #ffffff;
+  --card-foreground: #141c26;
+  --popover: #ffffff;
+  --popover-foreground: #141c26;
+  --primary: #0b7a82;
+  --primary-foreground: #ffffff;
+  --secondary: #f0f1ec;
+  --secondary-foreground: #141c26;
+  --muted: #f0f1ec;
+  --muted-foreground: #5e6672;
+  --accent: #eff1ec;
+  --accent-foreground: #141c26;
+  --destructive: #c2381f;
+  --border: #e4e5e0;
+  --input: #d6d8d2;
+  --ring: #0b7a82;
+  /* 荧光笔（只用于「等你投票」标记和当前选中），上面的字一律深墨 */
+  --highlight: #e9f45c;
+  --highlight-foreground: #141c26;
+  /* 珊瑚：警示点缀（未读点、截止提示的底），不作文字色；上面的字用深墨 */
+  --coral: #ff7a59;
+  /* 图表 5 色：按色弱模拟（protan/deutan/tritan，Machado 2009）挑选，两两 OKLab ΔE ≥ 9.9，与卡片对比 ≥ 3:1 */
+  --chart-1: #0b7a82;
+  --chart-2: #e2562f;
+  --chart-3: #715408;
+  --chart-4: #8970f6;
+  --chart-5: #b67dba;
+  /* 语义状态色（Callout / Tag / 涨跌），作文字用时在卡片与 12–15% 浅底上都 ≥ 4.5:1 */
+  --success: #276d35;
+  --warning: #a5481c;
+  --info: #2f63a6;
 
-  /* 阴影：卡片（含 1px 极淡暖色描边 + 内高光）、卡片悬停、主按钮、主按钮按下 */
-  --shadow-card: 0 0 0 1px rgb(120 70 30 / 0.05), 0 6px 14px -8px rgb(150 90 40 / 0.26), 0 1px 2px rgb(150 90 40 / 0.06), inset 0 1px 0 #fff, inset 0 -2px 4px rgb(180 120 70 / 0.08);
-  --shadow-card-hover: 0 0 0 1px rgb(120 70 30 / 0.07), 0 12px 22px -10px rgb(150 90 40 / 0.34), 0 2px 4px rgb(150 90 40 / 0.08), inset 0 1px 0 #fff, inset 0 -2px 4px rgb(180 120 70 / 0.08);
-  --shadow-primary: 0 4px 10px -4px rgb(200 100 40 / 0.5), inset 0 1px 1px rgb(255 235 215 / 0.6), inset 0 -2px 3px rgb(150 60 10 / 0.22);
-  --shadow-primary-press: 0 1px 3px -1px rgb(200 100 40 / 0.45), inset 0 1px 2px rgb(150 60 10 / 0.25);
+  /* 阴影：只给浮动操作条与弹层；卡片不用阴影（--shadow-card 保留变量名供 OpenUI 组件，值为 1px 线） */
+  --shadow-card: 0 0 0 1px var(--border);
+  --shadow-card-hover: 0 0 0 1px var(--input);
+  --shadow-pop: 0 12px 32px -12px rgb(20 28 38 / 0.28), 0 2px 6px -2px rgb(20 28 38 / 0.08);
+  --shadow-dock: 0 10px 24px -12px rgb(20 28 38 / 0.5);
+  --shadow-primary: none;
+  --shadow-primary-press: none;
 }
 
 .dark {
-  --background: #241c17;
-  --foreground: #ede0d3;
-  --card: #30261f;
-  --card-foreground: #ede0d3;
-  --popover: #30261f;
-  --popover-foreground: #ede0d3;
-  --primary: #f29a5e;
-  --primary-foreground: #2e1405;
-  --secondary: #3a2e26;
-  --secondary-foreground: #ede0d3;
-  --muted: #3a2e26;
-  --muted-foreground: #bfa893;
-  --accent: #3d3028;
-  --accent-foreground: #ede0d3;
-  --destructive: #f2826f;
-  --border: rgb(255 240 225 / 0.1);
-  --input: rgb(255 240 225 / 0.15);
-  --ring: #f29a5e;
-  --chart-1: #f08a4a;
-  --chart-2: #49c287;
-  --chart-3: #ca6a88;
-  --chart-4: #5a91c2;
-  --chart-5: #c2a1e8;
-  --success: #8dd080;
-  --warning: #f0a465;
-  --info: #82b6ea;
+  --background: #111518;
+  --foreground: #e8eaec;
+  --card: #181d21;
+  --card-foreground: #e8eaec;
+  --popover: #1c2226;
+  --popover-foreground: #e8eaec;
+  --primary: #3fc1c9;
+  --primary-foreground: #0b1a1c;
+  --secondary: #1f262b;
+  --secondary-foreground: #e8eaec;
+  --muted: #1f262b;
+  --muted-foreground: #9aa3ad;
+  --accent: #222a30;
+  --accent-foreground: #e8eaec;
+  --destructive: #ff8a6e;
+  --border: rgb(255 255 255 / 0.09);
+  --input: rgb(255 255 255 / 0.15);
+  --ring: #3fc1c9;
+  --highlight: #e9f45c;
+  --highlight-foreground: #141c26;
+  --coral: #ff8a6e;
+  --chart-1: #3fc1c9;
+  --chart-2: #ff8a6e;
+  --chart-3: #f8cc52;
+  --chart-4: #6387f5;
+  --chart-5: #bd5eab;
+  --success: #6fcf8a;
+  --warning: #f2b266;
+  --info: #84b4f0;
 
-  --shadow-card: 0 0 0 1px rgb(255 240 225 / 0.06), 0 6px 14px -8px rgb(0 0 0 / 0.55), inset 0 1px 0 rgb(255 240 225 / 0.06), inset 0 -2px 4px rgb(0 0 0 / 0.15);
-  --shadow-card-hover: 0 0 0 1px rgb(255 240 225 / 0.1), 0 12px 22px -10px rgb(0 0 0 / 0.65), inset 0 1px 0 rgb(255 240 225 / 0.08), inset 0 -2px 4px rgb(0 0 0 / 0.15);
-  --shadow-primary: 0 4px 10px -4px rgb(0 0 0 / 0.5), inset 0 1px 1px rgb(255 235 215 / 0.55), inset 0 -2px 3px rgb(150 60 10 / 0.25);
-  --shadow-primary-press: 0 1px 2px -1px rgb(0 0 0 / 0.5), inset 0 1px 2px rgb(150 60 10 / 0.3);
+  --shadow-pop: 0 12px 32px -12px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
+  --shadow-dock: 0 10px 24px -10px rgb(0 0 0 / 0.8);
 }

@@ -1,6 +1,6 @@
-// 项目页：页面列表与元数据编辑、成员、群组授权、邀请、设置（api.md §4.3、§4.4、§7.1）
-import { useLayoutEffect, useRef, useState, type ComponentProps, type FormEvent } from "react";
-import { Check, FileText, ShieldCheck } from "lucide-react";
+// 项目页：页面动态流、成员与权限（直接成员、群组授权、邀请）、设置（api.md §4.3、§4.4、§7.1）；页面元数据编辑器供详情页「管理」使用
+import { useState, type FormEvent, type ReactNode } from "react";
+import { ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,23 +8,31 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, put, qs } from "../api";
-import { cn } from "@/lib/utils";
 import { Link, navigate } from "../router";
 import {
-  AuthCard, CATEGORY_LABEL, CATEGORY_TYPES, CheckField, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page as Shell,
-  PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PAGE_TYPE_LABEL, PageHeader, PageTypeTag, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
-  useSession,
+  AuthCard, CheckField, Empty, ErrorBox, Field, fmtTime, loadMyProjects, Loading, MoreButton, NativeSelect, Page as Shell,
+  PAGE_TABS_LIST, PAGE_TABS_TRIGGER, PageHeader, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
+  useSession, useTab,
 } from "../ui";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { SLUG_RE } from "./home";
+import { Feed } from "./feed";
 import { Invites, MemberPicker } from "./org";
+import { AgentOnboarding } from "./settings";
 import type { Group, Org, Page, Paged, Project, ProjectGroupGrant, ProjectMember, ProjectRole, Visibility } from "../types";
 
 const PROJECT_ROLES: [ProjectRole, string][] = (["viewer", "editor", "admin"] as ProjectRole[]).map((r) => [r, ROLE_LABEL[r]]);
 
-async function findProject(orgId: string, slug: string): Promise<Project | null> {
+/** 先从 /api/me/projects（跨组织、整会话缓存）按 slug 找；组织管理员可能没有项目角色而不在其中，再翻组织项目列表 */
+async function findProject(org: Org, slug: string): Promise<Project | null> {
+  const mine = (await loadMyProjects()).find((p) => p.org.id === org.id && p.slug === slug);
+  if (mine) return get<Project>(`/projects/${mine.id}`);
+  if (org.my_role === "member") return null;
   let cursor: string | null = null;
   do {
-    const r: Paged<Project> = await get(`/orgs/${orgId}/projects${qs({ limit: 200, cursor })}`);
+    const r: Paged<Project> = await get(`/orgs/${org.id}/projects${qs({ limit: 200, cursor })}`);
     const p = r.items.find((x) => x.slug === slug);
     if (p) return p;
     cursor = r.next_cursor;
@@ -35,154 +43,65 @@ async function findProject(orgId: string, slug: string): Promise<Project | null>
 export function ProjectPage({ orgSlug, projectSlug }: { orgSlug: string; projectSlug: string }) {
   const { me } = useSession();
   const org = me!.orgs.find((o) => o.slug === orgSlug);
-  const proj = useLoad(() => (org ? findProject(org.id, projectSlug) : Promise.resolve(null)), [org?.id, projectSlug]);
-  if (proj.loading) return <Shell><Loading /></Shell>;
+  const proj = useLoad(() => (org ? findProject(org, projectSlug) : Promise.resolve(null)), [org?.id, projectSlug]);
+  const admin = proj.data?.my_role === "admin" || org?.my_role === "owner" || org?.my_role === "admin";
+  const [tab, setTab] = useTab(admin ? ["pages", "members", "settings"] : ["pages", "members"]);
+  if (proj.loading && !proj.data) return <Shell className="max-w-[680px]"><Loading /></Shell>;
   if (!org || !proj.data) return <AuthCard title="项目不存在或无权访问"><p className="text-sm"><Link className="link" to={org ? `/o/${org.slug}` : "/"}>返回</Link></p></AuthCard>;
   const p = proj.data;
-  const admin = p.my_role === "admin";
   return (
-    <Shell>
+    <Shell className={tab === "pages" ? "max-w-[680px]" : undefined}>
       <PageHeader crumbs={<Link to={`/o/${org.slug}`}>{org.name}</Link>} title={p.name}
         badge={<Badge variant="secondary">{p.my_role ? ROLE_LABEL[p.my_role] : "组织管理员"}</Badge>} desc={p.description || undefined} />
-      <Tabs defaultValue="pages" className="gap-6">
+      <Tabs value={tab} onValueChange={setTab} className="gap-5">
         <TabsList className={PAGE_TABS_LIST}>
           <TabsTrigger value="pages" className={PAGE_TABS_TRIGGER}>页面</TabsTrigger>
-          <TabsTrigger value="members" className={PAGE_TABS_TRIGGER}>成员</TabsTrigger>
-          <TabsTrigger value="groups" className={PAGE_TABS_TRIGGER}>群组授权</TabsTrigger>
-          {admin && <TabsTrigger value="invites" className={PAGE_TABS_TRIGGER}>邀请</TabsTrigger>}
+          <TabsTrigger value="members" className={PAGE_TABS_TRIGGER}>成员与权限</TabsTrigger>
           {admin && <TabsTrigger value="settings" className={PAGE_TABS_TRIGGER}>设置</TabsTrigger>}
         </TabsList>
-        <TabsContent value="pages"><Pages org={org} project={p} /></TabsContent>
-        <TabsContent value="members"><Members org={org} project={p} /></TabsContent>
-        <TabsContent value="groups"><GroupGrants org={org} project={p} /></TabsContent>
-        {admin && <TabsContent value="invites"><Invites org={org} listPath={`/projects/${p.id}/invites`} targets={["project"]} projectId={p.id} /></TabsContent>}
+        <TabsContent value="pages">
+          <Feed projectId={p.id} empty={<AgentOnboarding title="这个项目还没有页面" note="让 agent 调用 MCP 的 publish_page 发布到本项目。还没接入的话，两步：" />} />
+        </TabsContent>
+        <TabsContent value="members">
+          <div className="flex flex-col gap-10">
+            <Section title="直接成员" desc="组织所有者/管理员自动拥有项目管理员权限。"><Members org={org} project={p} admin={admin} /></Section>
+            <Section title="群组授权" desc="授权后，群组成员按所选角色访问本项目。"><GroupGrants org={org} project={p} admin={admin} /></Section>
+            {admin && <Section title="邀请" desc="组织外的人用邀请链接加入本项目。"><Invites org={org} listPath={`/projects/${p.id}/invites`} targets={["project"]} projectId={p.id} /></Section>}
+          </div>
+        </TabsContent>
         {admin && <TabsContent value="settings"><ProjectSettings org={org} project={p} onSaved={proj.reload} /></TabsContent>}
       </Tabs>
     </Shell>
   );
 }
 
-/** 列表筛选项：all / 大类（read、collect）/ 具体 page_type */
-const FILTERS: [string, string][] = [
-  ["all", "全部"],
-  ...Object.keys(CATEGORY_TYPES).map((c): [string, string] => [c, CATEGORY_LABEL[c]]),
-  ...Object.values(CATEGORY_TYPES).flat().map((t): [string, string] => [t, PAGE_TYPE_LABEL[t]]),
-];
-const filterTypes = (f: string) => (f === "all" ? undefined : (CATEGORY_TYPES[f] ?? [f]).join(","));
-
-/**
- * 筛选 chips 的滑动指示块：量出容器内当前选中项（selector）的位置尺寸，写进指示块的 --x/--y/--w/--h，
- * 指示块按 translate/width 过渡 250ms 滑过去。首帧直接到位不滑；选中项变化、尺寸变化（字体加载、勾号出现）时重新量。
- * （Tabs 的指示块由 animate-ui TabsList 内置，这里只服务于非 Tabs 的 chips）
- */
-function useSlidingIndicator<T extends HTMLElement>(selector: string) {
-  const box = useRef<T>(null);
-  const bar = useRef<HTMLSpanElement>(null);
-  useLayoutEffect(() => {
-    const el = box.current, ind = bar.current;
-    if (!el || !ind) return;
-    const place = () => {
-      const a = el.querySelector<HTMLElement>(selector);
-      ind.style.visibility = a ? "" : "hidden";
-      if (!a) return;
-      ind.style.setProperty("--x", `${a.offsetLeft}px`);
-      ind.style.setProperty("--y", `${a.offsetTop}px`);
-      ind.style.setProperty("--w", `${a.offsetWidth}px`);
-      ind.style.setProperty("--h", `${a.offsetHeight}px`);
-    };
-    place();
-    const raf = requestAnimationFrame(() => (ind.dataset.ready = ""));
-    const mo = new MutationObserver(place);
-    mo.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-state", "aria-pressed"] });
-    const ro = new ResizeObserver(place);
-    ro.observe(el);
-    for (const c of el.children) ro.observe(c);
-    return () => (cancelAnimationFrame(raf), mo.disconnect(), ro.disconnect());
-  }, [selector]);
-  return { box, bar };
-}
-const INDICATOR = "pointer-events-none absolute top-0 left-0 h-(--h) w-(--w) translate-x-(--x) translate-y-(--y) data-ready:transition-[translate,width,height] data-ready:duration-(--dur-slow)";
-function SlidingIndicator({ className, ...props }: ComponentProps<"span">) {
-  return <span data-slot="tabs-indicator" aria-hidden="true" className={cn(INDICATOR, className)} {...props} />;
-}
-
-function Pages({ org, project }: { org: Org; project: Project }) {
-  const [filter, setFilter] = useState("all");
-  const list = usePaged<Page>(`/pages${qs({ project_id: project.id, page_type: filterTypes(filter) })}`);
-  const groups = useLoad(() => get<Paged<Group>>(`/orgs/${org.id}/groups?limit=200`), [org.id]);
-  const [editing, setEditing] = useState<string | null>(null);
-  const chips = useSlidingIndicator<HTMLDivElement>("[aria-pressed=true]");
+function Section({ title, desc, children }: { title: string; desc?: string; children: ReactNode }) {
   return (
-    <div className="stack">
-      <p className="tab-intro">页面内容由 agent 通过 MCP 发布与更新；这里只能修改标题、可见性和提交开关。</p>
-      <div ref={chips.box} role="group" aria-label="按类型筛选" className="relative flex flex-wrap items-center gap-2">
-        {/* 选中底色是滑动指示块，chip 自身选中时只换描边为透明 */}
-        <SlidingIndicator ref={chips.bar} className="rounded-full border border-primary bg-primary/10" />
-        {FILTERS.map(([v, label], i) => (
-          <button key={v} type="button" aria-pressed={filter === v} onClick={() => setFilter(v)}
-            className={cn(
-              "relative inline-flex h-7 items-center gap-1 rounded-full border px-3 text-[13px] font-semibold transition-colors outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/80 active:scale-[.97]",
-              filter === v ? "border-transparent" : "border-input text-muted-foreground",
-              i === Object.keys(CATEGORY_TYPES).length + 1 && "sm:ml-3",
-            )}>
-            {filter === v && <Check strokeWidth={3} className="size-3.5 animate-in zoom-in-50 duration-150 ease-pop" />}{label}
-          </button>
-        ))}
-      </div>
-      <ErrorBox error={list.error} />
-      {list.loading && list.items.length === 0 && <ListSkeleton />}
-      {!list.loading && list.items.length === 0 && (filter === "all"
-        ? <Empty icon={<FileText />} title="还没有页面">让 agent 调用 MCP 的 publish_page 发布第一个页面。</Empty>
-        : <Empty icon={<FileText />} title="没有该类型的页面" />)}
-      {list.items.length > 0 && (
-        <div key={list.gen} className="list">
-          {list.items.map((pg) => (
-            <div key={pg.id} className="list-row">
-              <div className="list-main">
-                <Link to={`/pages/${pg.id}`} className="list-title" viewTransition>{pg.title}</Link>
-                <div className="list-meta">
-                  <Badge variant="secondary"><PageTypeTag type={pg.page_type} /></Badge>
-                  <Badge variant="outline">{pg.kind === "openui" ? "OpenUI" : "HTML"}</Badge>
-                  <Badge variant={pg.visibility === "public" ? "info" : "secondary"}>{VIS_LABEL[pg.visibility]}</Badge>
-                  {!pg.accept_responses && pg.category !== "read" && <Badge variant="warning">已关闭提交</Badge>}
-                  <span>v{pg.version}</span>
-                  <span>{pg.created_by.display_name} 更新于 {fmtTime(pg.updated_at)}</span>
-                  {pg.generated_by && <span>由 {pg.generated_by} 生成</span>}
-                </div>
-              </div>
-              <div className="list-stat">{pg.category !== "read" && <><b>{pg.response_count}</b> 条提交</>}</div>
-              <div className="list-actions">
-                {pg.category !== "read" && <Button size="sm" variant="outline" onClick={() => navigate(`/pages/${pg.id}/results`)}>结果</Button>}
-                {pg.can_manage && <Button size="sm" variant="outline" onClick={() => navigate(`/pages/${pg.id}/links`)}>临时链接</Button>}
-                {pg.can_manage && <Button size="sm" variant="ghost" onClick={() => setEditing(editing === pg.id ? null : pg.id)}>{editing === pg.id ? "收起" : "编辑"}</Button>}
-              </div>
-              {editing === pg.id && (
-                <div className="list-expand">
-                  <PageMetaEditor page={pg} groups={groups.data?.items ?? []} onDone={() => (setEditing(null), list.reload())} />
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      <MoreButton p={list} />
-    </div>
+    <section className="grid gap-3">
+      <div><h2 className="text-base font-bold">{title}</h2>{desc && <p className="mt-0.5 text-[13px] text-muted-foreground">{desc}</p>}</div>
+      {children}
+    </section>
   );
 }
 
-export function PageMetaEditor({ page, groups, onDone }: { page: Page; groups: Group[]; onDone: () => void }) {
+/** 页面设置（详情页「管理」）：标题、可见性、提交开关、结果可见范围、删除。改成「公开」与删除都要在对话框里显式确认 */
+export function PageMetaEditor({ page, groups, onSaved, onDeleted }: { page: Page; groups: Group[]; onSaved: () => void; onDeleted: () => void }) {
   const [f, setF] = useState({
     title: page.title, visibility: page.visibility, group_ids: page.group_ids,
     accept_responses: page.accept_responses, results_visible_to: page.results_visible_to,
   });
+  const [ask, setAsk] = useState<null | "public" | "delete">(null);
   const a = useAction();
-  const save = (e: FormEvent) => {
-    e.preventDefault();
+  const doSave = () =>
     a.run(async () => {
       await patch(`/pages/${page.id}`, { ...f, group_ids: f.visibility === "groups" ? f.group_ids : [] });
       toast.ok("已保存");
-      onDone();
+      onSaved();
     });
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    if (f.visibility === "public" && page.visibility !== "public") setAsk("public");
+    else doSave();
   };
   const toggleGroup = (id: string) =>
     setF({ ...f, group_ids: f.group_ids.includes(id) ? f.group_ids.filter((g) => g !== id) : [...f.group_ids, id] });
@@ -190,7 +109,7 @@ export function PageMetaEditor({ page, groups, onDone }: { page: Page; groups: G
     <form onSubmit={save} className="form">
       <Field label="标题"><Input required maxLength={200} value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
       <Field label="可见性">
-        <NativeSelect<Visibility> value={f.visibility} onChange={(v) => setF({ ...f, visibility: v })}
+        <NativeSelect<Visibility> aria-label="可见性" value={f.visibility} onChange={(v) => setF({ ...f, visibility: v })}
           options={(["public", "org", "project", "groups"] as Visibility[]).map((v) => [v, VIS_LABEL[v]])} />
       </Field>
       {f.visibility === "groups" && (
@@ -209,16 +128,31 @@ export function PageMetaEditor({ page, groups, onDone }: { page: Page; groups: G
       <ErrorBox error={a.error} />
       <div className="form-actions">
         <Button type="submit" loading={a.busy} disabled={a.busy || (f.visibility === "groups" && f.group_ids.length === 0)}>保存</Button>
-        <Button type="button" variant="ghost-destructive" disabled={a.busy}
-          onClick={() => confirm(`删除页面「${page.title}」？`) && a.run(async () => (await del(`/pages/${page.id}`), onDone()))}>删除页面</Button>
+        <Button type="button" variant="ghost-destructive" disabled={a.busy} onClick={() => setAsk("delete")}>删除页面</Button>
       </div>
+      <AlertDialog open={ask !== null} onOpenChange={(o) => !o && setAsk(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{ask === "delete" ? `删除页面「${page.title}」？` : "改为公开？"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {ask === "delete" ? "删除后页面和临时链接都无法访问，已收集的提交一并不可见。" : "公开后，任何拿到链接的人（包括未登录的人）都能查看这个页面。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction variant={ask === "delete" ? "destructive" : "default"}
+              onClick={() => (ask === "delete" ? a.run(async () => (await del(`/pages/${page.id}`), onDeleted())) : doSave())}>
+              {ask === "delete" ? "删除" : "确认公开"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </form>
   );
 }
 
-function Members({ org, project }: { org: Org; project: Project }) {
+function Members({ org, project, admin }: { org: Org; project: Project; admin: boolean }) {
   const { me } = useSession();
-  const admin = project.my_role === "admin";
   const list = usePaged<ProjectMember>(`/projects/${project.id}/members`);
   const [role, setRole] = useState<ProjectRole>("editor");
   const a = useAction();
@@ -226,12 +160,14 @@ function Members({ org, project }: { org: Org; project: Project }) {
     confirm(self ? "确定退出该项目？" : "确定移除该成员？") &&
     a.run(async () => {
       await del(`/projects/${project.id}/members/${uid}`);
-      self ? navigate(`/o/${org.slug}`) : list.reload();
+      if (self) {
+        await loadMyProjects(true);
+        navigate(`/o/${org.slug}`);
+      } else list.reload();
     });
   return (
     <div className={admin ? "split" : "stack"}>
     <div className="stack">
-      <p className="tab-intro">这里只列直接成员；经群组授权的成员见「群组授权」。组织所有者/管理员自动拥有项目管理员权限。</p>
       <ErrorBox error={list.error || a.error} />
       <TableCard><Table>
         <TableHeader><TableRow><TableHead>成员</TableHead><TableHead>角色</TableHead><TableHead>加入时间</TableHead><TableHead /></TableRow></TableHeader>
@@ -261,7 +197,7 @@ function Members({ org, project }: { org: Org; project: Project }) {
       <MoreButton p={list} />
     </div>
       {admin && (
-        <Panel title="添加成员" desc="只能添加本组织成员；组织外的人请用「邀请」。">
+        <Panel title="添加成员" desc="只能添加本组织成员；组织外的人用下方「邀请」。">
           <div className="form">
             <Field label="角色"><NativeSelect value={role} onChange={setRole} options={PROJECT_ROLES} /></Field>
             <MemberPicker orgId={org.id}
@@ -273,8 +209,7 @@ function Members({ org, project }: { org: Org; project: Project }) {
   );
 }
 
-function GroupGrants({ org, project }: { org: Org; project: Project }) {
-  const admin = project.my_role === "admin";
+function GroupGrants({ org, project, admin }: { org: Org; project: Project; admin: boolean }) {
   const grants = useLoad(() => get<{ items: ProjectGroupGrant[] }>(`/projects/${project.id}/groups`), [project.id]);
   const groups = useLoad(() => (admin ? get<Paged<Group>>(`/orgs/${org.id}/groups?limit=200`) : Promise.resolve({ items: [], next_cursor: null })), [org.id, admin]);
   const [pick, setPick] = useState({ group_id: "", role: "viewer" as ProjectRole });
@@ -296,7 +231,7 @@ function GroupGrants({ org, project }: { org: Org; project: Project }) {
               <TableCell className="text-right">
                 {admin && (
                   <Button size="sm" variant="ghost-destructive" disabled={a.busy}
-                    onClick={() => a.run(async () => (await del(`/projects/${project.id}/groups/${g.group.id}`), grants.reload()))}>取消授权</Button>
+                    onClick={() => a.run(async () => (await del(`/projects/${project.id}/groups/${g.group.id}`), grants.reload()))}>撤销授权</Button>
                 )}
               </TableCell>
             </TableRow>
@@ -306,9 +241,9 @@ function GroupGrants({ org, project }: { org: Org; project: Project }) {
       {grants.data?.items.length === 0 && <Empty icon={<ShieldCheck />} title="暂无群组授权">授权后，群组成员会按所选角色访问本项目。</Empty>}
       {admin && (
         <div className="row wrap toolbar">
-          <NativeSelect aria-label="群组" value={pick.group_id} onChange={(v) => setPick({ ...pick, group_id: v })}
+          <NativeSelect aria-label="群组" className="w-auto min-w-40" value={pick.group_id} onChange={(v) => setPick({ ...pick, group_id: v })}
             options={[["", "选择群组"], ...(groups.data?.items.filter((g) => !granted.has(g.id)).map((g) => [g.id, g.name] as [string, string]) ?? [])]} />
-          <NativeSelect aria-label="角色" value={pick.role} onChange={(v) => setPick({ ...pick, role: v })} options={PROJECT_ROLES} />
+          <NativeSelect aria-label="角色" className="w-auto min-w-32" value={pick.role} onChange={(v) => setPick({ ...pick, role: v })} options={PROJECT_ROLES} />
           <Button size="sm" disabled={!pick.group_id || a.busy}
             onClick={() => setRole(pick.group_id, pick.role)?.then(() => setPick({ ...pick, group_id: "" }))}>授权</Button>
         </div>
@@ -324,6 +259,7 @@ function ProjectSettings({ org, project, onSaved }: { org: Org; project: Project
     e.preventDefault();
     a.run(async () => {
       const p = await patch<Project>(`/projects/${project.id}`, f);
+      await loadMyProjects(true);
       toast.ok("已保存");
       if (p.slug !== project.slug) navigate(`/o/${org.slug}/p/${p.slug}`, true);
       else onSaved();
@@ -342,7 +278,7 @@ function ProjectSettings({ org, project, onSaved }: { org: Org; project: Project
       </Panel>
       <Panel title="删除项目" desc="删除后项目内所有页面将不可访问。" danger
         actions={<Button variant="destructive" disabled={a.busy}
-          onClick={() => confirm(`确定删除项目「${project.name}」？`) && a.run(async () => (await del(`/projects/${project.id}`), navigate(`/o/${org.slug}`)))}>删除项目</Button>} />
+          onClick={() => confirm(`确定删除项目「${project.name}」？`) && a.run(async () => (await del(`/projects/${project.id}`), await loadMyProjects(true), navigate(`/o/${org.slug}`)))}>删除项目</Button>} />
     </div>
   );
 }

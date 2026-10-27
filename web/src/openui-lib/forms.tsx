@@ -32,6 +32,13 @@ const rulesSchema = z.object({
   pattern: z.string().optional(),
 }).optional();
 
+/** 已提交锁定：按提交数据（values）回填，只读展示；选中项高亮、未选项置灰（DIM），交互由 Form 的 inert 屏蔽 */
+function useLocked(name: string): { v: unknown } | null {
+  const l = useContext(SubmitContext)?.locked;
+  return l ? { v: l.values[name] } : null;
+}
+const DIM = "opacity-45 saturate-50";
+
 const itemsOf = (v: unknown) => asArray(v).map((n) => ((n as { props?: Record<string, unknown> })?.props ?? {}) as Record<string, unknown>);
 
 /** 字段状态 + 校验注册（各输入组件共用） */
@@ -94,8 +101,9 @@ export const Input = defineComponent({
   description: "",
   component: ({ props }) => {
     const f = useField<string>(props.name, props.value, props.rules);
+    const lk = useLocked(props.name);
     return (
-      <UIInput id={f.name} name={f.name} type={props.type || "text"} placeholder={props.placeholder || ""} value={f.value ?? ""} className={FIELD_W}
+      <UIInput id={f.name} name={f.name} type={props.type || "text"} placeholder={lk ? "" : props.placeholder || ""} value={lk ? String(lk.v ?? "") : f.value ?? ""} readOnly={!!lk} className={FIELD_W}
         aria-invalid={f.invalid || undefined} disabled={f.disabled}
         onFocus={f.clear} onChange={(e) => (f.set(e.target.value, false), f.clear())} onBlur={(e) => f.validate(e.target.value)} />
     );
@@ -114,8 +122,9 @@ export const TextArea = defineComponent({
   description: "",
   component: ({ props }) => {
     const f = useField<string>(props.name, props.value, props.rules);
+    const lk = useLocked(props.name);
     return (
-      <Textarea id={f.name} name={f.name} rows={props.rows || 3} placeholder={props.placeholder || ""} value={f.value ?? ""} className={FIELD_W}
+      <Textarea id={f.name} name={f.name} rows={props.rows || 3} placeholder={lk ? "" : props.placeholder || ""} value={lk ? String(lk.v ?? "") : f.value ?? ""} readOnly={!!lk} className={FIELD_W}
         style={{ minHeight: `${(props.rows || 3) * 1.5 + 1}rem` }} aria-invalid={f.invalid || undefined} disabled={f.disabled}
         onFocus={f.clear} onChange={(e) => (f.set(e.target.value, false), f.clear())} onBlur={(e) => f.validate(e.target.value)} />
     );
@@ -124,9 +133,9 @@ export const TextArea = defineComponent({
 
 // ---------- 选择 ----------
 // 选项卡（单选/多选）：平面细描边；选中 = 主色描边 + 10% 主色底，颜色短过渡，按下轻压
-const OPTION = "flex cursor-pointer items-start gap-3 rounded-md border bg-card px-3.5 py-3 transition-[background-color,border-color,box-shadow,scale] hover:border-primary/50 active:scale-[.99] has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/80";
+const OPTION = "flex cursor-pointer items-start gap-3 rounded-md border bg-card px-3.5 py-3 transition-[background-color,border-color,box-shadow,scale,opacity,filter] hover:border-primary/50 active:scale-[.99] has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/80";
 // 选项卡片：宽屏 2–3 列（网格最宽 max-w-5xl，280px 起一列）；文本输入框最宽 max-w-3xl，不随宽屏拉长
-const OPTION_GRID = "grid max-w-5xl gap-2 sm:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]";
+const OPTION_GRID = "grid min-w-0 max-w-5xl gap-2 sm:grid-cols-[repeat(auto-fill,minmax(280px,1fr))]";
 const FIELD_W = "max-w-3xl";
 const OPTION_ON = "border-primary bg-primary/10 shadow-[inset_0_0_0_0.5px_var(--primary)] hover:border-primary";
 
@@ -150,9 +159,10 @@ export const Select = defineComponent({
   description: "",
   component: ({ props }) => {
     const f = useField<string>(props.name, props.value, props.rules);
+    const lk = useLocked(props.name);
     const items = itemsOf(props.items).filter((i) => i.value);
     return (
-      <UISelect name={f.name} value={f.value ?? ""} onValueChange={(v) => f.set(v)} disabled={f.disabled}>
+      <UISelect name={f.name} value={lk ? String(lk.v ?? "") : f.value ?? ""} onValueChange={(v) => f.set(v)} disabled={f.disabled}>
         <SelectTrigger id={f.name} size={props.size === "small" ? "sm" : "default"} aria-invalid={f.invalid || undefined}
           className={cn("w-full sm:max-w-xs", props.size === "large" && "h-10")}>
           <SelectValue placeholder={props.placeholder || "请选择"} />
@@ -184,10 +194,11 @@ export const RadioGroup = defineComponent({
   description: "",
   component: ({ props }) => {
     const f = useField<string>(props.name, props.value, props.rules);
+    const lk = useLocked(props.name);
     const uid = useId();
     const items = itemsOf(props.items);
     if (!items.length) return null;
-    const value = f.value ?? props.defaultValue ?? "";
+    const value = lk ? String(lk.v ?? "") : f.value ?? props.defaultValue ?? "";
     return (
       <UIRadioGroup name={f.name} value={value} onValueChange={(v) => f.set(v)} disabled={f.disabled} className={OPTION_GRID} aria-invalid={f.invalid || undefined}>
         {items.map((it, i) => {
@@ -195,7 +206,7 @@ export const RadioGroup = defineComponent({
           const v = String(it.value ?? "");
           return (
             <label key={i} htmlFor={id}
-              className={cn(OPTION, value === v && OPTION_ON)}>
+              className={cn(OPTION, value === v && OPTION_ON, lk && value !== v && DIM)}>
               <RadioGroupItem id={id} value={v} className="mt-0.5" />
               <span className="grid gap-0.5">
                 <span className="text-sm leading-snug font-semibold">{String(it.label ?? "")}</span>
@@ -239,8 +250,9 @@ export const CheckBoxGroup = defineComponent({
     const uid = useId();
     const items = useMemo(() => itemsOf(props.items), [props.items]);
     const aggregate = useAggregate(f, items);
+    const lk = useLocked(props.name);
     if (!items.length) return null;
-    const cur = aggregate();
+    const cur = lk ? (lk.v && typeof lk.v === "object" ? (lk.v as Record<string, boolean>) : {}) : aggregate();
     return (
       <div className={OPTION_GRID}>
         {items.map((it, i) => {
@@ -248,8 +260,8 @@ export const CheckBoxGroup = defineComponent({
           const n = String(it.name);
           return (
             <label key={i} htmlFor={id}
-              className={cn(OPTION, cur[n] && OPTION_ON)}>
-              <Checkbox id={id} checked={cur[n]} disabled={f.disabled} className="mt-0.5"
+              className={cn(OPTION, cur[n] && OPTION_ON, lk && !cur[n] && DIM)}>
+              <Checkbox id={id} checked={!!cur[n]} disabled={f.disabled} className="mt-0.5"
                 onCheckedChange={(c) => f.set({ ...aggregate(), [n]: c === true })} />
               <span className="grid gap-0.5">
                 <span className="text-sm leading-snug font-semibold">{String(it.label ?? "")}</span>
@@ -289,8 +301,9 @@ export const SwitchGroup = defineComponent({
     const uid = useId();
     const items = useMemo(() => itemsOf(props.items), [props.items]);
     const aggregate = useAggregate(f, items);
+    const lk = useLocked(props.name);
     if (!items.length) return null;
-    const cur = aggregate();
+    const cur = lk ? (lk.v && typeof lk.v === "object" ? (lk.v as Record<string, boolean>) : {}) : aggregate();
     const box = props.variant === "card" ? "rounded-lg border bg-card" : props.variant === "sunk" ? "rounded-lg bg-muted/60" : "";
     return (
       <div className={cn("divide-y", box, box && "px-3.5")}>
@@ -303,7 +316,7 @@ export const SwitchGroup = defineComponent({
                 <span className="text-sm font-medium">{String(it.label ?? n)}</span>
                 {!!it.description && <span className="text-[13px] text-muted-foreground">{String(it.description)}</span>}
               </label>
-              <Switch id={id} checked={cur[n]} disabled={f.disabled} onCheckedChange={(c) => f.set({ ...aggregate(), [n]: c })} />
+              <Switch id={id} checked={!!cur[n]} disabled={f.disabled} onCheckedChange={(c) => f.set({ ...aggregate(), [n]: c })} />
             </div>
           );
         })}
@@ -347,8 +360,9 @@ export const Chips = defineComponent({
     const def = type === "single"
       ? (Array.isArray(props.defaultValue) ? props.defaultValue[0] : props.defaultValue)
       : (props.defaultValue == null ? undefined : asArray(props.defaultValue).map(String));
-    const raw = stored ?? def;
-    const selection: string[] = raw == null ? [] : asArray(raw).map(String);
+    const lk = useLocked(props.name);
+    const raw = lk ? lk.v : stored ?? def;
+    const selection: string[] = raw == null || raw === "" ? [] : asArray(raw).map(String);
 
     // 默认值在流式结束后写入表单状态（用户未选时），提交时能带上
     useEffect(() => {
@@ -382,8 +396,9 @@ export const Chips = defineComponent({
             <button key={i} type="button" role={type === "single" ? "radio" : "checkbox"} aria-checked={on}
               disabled={streaming || it.disabled === true} onClick={() => toggle(v)}
               className={cn(
-                "inline-flex h-9 items-center gap-1.5 rounded-full border bg-card px-3.5 text-sm font-semibold transition-[background-color,border-color,box-shadow,scale] outline-none hover:border-primary/50 focus-visible:ring-[3px] focus-visible:ring-ring/80 active:scale-[.97] disabled:opacity-50",
+                "inline-flex h-9 items-center gap-1.5 rounded-full border bg-card px-3.5 text-sm font-semibold transition-[background-color,border-color,box-shadow,scale,opacity,filter] outline-none hover:border-primary/50 focus-visible:ring-[3px] focus-visible:ring-ring/80 active:scale-[.97] disabled:opacity-50",
                 on && "border-primary bg-primary/10 shadow-[inset_0_0_0_0.5px_var(--primary)] hover:border-primary",
+                lk && !on && DIM,
               )}>
               {on && <Check className="-ml-1 size-4 text-primary animate-in zoom-in-50 fade-in-0 duration-150 ease-pop" strokeWidth={3} aria-hidden="true" />}
               {ic?.props?.name && <LucideIcon name={ic.props.name} category={ic.props.category} className="size-3.5" />}
@@ -413,7 +428,8 @@ export const Slider = defineComponent({
   component: ({ props }) => {
     const f = useField<number[]>(props.name, props.value, props.rules);
     const [dragging, setDragging] = useState(false);
-    const value = f.value ?? props.defaultValue ?? [props.min];
+    const lk = useLocked(props.name);
+    const value = (lk && Array.isArray(lk.v) ? (lk.v as number[]) : undefined) ?? f.value ?? props.defaultValue ?? [props.min];
     const step = props.step ?? (props.variant === "discrete" ? Math.max(1, (props.max - props.min) / 10) : 1);
     return (
       <div className="grid gap-3">
@@ -441,7 +457,9 @@ export const DatePicker = defineComponent({
   }),
   description: "",
   component: ({ props }) => {
-    const f = useField<unknown>(props.name, props.value, props.rules);
+    const f0 = useField<unknown>(props.name, props.value, props.rules);
+    const lk = useLocked(props.name);
+    const f = lk ? { ...f0, value: lk.v } : f0;
     const cls = "w-full sm:w-44 [&::-webkit-calendar-picker-indicator]:opacity-60 dark:[color-scheme:dark]";
     if (props.mode === "range") {
       const r = (f.value ?? {}) as { from?: string; to?: string };
@@ -505,7 +523,9 @@ export const FormControl = defineComponent({
 // ---------- 按钮 ----------
 /** 提交反馈：OpenUIView 提供状态，触发这次提交的按钮（owner）显示 提交中 spinner → 「已提交 ✓」，失败时抖动并标红 */
 export type SubmitState = { phase: "idle" | "busy" | "done" | "error"; owner: string | null; n: number; error?: string };
-export const SubmitContext = createContext<{ state: SubmitState; claim: (id: string) => void; readOnly?: boolean } | null>(null);
+/** locked：已提交（当前看的版本），values 为提交数据里的 values，version 为该版本号 */
+export type Locked = { values: Record<string, unknown>; version: number };
+export const SubmitContext = createContext<{ state: SubmitState; claim: (id: string) => void; readOnly?: boolean; locked?: Locked | null } | null>(null);
 
 /** 重新触发一次抖动动画（连续失败也能看到） */
 function shake(el: HTMLElement | null) {
@@ -545,8 +565,17 @@ export const Button = defineComponent({
     const variant = props.variant || "primary";
     const destructive = props.type === "destructive";
     const act = props.action as { steps?: { type: string; refType?: string }[] } | undefined;
+    const submits = !act?.steps || act.steps.some((s) => s.type === ACTION_STEPS.ToAssistant);
+    // 已提交：提交按钮固定为「✓ 已提交（第 N 版）」，不可再点；刚提交时带一圈柔光
+    if (sub?.locked && submits)
+      return (
+        <UIButton type="button" size={BTN_SIZE[props.size ?? "medium"]} aria-disabled tabIndex={-1} data-locked=""
+          variant={BTN_VARIANT[variant]} className={cn("pointer-events-none", phase === "done" && "submit-glow")}>
+          <span key="locked" className="inline-flex items-center gap-2 animate-in fade-in-0"><Check strokeWidth={3} className="check-draw" />已提交（第 {sub.locked.version} 版）</span>
+        </UIButton>
+      );
     // 只读页面：会触发提交的按钮（@ToAssistant 或缺省动作）不渲染，open_url 等照常
-    if (sub?.readOnly && (!act?.steps || act.steps.some((s) => s.type === ACTION_STEPS.ToAssistant))) return null;
+    if (sub?.readOnly && submits) return null;
     return (
       <>
       <UIButton ref={ref} type="button" size={BTN_SIZE[props.size ?? "medium"]}
@@ -600,14 +629,16 @@ export const Form = defineComponent({
     const validation = useCreateFormValidation();
     // 不在卡片里时自成一张承托卡片（控件宽度由各字段自己限制）
     const inside = useContext(InSurface);
-    const readOnly = !!useContext(SubmitContext)?.readOnly;
+    const sub = useContext(SubmitContext);
+    const readOnly = !!sub?.readOnly;
+    const locked = !!sub?.locked;
     return (
       <FormValidationContext.Provider value={validation}>
         <FormNameContext.Provider value={props.name}>
           <InSurface.Provider value>
             <div role="form" className={cn("flex flex-col gap-5", !inside && "surface p-5 sm:p-6")}>
-              {/* 只读页面：字段禁用 */}
-              <fieldset disabled={readOnly} className="contents">{renderNode(props.fields)}</fieldset>
+              {/* 只读页面：字段禁用；已提交：inert 屏蔽交互但不套禁用样式（选中项保持高亮，未选项由各字段置灰） */}
+              <fieldset disabled={readOnly && !locked} inert={locked} data-locked={locked || undefined} className="contents">{renderNode(props.fields)}</fieldset>
               <div className="pt-1">{renderNode(props.buttons)}</div>
             </div>
           </InSurface.Provider>

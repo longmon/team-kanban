@@ -84,3 +84,51 @@ export function tallies(rows: Record<string, unknown>[], cols: string[]) {
   }
   return out;
 }
+
+// ---------- 结果显示 OpenUI 标签而非原始 key ----------
+export type SpecLabels = { fields: Record<string, string>; options: Record<string, Record<string, string>> };
+
+const STR = String.raw`"((?:[^"\\]|\\.)*)"`;
+const unq = (s: string) => { try { return JSON.parse(`"${s}"`) as string; } catch { return s; } };
+
+/**
+ * 从 OpenUI Lang 原文里取字段标签与选项标签（不解析整棵树，只认几种固定写法；取不到的退回原始 key）：
+ *   FormControl("方案", RadioGroup("choice", [a, b]))  或  FormControl("方案", x) + x = RadioGroup("choice", …)
+ *   RadioItem(label, desc, value) / SelectItem(value, label) / ChipItem(value, label) / CheckBoxItem(label, desc, name)
+ */
+export function specLabels(spec: string): SpecLabels {
+  const vars: Record<string, string> = {};
+  for (const m of spec.matchAll(/^\s*(\w+)\s*=\s*(.+)$/gm)) vars[m[1]] = m[2];
+  // 选项变量 → [value, label]
+  const item: Record<string, [string, string]> = {};
+  for (const [v, body] of Object.entries(vars)) {
+    const args = [...body.matchAll(new RegExp(STR, "g"))].map((m) => unq(m[1]));
+    if (/^RadioItem\(/.test(body) && args.length >= 3) item[v] = [args[2], args[0]];
+    else if (/^(SelectItem|ChipItem)\(/.test(body) && args.length >= 2) item[v] = [args[0], args[1]];
+    else if (/^CheckBoxItem\(/.test(body) && args.length >= 3) item[v] = [args[2], args[0]];
+  }
+  const out: SpecLabels = { fields: {}, options: {} };
+  // 字段组件（含行内写法）：Comp("name", [a, b, …])
+  const fieldRe = new RegExp(String.raw`(?:RadioGroup|Select|Chips|CheckBoxGroup|Input|TextArea|Slider|DatePicker|SwitchGroup)\(\s*${STR}(?:\s*,\s*(?:${STR}\s*,\s*)?\[([^\]]*)\])?`, "g");
+  for (const m of spec.matchAll(fieldRe)) {
+    const name = unq(m[1]);
+    const refs = (m[3] ?? "").split(",").map((x) => x.trim()).filter((x) => item[x]);
+    if (refs.length) out.options[name] = Object.fromEntries(refs.map((r) => item[r]));
+  }
+  // FormControl("标签", Comp("name" …)) 或 FormControl("标签", 变量)
+  for (const m of spec.matchAll(new RegExp(String.raw`FormControl\(\s*${STR}\s*,\s*(?:\w+\(\s*${STR}|(\w+))`, "g"))) {
+    const name = m[2] !== undefined ? unq(m[2]) : vars[m[3]]?.match(new RegExp(String.raw`^\w+\(\s*${STR}`))?.[1];
+    if (name !== undefined) out.fields[unq(name)] = unq(m[1]);
+  }
+  return out;
+}
+
+/** 列名 → 显示名：字段标签；"组.项"（多选框）→ "组标签：项标签" */
+export function colLabel(col: string, l: SpecLabels | null) {
+  if (!l) return col;
+  if (l.fields[col]) return l.fields[col];
+  const [g, k] = col.split(/\.(.*)/s);
+  return k !== undefined && l.options[g]?.[k] ? `${l.fields[g] ?? g}：${l.options[g][k]}` : col;
+}
+/** 取值 → 显示名（选项标签） */
+export const valLabel = (col: string, v: string, l: SpecLabels | null) => l?.options[col]?.[v] ?? v;

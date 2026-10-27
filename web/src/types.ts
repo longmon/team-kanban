@@ -25,6 +25,14 @@ export type Page = {
   response_count: number; url: string;
   created_by: UserBrief; created_at: string; updated_at: string;
   can_manage: boolean;
+  /** 当前用户是否已提交过（后端未返回时按 false） */
+  my_submitted?: boolean;
+};
+/** GET /api/me/projects（跨组织，不分页） */
+export type MyProject = {
+  id: string; name: string; slug: string;
+  org: { id: string; name: string; slug: string };
+  role: ProjectRole; can_publish: boolean; can_read_responses: boolean;
 };
 
 export type Respondent =
@@ -72,14 +80,22 @@ export type PageView = {
     accept_responses: boolean; results_visible_to: "managers" | "viewers"; updated_at: string;
     project: { id: string; name: string }; org: { id: string; name: string };
   };
-  content: { kind: "openui"; spec: string } | { kind: "html"; frame_url: string; frame_origin: string };
+  /** 所查看版本的内容（version/title 为该版本快照；旧后端无这两个字段时按当前版本处理） */
+  content: ({ kind: "openui"; spec: string } | { kind: "html"; frame_url: string; frame_origin: string }) & { version?: number; title?: string };
   viewer: { type: "user"; user_id: string; display_name: string } | { type: "anonymous" };
   can_submit: boolean;
-  submit_block_reason: null | "read_only" | "responses_closed" | "share_link_exhausted";
+  submit_block_reason: null | "read_only" | "responses_closed" | "share_link_exhausted" | "already_submitted";
   can_view_results: boolean;
   can_manage: boolean;
+  my_submitted?: boolean;
+  /** 登录用户对所查看版本的提交；匿名、临时链接为 null */
+  my_response?: MyResponse | null;
+  /** 全部版本（降序）；临时链接为 null */
+  versions?: { version: number; created_at: string }[] | null;
   share_link: null | { id: string; label: string; expires_at: string; remaining_uses: number | null };
 };
+
+export type MyResponse = { seq: number; page_version: number; data: Record<string, unknown>; created_at: string };
 
 export type ShareLink = {
   id: string; page_id: string; label: string; token_prefix: string;

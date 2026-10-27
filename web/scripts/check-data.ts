@@ -26,3 +26,24 @@ const t = tallies([{ c: "A", t: ["x", "y"], n: 1 }, { c: "A", t: ["x"], n: 2 }, 
 assert.deepEqual(t, [{ col: "c", counts: [["A", 2], ["B", 1]] }, { col: "t", counts: [["x", 2], ["y", 1]] }]);
 assert.deepEqual(tallies([{ action: "提交", form: "f", c: "A" }], ["action", "form", "c"]).map((x) => x.col), ["c"]);
 console.log("data ok");
+
+// 结果标签：取 OpenUI 里的字段/选项标签
+import { colLabel, specLabels, valLabel } from "../src/data";
+const L = specLabels(`root = Stack([form])
+form = Form("vote", btns, [choiceField, c2, pick])
+choiceField = FormControl("方案", RadioGroup("choice", [optA, optB], null, { required: true }))
+optA = RadioItem("A. Kafka", "吞吐高", "A")
+optB = RadioItem("B. \\"NATS\\"", "轻量", "B")
+c2 = FormControl("评价", chips)
+chips = Chips("score", "single", [c1])
+c1 = ChipItem("good", "有帮助")
+pick = FormControl("同意上线", CheckBoxGroup("approved", [i1]))
+i1 = CheckBoxItem("CH-101", "支付回调重试", "ch101")`);
+assert.equal(colLabel("choice", L), "方案");
+assert.equal(valLabel("choice", "B", L), 'B. "NATS"');
+assert.equal(colLabel("score", L), "评价");
+assert.equal(valLabel("score", "good", L), "有帮助");
+assert.equal(colLabel("approved.ch101", L), "同意上线：CH-101");
+assert.equal(colLabel("comment", L), "comment");
+assert.equal(valLabel("choice", "Z", L), "Z");
+console.log("labels ok");

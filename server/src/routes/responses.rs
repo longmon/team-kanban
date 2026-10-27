@@ -122,6 +122,19 @@ async fn submit(st: &AppState, c: &Caller, target: Target<'_>, r: SubmitReq) -> 
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| block_error("responses_closed"))?;
+    // 登录用户（非临时链接）每个版本限交一次；上面的 UPDATE 持有页面行锁，同页提交串行，无竞态
+    if let Some(uid) = a.user_id().filter(|_| a.share().is_none()) {
+        let dup: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM responses WHERE page_id = $1 AND user_id = $2 AND page_version = $3)")
+            .bind(a.page_id())
+            .bind(uid)
+            .bind(version)
+            .fetch_one(&mut *tx)
+            .await?;
+        if dup {
+            tx.rollback().await?;
+            return Err(AppError::conflict("already_submitted", "你已提交过该页面的当前版本"));
+        }
+    }
     if let Some(link) = a.share() {
         let took: Option<Uuid> = sqlx::query_scalar(
             "UPDATE share_links SET use_count = use_count + 1

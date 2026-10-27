@@ -24,13 +24,16 @@ export function CountUp({ value, className }: { value: string | number; classNam
     const pre = text.slice(0, m.index), post = text.slice(m.index! + m[0].length);
     const t0 = performance.now();
     let raf = 0;
-    const step = (now: number) => {
-      const p = Math.min(1, (now - t0) / 450);
+    // 用 performance.now() 而不是 rAF 回调的时间戳：后者是帧开始时间，可能早于 t0，算出负进度（曾显示「-320」）
+    const step = () => {
+      const p = Math.min(1, (performance.now() - t0) / 450);
       el.textContent = p < 1 ? pre + fmt(from + (to - from) * (1 - (1 - p) ** 3)) + post : text;
       if (p < 1) raf = requestAnimationFrame(step);
     };
-    step(t0);
-    return () => (cancelAnimationFrame(raf), void (el.textContent = text));
+    step();
+    // 兜底：rAF 不触发（后台标签、无头浏览器偶发）时 500ms 后直接显示终值
+    const done = setTimeout(() => (cancelAnimationFrame(raf), void (el.textContent = text)), 500);
+    return () => (cancelAnimationFrame(raf), clearTimeout(done), void (el.textContent = text));
   }, [text]);
   return <span ref={ref} className={cn("tabular-nums", className)} />;
 }

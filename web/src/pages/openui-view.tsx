@@ -2,18 +2,21 @@
 import { Component, useMemo, useRef, useState, type ReactNode } from "react";
 import { Renderer, type ActionEvent, type OpenUIError } from "@openuidev/react-lang";
 import { kanbanLibrary } from "../openui-lib";
-import { SubmitContext, type SubmitState } from "../openui-lib/forms";
+import { SubmitContext, type Locked, type SubmitState } from "../openui-lib/forms";
 import { errMsg } from "../api";
 import { submissionData } from "../data";
 import { Notice, toast } from "../ui";
 
-export default function OpenUIView({ spec, submit, readOnly }: { spec: string; submit: (data: Record<string, unknown>) => Promise<number>; readOnly?: boolean }) {
+/** locked：已提交过所看的版本，按提交数据回填并锁定（见 forms.tsx useLocked） */
+export default function OpenUIView({ spec, submit, readOnly, locked }: {
+  spec: string; submit: (data: Record<string, unknown>) => Promise<number>; readOnly?: boolean; locked?: Locked | null;
+}) {
   const [errors, setErrors] = useState<OpenUIError[]>([]);
   // 提交状态交给触发按钮显示；进行中忽略重复提交，成功后按钮显示「已提交 ✓」1.8s
   const [state, setState] = useState<SubmitState>({ phase: "idle", owner: null, n: 0 });
   const claimed = useRef<string | null>(null);
   const busy = useRef(false);
-  const ctx = useMemo(() => ({ state, claim: (id: string) => void (claimed.current = id), readOnly }), [state, readOnly]);
+  const ctx = useMemo(() => ({ state, claim: (id: string) => void (claimed.current = id), readOnly, locked }), [state, readOnly, locked]);
 
   const onAction = (e: ActionEvent) => {
     if (e.type === "open_url") {
@@ -21,7 +24,7 @@ export default function OpenUIView({ spec, submit, readOnly }: { spec: string; s
       if (/^https?:\/\//i.test(url)) window.open(url, "_blank", "noopener,noreferrer");
       return;
     }
-    if (e.type !== "continue_conversation" || busy.current || readOnly) return;
+    if (e.type !== "continue_conversation" || busy.current || readOnly || locked) return;
     busy.current = true;
     const owner = claimed.current;
     claimed.current = null;

@@ -46,6 +46,7 @@ struct PageListRow {
     updated_at: DateTime<Utc>,
     group_ids: Vec<Uuid>,
     role: Option<String>,
+    my_submitted: bool,
 }
 
 /// $1 = 调用者 user_id
@@ -57,7 +58,8 @@ fn page_select() -> String {
                            WHERE pg.org_id = p.org_id AND pg.page_id = p.id), '{{}}') AS group_ids,
                 {} AS role,
                 EXISTS (SELECT 1 FROM page_groups pg JOIN group_members gm ON gm.org_id = pg.org_id AND gm.group_id = pg.group_id
-                         WHERE pg.org_id = p.org_id AND pg.page_id = p.id AND gm.user_id = $1) AS in_group
+                         WHERE pg.org_id = p.org_id AND pg.page_id = p.id AND gm.user_id = $1) AS in_group,
+                EXISTS (SELECT 1 FROM responses r WHERE r.page_id = p.id AND r.user_id = $1 AND r.page_version = p.version) AS my_submitted
            FROM pages p
            JOIN projects pr ON pr.org_id = p.org_id AND pr.id = p.project_id AND pr.deleted_at IS NULL
            JOIN orgs o ON o.id = p.org_id AND o.deleted_at IS NULL
@@ -80,6 +82,7 @@ impl PageListRow {
             "created_by": brief(self.created_by, &self.creator_name),
             "created_at": ts(&self.created_at), "updated_at": ts(&self.updated_at),
             "can_manage": matches!(self.role.as_deref(), Some("admin" | "editor")),
+            "my_submitted": self.my_submitted,
         })
     }
 }
@@ -99,6 +102,8 @@ pub struct ListQuery {
     project_id: Option<Uuid>,
     /// 逗号分隔的 page_type 列表
     page_type: Option<String>,
+    /// 标题模糊搜索
+    q: Option<String>,
 }
 
 pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQuery>, Q(q): Q<ListQuery>) -> J {
@@ -110,12 +115,17 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
         .map(|t| t.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| check_page_type(t).map(|_| t.to_string())).collect::<AppResult<Vec<_>>>())
         .transpose()?
         .filter(|t| !t.is_empty());
+    let title_q = match q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) if t.chars().count() > 100 => return Err(AppError::field("q", "长度不能超过 100 字符")),
+        t => t.map(|t| format!("%{}%", t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))),
+    };
     // ponytail: 跨所有项目扫描再按角色过滤；单用户页面数很大时给 project_id 走索引
     let sql = format!(
         "SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
              AND ($2::uuid IS NULL OR p.org_id = $2) AND ($3::uuid IS NULL OR p.project_id = $3)
              AND ($4::uuid IS NULL OR p.project_id = $4) AND ($5::uuid IS NULL OR p.id < $5)
-             AND ($7::text[] IS NULL OR p.page_type = ANY($7))) x
+             AND ($7::text[] IS NULL OR p.page_type = ANY($7))
+             AND ($8::text IS NULL OR p.title ILIKE $8 ESCAPE '\\')) x
           WHERE role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group))
           ORDER BY id DESC LIMIT $6",
         page_select()
@@ -128,6 +138,7 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
         .bind(page.cursor_id()?)
         .bind(page.limit() + 1)
         .bind(types)
+        .bind(title_q)
         .fetch_all(&st.db)
         .await?;
     let (rows, next) = paginate(rows, page.limit(), |r| r.id.to_string());
@@ -268,6 +279,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     .execute(&mut *tx)
     .await?;
     set_groups(&mut tx, ctx.org_id(), id, &groups).await?;
+    snapshot(&mut tx, ctx.org_id(), id, ctx.user_id()).await?;
     audit::log(
         &mut tx,
         Some(ctx.org_id()),
@@ -372,6 +384,9 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     if new_groups != old_groups {
         set_groups(&mut tx, ctx.org_id(), ctx.page_id(), &new_groups).await?;
     }
+    if content.is_some() {
+        snapshot(&mut tx, ctx.org_id(), ctx.page_id(), ctx.user_id()).await?;
+    }
     let mut fields = vec![];
     for (name, present) in [
         ("title", title.is_some()),
@@ -399,6 +414,20 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         st.notify.send(ctx.page_id(), Event::Page);
     }
     Ok(Json(page_by_id(&st, ctx.org_id(), ctx.page_id(), ctx.user_id()).await?))
+}
+
+/// 把页面当前版本写入 page_versions（创建页面、content 变化后在同一事务调用）
+async fn snapshot(db: &mut sqlx::PgConnection, org_id: Uuid, page_id: Uuid, uid: Uuid) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO page_versions (org_id, page_id, version, title, kind, content, created_by)
+         SELECT org_id, id, version, title, kind, content, $3 FROM pages WHERE org_id = $1 AND id = $2",
+    )
+    .bind(org_id)
+    .bind(page_id)
+    .bind(uid)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 impl crate::authz::PageCtx {
@@ -435,14 +464,39 @@ pub fn frame_url(st: &AppState, page_id: Uuid, version: i32) -> String {
     format!("{}/h/{page_id}/{version}?exp={exp}&sig={sig}", st.cfg.frame_origin())
 }
 
-async fn page_view(st: &AppState, a: &PageAccess) -> J {
+#[derive(FromRow)]
+struct MyResponse {
+    seq: i64,
+    page_version: i32,
+    data: Value,
+    created_at: DateTime<Utc>,
+}
+
+/// version：要查看的版本（None = 当前）；临时链接访问只给当前版本
+async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
     let p = a.page();
-    let content = if p.kind == "html" {
-        json!({ "kind": "html", "frame_url": frame_url(st, p.id, p.version), "frame_origin": st.cfg.frame_origin() })
+    let v = version.unwrap_or(p.version);
+    // 当前版本以 pages 为准；历史版本取 page_versions（html 不读 content）
+    let (title, spec) = if v == p.version {
+        let spec = match p.kind.as_str() {
+            "html" => None,
+            _ => Some(
+                sqlx::query_scalar("SELECT content FROM pages WHERE org_id = $1 AND id = $2").bind(a.org_id()).bind(a.page_id()).fetch_one(&st.db).await?,
+            ),
+        };
+        (p.title.clone(), spec)
     } else {
-        let spec: String =
-            sqlx::query_scalar("SELECT content FROM pages WHERE org_id = $1 AND id = $2").bind(a.org_id()).bind(a.page_id()).fetch_one(&st.db).await?;
-        json!({ "kind": "openui", "spec": spec })
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT title, CASE WHEN kind = 'html' THEN NULL ELSE content END FROM page_versions WHERE page_id = $1 AND version = $2")
+                .bind(a.page_id())
+                .bind(v)
+                .fetch_optional(&st.db)
+                .await?;
+        row.ok_or_else(AppError::not_found)?
+    };
+    let content = match spec {
+        None => json!({ "kind": "html", "frame_url": frame_url(st, p.id, v), "frame_origin": st.cfg.frame_origin(), "version": v, "title": title }),
+        Some(spec) => json!({ "kind": "openui", "spec": spec, "version": v, "title": title }),
     };
     let viewer = match a.user_id() {
         Some(uid) => {
@@ -451,6 +505,36 @@ async fn page_view(st: &AppState, a: &PageAccess) -> J {
         }
         None => json!({ "type": "anonymous" }),
     };
+    // 分享访问：my_submitted 恒为 false、my_response/versions 为 null
+    let member = a.user_id().filter(|_| a.share().is_none());
+    let (my_submitted, my_response, versions) = match member {
+        Some(uid) => {
+            let mine = |ver: i32| {
+                sqlx::query_as::<_, MyResponse>(
+                    "SELECT seq, page_version, data, created_at FROM responses
+                      WHERE page_id = $1 AND user_id = $2 AND page_version = $3 ORDER BY seq DESC LIMIT 1",
+                )
+                .bind(a.page_id())
+                .bind(uid)
+                .bind(ver)
+                .fetch_optional(&st.db)
+            };
+            let resp = mine(v).await?;
+            let submitted = if v == p.version { resp.is_some() } else { mine(p.version).await?.is_some() };
+            // ponytail: 全量返回版本列表；版本数上千时再分页
+            let mut vs: Vec<(i32, DateTime<Utc>)> =
+                sqlx::query_as("SELECT version, created_at FROM page_versions WHERE page_id = $1 ORDER BY version DESC").bind(a.page_id()).fetch_all(&st.db).await?;
+            // 旧代码并存/回滚期间写的当前版本可能没有快照行
+            if vs.first().is_none_or(|x| x.0 != p.version) {
+                vs.insert(0, (p.version, p.updated_at));
+            }
+            let resp = resp.map(|r| json!({ "seq": r.seq, "page_version": r.page_version, "data": r.data, "created_at": ts(&r.created_at) }));
+            (submitted, resp, Some(vs.iter().map(|(n, t)| json!({ "version": n, "created_at": ts(t) })).collect::<Vec<_>>()))
+        }
+        None => (false, None, None),
+    };
+    // 登录用户（非临时链接）每个版本限交一次
+    let block_reason = a.block_reason().or(my_submitted.then_some("already_submitted"));
     let share = a.share().map(|l| {
         json!({ "id": l.id, "label": l.label, "expires_at": ts(&l.expires_at), "remaining_uses": l.max_uses.map(|m| (m - l.use_count).max(0)) })
     });
@@ -463,10 +547,13 @@ async fn page_view(st: &AppState, a: &PageAccess) -> J {
         },
         "content": content,
         "viewer": viewer,
-        "can_submit": a.can_submit(),
-        "submit_block_reason": a.block_reason(),
+        "can_submit": block_reason.is_none(),
+        "submit_block_reason": block_reason,
         "can_view_results": a.can_view_results(),
         "can_manage": a.can_manage(),
+        "my_submitted": my_submitted,
+        "my_response": my_response,
+        "versions": versions,
         "share_link": share,
     })))
 }
@@ -475,12 +562,17 @@ pub fn grant_header(h: &HeaderMap) -> Option<&str> {
     h.get("x-share-grant").and_then(|v| v.to_str().ok())
 }
 
-pub async fn view_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
+#[derive(Deserialize)]
+pub struct ViewQuery {
+    version: Option<i32>,
+}
+
+pub async fn view_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q): Q<ViewQuery>) -> J {
     let a = page_access(&st.db, &st.cfg, &c, Target::Page(id)).await?;
     if c.p.is_pat() {
         return Err(AppError::forbidden());
     }
-    page_view(&st, &a).await
+    page_view(&st, &a, q.version).await
 }
 
 pub async fn view_share(State(st): State<AppState>, c: Caller, h: HeaderMap, P(token): P<String>) -> J {
@@ -488,7 +580,7 @@ pub async fn view_share(State(st): State<AppState>, c: Caller, h: HeaderMap, P(t
     if c.p.is_pat() {
         return Err(AppError::forbidden());
     }
-    page_view(&st, &a).await
+    page_view(&st, &a, None).await
 }
 
 #[derive(Deserialize)]

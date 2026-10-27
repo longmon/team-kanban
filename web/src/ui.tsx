@@ -10,7 +10,11 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errMsg, get, setCsrf } from "./api";
-import type { Me, Paged } from "./types";
+import { setQuery, useQuery } from "./router";
+import type { Me, MyProject, Paged } from "./types";
+
+/** 系统「减少动态效果」：motion 动画时长归零、不播入场（只在加载时读一次，与 main.tsx 的 tempo 一致） */
+export const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // ---------- 会话 ----------
 type Session = { me: Me | null; loading: boolean; refresh: () => Promise<Me | null>; setMe: (m: Me | null) => void };
@@ -22,6 +26,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const setMe = useCallback((m: Me | null) => {
     setCsrf(m?.csrf_token ?? null);
+    // 换了登录身份：丢掉上一个人的项目缓存
+    if ((m?.user.id ?? null) !== cacheUid) {
+      cacheUid = m?.user.id ?? null;
+      myProjects = null;
+      projListeners.forEach((l) => l());
+    }
     setMeState(m);
   }, []);
   const refresh = useCallback(async () => {
@@ -114,7 +124,29 @@ export function useAction() {
   return { busy, error, run, setError };
 }
 
-// ---------- 当前组织（顶栏组织切换器） ----------
+// ---------- 我的项目（GET /api/me/projects，跨组织；整个会话缓存一份，登录身份变化或增删项目后 reload） ----------
+let myProjects: Promise<MyProject[]> | null = null;
+let cacheUid: string | null = null;
+const projListeners = new Set<() => void>();
+export function loadMyProjects(force = false) {
+  if (force || !myProjects) {
+    myProjects = get<{ items: MyProject[] }>("/me/projects").then((r) => r.items, (e) => ((myProjects = null), Promise.reject(e)));
+    if (force) projListeners.forEach((l) => l());
+  }
+  return myProjects;
+}
+export const resetMyProjects = () => void (myProjects = null);
+export function useMyProjects() {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const l = () => setN((x) => x + 1);
+    projListeners.add(l);
+    return () => void projListeners.delete(l);
+  }, []);
+  return useLoad(() => loadMyProjects(), [n]);
+}
+
+// ---------- 当前组织（命令栏「邀请成员」「组织设置」的默认目标） ----------
 // 在 /o/:slug 下取路径里的组织；页面查看、结果、设置等页没有组织路径时，显示页面所属组织或最近一次进入的组织
 const ORG_KEY = "relay-current-org";
 const orgListeners = new Set<() => void>();
@@ -247,6 +279,12 @@ export function ListSkeleton({ rows = 3 }: { rows?: number }) {
   );
 }
 
+/** Tab 状态进 URL（?tab=）：刷新、后退、转发链接都保留；默认 Tab 不写参数，无效值回到默认 */
+export function useTab(valid: string[], def = valid[0]): [string, (v: string) => void] {
+  const q = useQuery("tab");
+  return [q && valid.includes(q) ? q : def, (v) => setQuery("tab", v === def ? null : v)];
+}
+
 /** 页内一级 tabs：下划线样式，窄屏横向滚动 */
 export const PAGE_TABS_LIST = "h-auto w-full justify-start gap-5 overflow-x-auto rounded-none border-b bg-transparent p-0 [scrollbar-width:none]";
 export const PAGE_TABS_TRIGGER = "h-auto flex-none rounded-none border-0 border-b-2 border-transparent px-0.5 pt-1 pb-2.5 text-muted-foreground hover:text-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none dark:data-[state=active]:border-primary dark:data-[state=active]:bg-transparent";
@@ -256,12 +294,9 @@ export function TableCard({ children }: { children: ReactNode }) {
   return <div className="surface overflow-hidden [&_td]:px-4 [&_td]:py-3 [&_th]:px-4 [&_thead]:bg-muted/50">{children}</div>;
 }
 
-/** 版心（顶栏与内容区共用）：宽屏优先，左右留白随宽度增大，内容最宽 1680px（1808 − 2×64） */
-export const WRAP = "mx-auto w-full max-w-[1808px] px-4 sm:px-6 lg:px-10 2xl:px-16";
-
-/** 管理端页面：宽度跟随版心 */
+/** 管理端页面：居中，最宽 1024px */
 export function Page({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn("flex w-full flex-col gap-6", className)}>{children}</div>;
+  return <div className={cn("mx-auto flex w-full max-w-5xl flex-col gap-6", className)}>{children}</div>;
 }
 
 /** 居中小卡片：登录、注册、错误提示等 */
@@ -326,7 +361,7 @@ export function PageHeader({ crumbs, title, badge, desc, actions }: {
 
 export function Empty({ title, children, icon }: { title: string; children?: ReactNode; icon?: ReactNode }) {
   return (
-    <div className="flex flex-col items-center gap-1 rounded-xl border border-dashed bg-card/50 px-6 py-10 text-center">
+    <div className="flex flex-col items-center gap-1 rounded-lg border border-dashed bg-card/50 px-6 py-10 text-center">
       {icon && <div className="mb-2 grid size-10 place-items-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-5">{icon}</div>}
       <div className="text-sm font-medium">{title}</div>
       {children && <div className="max-w-sm text-[13px] text-muted-foreground">{children}</div>}
@@ -342,12 +377,44 @@ export function MoreButton({ p }: { p: { hasMore: boolean; loading: boolean; mor
 export const fmtTime = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleString("zh-CN", { hour12: false }) : "—";
 
+const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+/** 动态流分组：今天 / 昨天 / 本周（周一起）/ 更早 */
+export function dayBucket(iso: string, now = new Date()): "今天" | "昨天" | "本周" | "更早" {
+  const t = dayStart(new Date(iso)), today = dayStart(now);
+  if (t >= today) return "今天";
+  if (t >= today - 864e5) return "昨天";
+  return t >= today - ((now.getDay() + 6) % 7) * 864e5 ? "本周" : "更早";
+}
+/** 相对时间：今天 10:42 / 昨天 10:42 / 周三 10:42 / 10月3日 */
+export function fmtRel(iso: string, now = new Date()) {
+  const d = new Date(iso), hm = d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const b = dayBucket(iso, now);
+  if (b === "今天") return hm;
+  if (b === "昨天") return `昨天 ${hm}`;
+  if (b === "本周") return `周${"日一二三四五六"[d.getDay()]} ${hm}`;
+  return d.toLocaleDateString("zh-CN", { month: "long", day: "numeric", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric" });
+}
+
+/** 复制到剪贴板并 toast；非安全上下文（http 内网）没有 clipboard API 时退回 execCommand */
+export async function copyText(text: string, msg = "已复制") {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const t = Object.assign(document.createElement("textarea"), { value: text });
+    document.body.append(t);
+    t.select();
+    document.execCommand("copy");
+    t.remove();
+  }
+  toast.ok(msg);
+}
+
 export function CopyText({ text }: { text: string }) {
   const [done, setDone] = useState(false);
   return (
     <div className="flex items-center gap-2">
       <code className="min-w-0 flex-1 overflow-x-auto rounded-md border bg-muted/60 px-3 py-2 text-[13px] whitespace-nowrap">{text}</code>
-      <Button size="sm" variant="outline" onClick={() => navigator.clipboard.writeText(text).then(() => setDone(true))}>
+      <Button size="sm" variant="outline" onClick={() => copyText(text).then(() => setDone(true))}>
         {done ? <Check /> : <Copy />}{done ? "已复制" : "复制"}
       </Button>
     </div>

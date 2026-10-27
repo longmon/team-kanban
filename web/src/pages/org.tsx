@@ -11,9 +11,9 @@ import { del, get, patch, post, qs } from "../api";
 import { Link, navigate } from "../router";
 import {
   AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
-  PageHeader, Panel, ROLE_LABEL, TableCard, toast, useAction, useLoad, usePaged, useSession,
+  PageHeader, Panel, ROLE_LABEL, TableCard, toast, useAction, useLoad, usePaged, useSession, useTab, loadMyProjects,
 } from "../ui";
-import { SLUG_RE, slugify, Tile, TILES } from "./home";
+import { autoSlug, SLUG_RE, Tile, TILES, useSlugFallback } from "./home";
 import type { AuditEntry, Group, GroupMember, Invite, Org, OrgMember, OrgRole, Project } from "../types";
 
 const isAdmin = (o: Org) => o.my_role === "owner" || o.my_role === "admin";
@@ -21,12 +21,13 @@ const isAdmin = (o: Org) => o.my_role === "owner" || o.my_role === "admin";
 export function OrgPage({ slug }: { slug: string }) {
   const { me } = useSession();
   const org = me!.orgs.find((o) => o.slug === slug);
+  const admin = !!org && isAdmin(org);
+  const [tab, setTab] = useTab(admin ? ["projects", "groups", "members", "invites", "audit", "settings"] : ["projects", "groups", "members", "settings"]);
   if (!org) return <AuthCard title="组织不存在或你不是成员"><p className="text-sm"><Link className="link" to="/">返回首页</Link></p></AuthCard>;
-  const admin = isAdmin(org);
   return (
     <Page>
       <PageHeader title={org.name} badge={<Badge variant="secondary">{ROLE_LABEL[org.my_role]}</Badge>} desc={<span className="font-mono text-[13px]">{org.slug}</span>} />
-      <Tabs defaultValue="projects" className="gap-6">
+      <Tabs value={tab} onValueChange={setTab} className="gap-6">
         <TabsList className={PAGE_TABS_LIST}>
           <TabsTrigger value="projects" className={PAGE_TABS_TRIGGER}>项目</TabsTrigger>
           <TabsTrigger value="groups" className={PAGE_TABS_TRIGGER}>群组</TabsTrigger>
@@ -48,12 +49,14 @@ export function OrgPage({ slug }: { slug: string }) {
 
 function Projects({ org }: { org: Org }) {
   const list = usePaged<Project>(`/orgs/${org.id}/projects`);
+  const fallback = useSlugFallback("p");
   const [f, setF] = useState({ name: "", slug: "", description: "" });
   const a = useAction();
   const submit = (e: FormEvent) => {
     e.preventDefault();
     a.run(async () => {
       const p = await post<Project>(`/orgs/${org.id}/projects`, f);
+      await loadMyProjects(true);
       navigate(`/o/${org.slug}/p/${p.slug}`);
     });
   };
@@ -74,7 +77,7 @@ function Projects({ org }: { org: Org }) {
     </div>
       <Panel title="新建项目">
         <form onSubmit={submit} className="form">
-          <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value, slug: slugify(e.target.value) })} /></Field>
+          <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value, slug: autoSlug(e.target.value, fallback) })} /></Field>
           <Field label="标识（slug）"><Input required pattern={SLUG_RE.source} value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} /></Field>
           <Field label="描述"><Textarea rows={2} maxLength={2000} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
           <ErrorBox error={a.error} />
@@ -214,20 +217,13 @@ function GroupDetail({ org, group, onChange }: { org: Org; group: Group; onChang
 }
 
 function Members({ org }: { org: Org }) {
-  const { me, refresh } = useSession();
+  const { me } = useSession();
   const [q, setQ] = useState("");
   const list = usePaged<OrgMember>(`/orgs/${org.id}/members${qs({ q: q.trim() })}`);
   const a = useAction();
   const roles: [OrgRole, string][] = (org.my_role === "owner" ? ["owner", "admin", "member"] as OrgRole[] : ["admin", "member"] as OrgRole[]).map((r) => [r, ROLE_LABEL[r]]);
   const canEdit = (m: OrgMember) => org.my_role === "owner" || (org.my_role === "admin" && m.role !== "owner");
   const canRemove = (m: OrgMember) => org.my_role === "owner" || (org.my_role === "admin" && m.role === "member");
-  const leave = () =>
-    confirm(`确定退出组织「${org.name}」？`) &&
-    a.run(async () => {
-      await del(`/orgs/${org.id}/members/${me!.user.id}`);
-      await refresh();
-      navigate("/");
-    });
   return (
     <div className="stack">
       <Input className="search" placeholder="搜索邮箱或名字" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -248,9 +244,7 @@ function Members({ org }: { org: Org }) {
                 </TableCell>
                 <TableCell>{fmtTime(m.joined_at)}</TableCell>
                 <TableCell className="text-right">
-                  {self ? (
-                    <Button size="sm" variant="ghost-destructive" onClick={leave}>退出组织</Button>
-                  ) : canRemove(m) && (
+                  {!self && canRemove(m) && (
                     <Button size="sm" variant="ghost-destructive" disabled={a.busy}
                       onClick={() => confirm(`将 ${m.user.display_name} 移出组织？`) && a.run(async () => (await del(`/orgs/${org.id}/members/${m.user.id}`), list.reload()))}>移除</Button>
                   )}
@@ -420,6 +414,7 @@ function OrgSettings({ org }: { org: Org }) {
     a.run(async () => {
       await del(`/orgs/${org.id}/members/${me!.user.id}`);
       await refresh();
+      await loadMyProjects(true);
       navigate("/");
     });
   return (

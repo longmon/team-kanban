@@ -65,7 +65,8 @@ type Page = {
   response_count: number;
   url: string;                                          // {PUBLIC_URL}/pages/{id}
   created_by: UserBrief; created_at: string; updated_at: string;
-  can_manage: boolean                                    // 调用者是否页面管理者
+  can_manage: boolean;                                   // 调用者是否页面管理者
+  my_submitted: boolean                                  // 调用者是否已提交该页面的**当前版本**（version 变化后重新为 false）
 }
 
 type Respondent =
@@ -113,6 +114,7 @@ type Response = {
 | 409 | `read_only_page` | 向只读类页面（report/knowledge/flowchart/architecture）提交 |
 | 409 | `share_link_exhausted` | 临时链接提交次数用完 |
 | 409 | `not_allowed` | PAT 调用提交等不允许的动作 |
+| 409 | `already_submitted` | 登录用户（非临时链接）已提交过该页面的当前版本 |
 | 410 | `share_link_expired` `share_link_revoked` | 临时链接失效 |
 | 410 | `invite_expired` `invite_revoked` `invite_used_up` | 邀请失效 |
 | 410 | `token_invalid` | 邮箱验证/重置密码 token 无效、过期或已用 |
@@ -336,13 +338,13 @@ type Pat = {
 
 | 方法 路径 | 鉴权 | 权限 | 请求 | 响应 |
 |---|---|---|---|---|
-| GET /api/pages | cookie, pat:publish, pat:read_responses | 登录 | `?project_id=&page_type=&limit&cursor` | 200 `{ items: Page[], next_cursor }` |
+| GET /api/pages | cookie, pat:publish, pat:read_responses | 登录 | `?project_id=&page_type=&q=&limit&cursor` | 200 `{ items: Page[], next_cursor }` |
 | POST /api/pages | cookie, pat:publish | 项目 admin/editor | 见下 | 201 `Page` |
 | GET /api/pages/{id} | cookie, pat:publish, pat:read_responses | 页面管理者 | – | 200 `Page & { content: string }` |
 | PATCH /api/pages/{id} | cookie, pat:publish | 页面管理者 | 见下 | 200 `Page` |
 | DELETE /api/pages/{id} | cookie, pat:publish | 页面管理者 | – | 204（软删） |
 
-`GET /api/pages` 范围：调用者有项目角色的项目内、且按可见性能查看的页面（design §5.3）；PAT 时再限定 PAT 范围；给了 `project_id` 只列该项目。`page_type` 为逗号分隔的类型列表（如 `report,knowledge`，前端把大类展开成类型列表），只列这些类型；含非法值 400 `validation_failed`。
+`GET /api/pages` 范围：调用者有项目角色的项目内、且按可见性能查看的页面（design §5.3）；PAT 时再限定 PAT 范围；给了 `project_id` 只列该项目。`page_type` 为逗号分隔的类型列表（如 `report,knowledge`，前端把大类展开成类型列表），只列这些类型；含非法值 400 `validation_failed`。`q` 按标题模糊搜索（不区分大小写，`%` `_` `\` 按字面匹配），去首尾空白后为空视为不传，超过 100 字符 400 `validation_failed`（field `q`）；可与其它筛选、游标分页同时使用。
 
 创建：
 ```json
@@ -365,14 +367,14 @@ type Pat = {
 ```json
 { "title": "...", "model": "GPT-5", "content": "...", "visibility": "...", "group_ids": [], "accept_responses": false, "results_visible_to": "viewers" }
 ```
-`kind`、`page_type` 不可改（传了 `page_type` 即 400 `validation_failed`）；只读类传 `accept_responses=true` → 400。`content` 变化时 `version += 1`，已有提交保留（记录其提交时的 `page_version`）。`model` 校验同创建，给了就覆盖 `generated_by`（页面被别的模型改过），不给则不变。
+`kind`、`page_type` 不可改（传了 `page_type` 即 400 `validation_failed`）；只读类传 `accept_responses=true` → 400。`content` 变化时 `version += 1` 并在同一事务保存该版本快照（`page_versions`：title/kind/content），已有提交保留（记录其提交时的 `page_version`）；登录用户每个版本限交一次，新版本可再交。创建页面即保存 v1 快照。`model` 校验同创建，给了就覆盖 `generated_by`（页面被别的模型改过），不给则不变。
 
 ### 7.2 查看 — 给浏览器渲染用
 
 | 方法 路径 | 鉴权 | 说明 |
 |---|---|---|
-| GET /api/pages/{id}/view | cookie 或 anon | 按 visibility 判定 |
-| GET /api/s/{token} | share（可同时带 cookie） | 临时链接；绕过 visibility |
+| GET /api/pages/{id}/view?version=N | cookie 或 anon | 按 visibility 判定；`version` 可选（默认当前版本），不存在 → 404 |
+| GET /api/s/{token} | share（可同时带 cookie） | 临时链接；绕过 visibility；只给当前版本（忽略 `version`） |
 | POST /api/s/{token}/unlock | share, anon | `{ "password": "string" }` → 200 `{ "grant": "string", "expires_at": "..." }`；错 401 `share_password_invalid`；429 |
 
 两个查看端点响应相同：
@@ -382,25 +384,37 @@ type PageView = {
           page_type: PageType; category: PageCategory; generated_by: string | null;
           accept_responses: boolean; results_visible_to: "managers" | "viewers"; updated_at: string;
           project: { id: string; name: string }; org: { id: string; name: string } };
-  content:
-    | { kind: "openui"; spec: string }
-    | { kind: "html"; frame_url: string; frame_origin: string };   // frame_url 10 分钟内有效
+  content:                                               // 所查看版本的内容；version/title 为该版本的快照（page.* 为当前页面）
+    | { kind: "openui"; spec: string; version: number; title: string }
+    | { kind: "html"; frame_url: string; frame_origin: string; version: number; title: string };   // frame_url 10 分钟内有效
   viewer: { type: "user"; user_id: string; display_name: string } | { type: "anonymous" };
   can_submit: boolean;
-  submit_block_reason: null | "read_only" | "responses_closed" | "share_link_exhausted";   // read_only 最先判断
+  submit_block_reason: null | "read_only" | "responses_closed" | "share_link_exhausted" | "already_submitted";   // read_only 最先判断；already_submitted 最后判断
   can_view_results: boolean;
   can_manage: boolean;
+  my_submitted: boolean;                                 // 登录用户是否已提交**当前版本**；匿名与临时链接访问（/api/s/{token}）恒为 false
+  my_response: null | { seq: number; page_version: number; data: object; created_at: string };   // 登录用户对**所查看版本**的提交（多条取最新）；匿名与临时链接访问恒为 null
+  versions: null | { version: number; created_at: string }[];   // 所有版本，按 version 降序；临时链接访问为 null
   share_link: null | { id: string; label: string; expires_at: string; remaining_uses: number | null }
 }
 ```
-匿名访问非 public 页面 → 404（前端在未登录时提示「登录后可能可见」并给登录入口）。`GET /api/s/{token}` 错误：404、410 `share_link_expired|share_link_revoked`、401 `share_password_required`。frame_url 过期后前端重新调用 view 端点。
+匿名访问非 public 页面 → 404（前端在未登录时提示「登录后可能可见」并给登录入口）。
+版本：`content.version < page.version` 表示在看历史版本，前端应只读展示（提交总是记到当前版本）；登录用户已提交当前版本时 `can_submit=false`、`submit_block_reason="already_submitted"`。`my_response.data` 用于在原题回填并锁定已选答案。匿名访客的限交由前端按 localStorage 自行记住，服务端不限制。
+例（登录用户查看 v1，当前 v2）：
+```json
+{ "page": { "id": "…", "title": "新标题", "version": 2, "…": "…" },
+  "content": { "kind": "openui", "spec": "root = …", "version": 1, "title": "旧标题" },
+  "can_submit": true, "submit_block_reason": null, "my_submitted": false,
+  "my_response": { "seq": 3, "page_version": 1, "data": { "action": "提交", "form": "vote", "values": { "choice": "B" }, "params": {} }, "created_at": "…" },
+  "versions": [ { "version": 2, "created_at": "…" }, { "version": 1, "created_at": "…" } ], "share_link": null }
+````GET /api/s/{token}` 错误：404、410 `share_link_expired|share_link_revoked`、401 `share_password_required`。frame_url 过期后前端重新调用 view 端点。
 
 ### 7.3 html 原文 — 仅 PAGES_ORIGIN
 
 `GET {PAGES_ORIGIN}/h/{page_id}/{version}?exp={unix秒}&sig={base64url}` — 无 cookie 鉴权，只验 HMAC 签名与 exp。
 - 200 `text/html; charset=utf-8`，body = 页面 HTML + 注入的桥接脚本（§9）。
 - 响应头：`Content-Security-Policy: sandbox allow-scripts allow-forms; frame-ancestors {PUBLIC_URL}`、`Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`、`Cache-Control: private, max-age=600`。
-- 签名无效/过期/版本不是当前版本 → 404 纯文本。
+- 版本可以是当前版本或历史版本（历史取自 `page_versions`，签名 URL 由 `view?version=N` 获得）。签名无效/过期/版本不存在 → 404 纯文本。
 
 ### 7.4 OpenUI 静态资源 — `anon`
 
@@ -422,7 +436,8 @@ type PageView = {
 // 201
 { "id": "uuid", "seq": 12, "created_at": "..." }
 ```
-带 cookie 时需 `X-CSRF-Token`。检查顺序见 design §5.3。错误：400 `validation_failed|nickname_required`、404、409 `read_only_page|responses_closed|share_link_exhausted|not_allowed`、410、413、429。
+带 cookie 时需 `X-CSRF-Token`。检查顺序见 design §5.3。错误：400 `validation_failed|nickname_required`、404、409 `read_only_page|responses_closed|share_link_exhausted|not_allowed|already_submitted`、410、413、429。
+限交：经 `/api/pages/{id}/responses` 提交的登录用户，对同一页面同一 `version` 已有提交（含其经临时链接的提交）→ 409 `already_submitted`；页面更新出新版本后可再交。经临时链接（`/api/s/{token}/responses`）与匿名提交不限次数（临时链接仍受 `max_uses`）。PAT 本就不能提交（`not_allowed`）。
 
 ### 8.2 长轮询拉取 — agent 与网页共用
 
@@ -496,7 +511,9 @@ iframe → 外壳：
 外壳 → iframe：
 ```ts
 { v: 1, type: "relay:init", can_submit: boolean, submit_block_reason: string | null,
-  viewer: { type: "user", display_name: string } | { type: "anonymous", nickname: string | null } }
+  viewer: { type: "user", display_name: string } | { type: "anonymous", nickname: string | null },
+  version: number,                 // 当前展示的版本（view 的 content.version）；提交成功后锁定按钮显示「第 N 版」
+  my_response: null | { seq: number; page_version: number; data: object; created_at: string } }   // view 的 my_response；匿名访客可由外壳从 localStorage 取
 { v: 1, type: "relay:submit_result", req_id: string, ok: true, seq: number }
 { v: 1, type: "relay:submit_result", req_id: string, ok: false, error: { code: string, message: string } }
 ```
@@ -509,6 +526,8 @@ iframe → 外壳：
 - `window.kanban.submit(data): Promise<{seq:number}>`，失败 reject `Error(code)`。`window.relay` 是同一对象的别名（历史名称，为兼容旧页面保留）。
 - `<form data-kanban>` 自动接管（旧页面的 `data-relay` 同样生效，历史名称，为兼容保留）：按字段 name 序列化，同名多值成数组，忽略文件字段；提交中禁用按钮，表单内显示「提交中… / 已提交 / 提交失败：…」。
 - `ResizeObserver` 监听 `document.documentElement` 高度变化发送 `relay:resize`。
+- `window.kanban.init` 保存最近一次 `relay:init`（含 `my_response`），供自写脚本的页面读取。
+- 已提交锁定：`relay:init.my_response` 非空时，以及 `<form data-kanban>` 提交成功后（用刚提交的 data），对表单：按 data 的键匹配控件 name 回填（radio/checkbox 勾选值在 data 中的项，数组值也支持；select 选中；文本/textarea 填值，同名多个按数组顺序）；所有控件 `disabled`；radio/checkbox 的第一个关联 label（包裹或 `for`）加 `data-kanban-selected`（已选）或 `data-kanban-dimmed`（未选）；submit 按钮文字改为「已提交（第 N 版）」；表单加 `data-kanban-status="submitted"`。默认样式用 `:where()`（零优先级）：已选高亮描边加粗、未选 `opacity:.45; cursor:not-allowed`，页面可用这两个属性选择器直接覆盖。提交失败时按钮恢复可用。
 
 ## 10. OpenUI onAction → 提交数据
 
@@ -535,7 +554,7 @@ iframe → 外壳：
 ```
 `values` 规范化：取 `event.formState`；若有 `formName` 且 `formState[formName]` 为对象，则对其每个字段 `k → v.value`（`{ value, componentType }` 取 `value`；不是这种结构则原样）；没有 formName 时，对 formState 中所有非 `$` 开头的表单逐个合并字段（同名后者覆盖）。`$` 开头的响应式变量不提交。
 
-前端提交前若 `can_submit=false` 则不发请求，在页面顶部显示原因。提交成功后显示「已提交（#seq）」toast；同一页面可多次提交（每次都是新记录）。
+前端提交前若 `can_submit=false` 则不发请求，在页面顶部显示原因。提交成功后显示「已提交（#seq）」toast；登录用户每个版本限交一次（§8.1），临时链接与匿名可多次提交（每次都是新记录）。
 
 例：按钮 `Button("提交", @ToAssistant("提交"), "primary")` 所在 `Form("vote", …)` 含 `RadioGroup("choice")` 与 `TextArea("comment")`，agent 收到：
 ```json

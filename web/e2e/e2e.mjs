@@ -70,6 +70,7 @@ md = MarkDownRenderer("## 安装\n\n下载二进制。\n\n### Linux\n\n解压即
 // ---------- 浏览器 ----------
 const browser = await chromium.launch({ executablePath: exe });
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 900 } });
+await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: BASE });
 const page = await ctx.newPage();
 const errors = [];
 const watch = (p) => {
@@ -90,8 +91,8 @@ const login = async (p, email) => {
   await p.getByRole("button", { name: "登录" }).click();
   await p.waitForURL((u) => !u.pathname.startsWith("/login"));
 };
-// 网页结果表的数据列（去掉 # 时间 提交者 来源 版本）与 CSV 数据列（去掉 7 个固定列）
-const tableCols = async () => (await page.locator("table thead th").allTextContents()).slice(5);
+// 网页结果表的数据列（表头显示 OpenUI 标签，原始列名在 data-col）与 CSV 数据列（去掉 7 个固定列）
+const tableCols = () => page.locator("table thead th[data-col]").evaluateAll((ths) => ths.map((t) => t.dataset.col));
 const csvCols = (id) => page.evaluate(async (id) => {
   const t = await (await fetch(`/api/pages/${id}/responses.csv`)).text();
   return t.replace(/^﻿/, "").split("\r\n")[0].split(",").slice(7);
@@ -117,19 +118,31 @@ await step("share-anon-submit", async () => {
   await page.fill("#relay-nick", "小明");
   await page.getByText("有帮助", { exact: true }).click();
   await page.locator("textarea").first().fill("不错");
+  // 提交成功：按钮变「已提交」并有一圈柔光（随后自动切到结果，按钮被隐藏，所以用 MutationObserver 记录），失败提示消失
+  await page.evaluate(() => new MutationObserver(() => document.querySelector("button.submit-glow") && (window.__glow = document.querySelector("button.submit-glow").textContent))
+    .observe(document.body, { subtree: true, attributeFilter: ["class"] }));
   await page.getByRole("button", { name: "提交反馈" }).click();
   await toast("已提交（#1）");
-  // 提交成功：按钮变「已提交」并有一圈柔光，失败提示消失
-  const done = page.getByRole("button", { name: "已提交" });
-  await done.waitFor();
-  if (!(await done.evaluate((e) => e.classList.contains("submit-glow")))) throw new Error("success glow missing");
+  await page.waitForFunction(() => window.__glow?.includes("已提交"), null, { timeout: 3000 });
   if (await page.getByRole("alert").filter({ hasText: "昵称" }).count()) throw new Error("error reason still shown after success");
 });
-await step("share-results-sse", async () => {
-  await page.getByRole("button", { name: "查看结果" }).click();
+await step("share-results-auto-after-submit", async () => {
+  // 结果对访客可见：提交后自动切到结果（同页展开），选项显示 OpenUI 标签，我的选择有确认标记
+  await page.getByRole("region", { name: "结果" }).waitFor();
   await page.locator("td", { hasText: "小明" }).waitFor();
-  await page.locator(".tally-title", { hasText: "score" }).waitFor();
+  await page.locator(".tally-title[data-col=score]", { hasText: "这份报告对你有帮助吗？" }).waitFor();
+  await page.locator(".tally-row[data-mine]", { hasText: "有帮助" }).waitFor();
+  if ((await page.getByRole("toolbar", { name: "页面操作" }).getByRole("button", { pressed: true }).textContent()).trim() !== "结果 1") throw new Error("dock not on results");
   await page.screenshot({ path: `${OUT}/share-results.png`, fullPage: true });
+});
+await step("share-anon-locked-after-reload", async () => {
+  // 匿名访客：localStorage 记住这一版已提交，刷新后原题锁定
+  await page.reload();
+  await page.getByText("2026 Q3 运营报告").first().waitFor();
+  await page.locator("button[data-locked]", { hasText: "已提交（第 1 版）" }).waitFor();
+  if ((await page.getByRole("radio", { name: "有帮助" }).getAttribute("aria-checked")) !== "true") throw new Error("chip not prefilled");
+  if (!(await page.getByRole("radio", { name: "一般" }).evaluate((e) => e.className.includes("opacity-45")))) throw new Error("other chip not dimmed");
+  if (await page.locator("#relay-nick").count()) throw new Error("nickname bar shown when locked");
 });
 await step("share-password-unlock", async () => {
   await page.goto(BASE + PW);
@@ -159,6 +172,14 @@ await step("html-anon-nickname", async () => {
   await frame.getByRole("button", { name: "提交" }).click();
   await toast("已提交（#1）");
 });
+await step("html-anon-locked-after-reload", async () => {
+  // HTML 页面：外壳把 localStorage 里的提交经 relay:init 交给桥接脚本，表单回填并锁定
+  await page.reload();
+  const frame = page.frameLocator("iframe.html-frame");
+  await frame.locator("form[data-kanban-status=submitted]").waitFor();
+  await frame.getByRole("button", { name: "已提交（第 1 版）" }).waitFor();
+  if (!(await frame.locator("select[name=color]").isDisabled())) throw new Error("html select not disabled");
+});
 await step("table-example-submit", async () => {
   await page.goto(BASE + "/pages/" + IDS["示例：table.openui"]);
   await page.getByText("待确认的发布清单").waitFor();
@@ -182,6 +203,16 @@ await step("org-project-pages", async () => {
   await page.screenshot({ path: `${OUT}/project.png`, fullPage: true });
 });
 let voteUrl;
+const dock = () => page.getByRole("toolbar", { name: "页面操作" });
+/** 原题锁定：label 选项高亮（主色描边 + 10% 主色底），其余选项置灰，提交按钮「已提交（第 N 版）」 */
+async function assertLocked(p, label, version) {
+  await p.locator("button[data-locked]", { hasText: `已提交（第 ${version} 版）` }).waitFor();
+  const opts = await p.locator("[role=form] label:has([role=radio])").evaluateAll((ls) => ls.map((l) => [l.textContent, l.className.includes("bg-primary/10"), l.className.includes("opacity-45")]));
+  const on = opts.filter(([t]) => t.includes(label));
+  if (!on.length || !on.every(([, sel, dim]) => sel && !dim)) throw new Error("selected option not highlighted: " + JSON.stringify(opts));
+  if (!opts.filter(([t]) => !t.includes(label)).every(([, sel, dim]) => !sel && dim)) throw new Error("other options not dimmed: " + JSON.stringify(opts));
+  if ((await p.locator("fieldset[data-locked]").getAttribute("inert")) === null) throw new Error("locked form not inert");
+}
 await step("vote-submit-logged-in", async () => {
   await page.getByText("示例：vote.openui").click();
   await page.getByText("技术选型投票").waitFor();
@@ -191,16 +222,37 @@ await step("vote-submit-logged-in", async () => {
   await page.locator("textarea").first().fill("部署简单");
   await page.getByRole("button", { name: "提交" }).click();
   await toast("已提交（#1）");
-  await page.getByText("B. NATS").click();
-  await page.getByRole("button", { name: "提交" }).click();
-  await toast("已提交（#2）");
+  // 提交后自动显示结果（结果对查看者可见）
+  await page.getByRole("region", { name: "结果" }).waitFor();
+  await page.locator(".tally-row[data-mine]", { hasText: "B. NATS" }).waitFor();
+  // 回到内容：原题锁定，选中项高亮、其余置灰，按钮「已提交（第 1 版）」
+  await dock().getByRole("button", { name: "填写" }).click(); // 通用收集页叫「填写」，投票类页面叫「投票」
+  await assertLocked(page, "B. NATS", 1);
+});
+await step("vote-locked-after-reload-and-duplicate-rejected", async () => {
+  await page.reload();
+  await page.getByText("技术选型投票").waitFor();
+  await assertLocked(page, "B. NATS", 1);
+  if ((await page.locator("textarea").first().inputValue()) !== "部署简单") throw new Error("textarea not prefilled");
+  // 同一版本重复提交：服务端 409 already_submitted
+  const r = await fetch(`${BASE}/api/pages/${voteUrl.split("/").pop()}/responses`, { method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: demo.cookie, "X-CSRF-Token": demo.csrf },
+    body: JSON.stringify({ data: { action: "提交", form: "vote", values: { choice: "A" }, params: {} } }) });
+  const j = await r.json();
+  if (r.status !== 409 || j.error?.code !== "already_submitted") throw new Error(`duplicate → ${r.status} ${JSON.stringify(j)}`);
+});
+await step("copy-link", async () => {
+  await dock().getByRole("button", { name: "复制链接" }).click();
+  await toast("已复制链接");
+  const got = await page.evaluate(() => navigator.clipboard.readText());
+  if (got !== page.url()) throw new Error("clipboard " + got);
 });
 await step("results-page", async () => {
   await page.goto(voteUrl + "/results");
-  await page.locator(".tally-title", { hasText: "choice" }).waitFor();
+  await page.locator(".tally-title[data-col=choice]", { hasText: "方案" }).waitFor();
   // 计数有 450ms 滚动动画，等到终值
-  const n = page.locator(".tally-row", { hasText: "B" }).locator(".tally-n").first();
-  await n.filter({ hasText: /^2$/ }).waitFor({ timeout: 3000 }).catch(async () => { throw new Error("tally B = " + (await n.textContent())); });
+  const n = page.locator(".tally-row", { hasText: "B. NATS" }).locator(".tally-n").first();
+  await n.filter({ hasText: /^1$/ }).waitFor({ timeout: 3000 }).catch(async () => { throw new Error("tally B = " + (await n.textContent())); });
   await page.screenshot({ path: `${OUT}/results.png`, fullPage: true });
 });
 await step("results-live-update", async () => {
@@ -209,12 +261,43 @@ await step("results-live-update", async () => {
   const r = await fetch(`${BASE}/api/pages/${id}/responses`, { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ nickname: "路人", data: { action: "提交", form: "vote", values: { choice: "C", seq: "撞名" }, params: {} } }) });
   if (r.status !== 201) throw new Error("submit " + r.status);
-  await page.locator("td", { hasText: /^C$/ }).waitFor({ timeout: 5000 });
+  await page.locator("td", { hasText: /^C\. PostgreSQL/ }).waitFor({ timeout: 5000 });
 });
 await step("csv-matches-table", async () => {
   const id = voteUrl.split("/").pop();
   const [t, c] = [await tableCols(), await csvCols(id)];
-  if (JSON.stringify(t) !== JSON.stringify(c) || !c.includes("values.seq")) throw new Error(`table ${t} ≠ csv ${c}`);
+  // 网页明细隐藏 OpenUI 内部表单名 form 列、action 显示为「操作」；其余列与 CSV 一致，CSV 本身不变
+  if (!c.includes("form") || t.includes("form")) throw new Error(`form column: table ${t} csv ${c}`);
+  if (JSON.stringify(t) !== JSON.stringify(c.filter((x) => x !== "form")) || !c.includes("values.seq")) throw new Error(`table ${t} ≠ csv ${c}`);
+  if ((await page.locator("table thead th[data-col=action]").textContent()) !== "操作") throw new Error("action header not localized");
+});
+await step("versions-resubmit-and-history", async () => {
+  const id = voteUrl.split("/").pop();
+  // 更新内容 → 第 2 版：之前交过的人重新出现在「等我参与」，详情提示可以重新提交
+  await call(demo, "PATCH", `/pages/${id}`, { content: vote.replace("每次点击「提交」记一票。", "第二版：补充了评估维度。") });
+  await page.goto(BASE + "/");
+  await page.locator(".feed-row", { hasText: "示例：vote.openui" }).locator("mark.hl").waitFor();
+  await page.goto(voteUrl);
+  await page.getByText("第二版：补充了评估维度。").waitFor();
+  await page.getByText("页面已更新到第 2 版，可以重新提交。").waitFor();
+  if (await page.locator("button[data-locked]").count()) throw new Error("v2 should not be locked");
+  await page.getByText("A. Kafka").click();
+  await page.getByRole("button", { name: "提交" }).click();
+  await toast("已提交");
+  await dock().getByRole("button", { name: "填写" }).click();
+  await assertLocked(page, "A. Kafka", 2);
+  await page.screenshot({ path: `${OUT}/locked-v2.png`, fullPage: true });
+  // ?version=1：旧内容、只读，显示我当时的选择
+  await page.goto(voteUrl + "?version=1");
+  await page.getByText("你在看第 1 版，当前是第 2 版。历史版本只读。").waitFor();
+  await page.getByText("每次点击「提交」记一票。").waitFor();
+  if (await page.getByText("第二版：补充了评估维度。").count()) throw new Error("v1 shows v2 content");
+  await assertLocked(page, "B. NATS", 1);
+  await page.screenshot({ path: `${OUT}/history-v1.png`, fullPage: true });
+  await page.getByRole("combobox", { name: "版本" }).waitFor();
+  await page.getByRole("button", { name: "回到最新版" }).click();
+  await page.waitForURL(voteUrl);
+  await page.getByText("第二版：补充了评估维度。").waitFor();
 });
 await step("html-frame-submit", async () => {
   await page.goto(BASE + "/o/demo/p/demo");
@@ -243,20 +326,33 @@ await step("tokens-create", async () => {
   await page.fill("input[placeholder*=笔记本]", "test");
   await page.getByRole("button", { name: "创建令牌" }).click();
   await page.getByText("令牌只显示这一次").waitFor();
-  await page.getByRole("button", { name: "吊销" }).first().waitFor();
+  await page.getByRole("button", { name: "撤销" }).first().waitFor();
+  await page.getByText("tkanban add team-kanban --url " + BASE).waitFor(); // MCP 配置片段
 });
 await step("page-meta-edit", async () => {
-  await page.goto(BASE + "/o/demo/p/demo");
-  await page.getByRole("button", { name: "编辑" }).first().click();
+  // 页面设置在详情页操作条「管理」里；改为公开要在对话框里确认
+  await page.goto(BASE + "/pages/" + IDS["仅项目可见"]);
+  await dock().getByRole("button", { name: "管理" }).click();
+  await page.getByRole("combobox", { name: "可见性" }).click(); // 页面设置异步加载，按名字等到它出现
+  await page.getByRole("option", { name: "公开（持链接即可）" }).click();
+  await page.getByRole("button", { name: "保存" }).click();
+  await page.getByRole("alertdialog").getByText("改为公开？").waitFor();
+  await page.getByRole("button", { name: "取消" }).click();
+  await page.getByRole("alertdialog").waitFor({ state: "detached" });
+  await page.getByRole("combobox", { name: "可见性" }).click(); // 页面设置异步加载，按名字等到它出现
+  await page.getByRole("option", { name: "项目成员" }).click();
   await page.getByRole("button", { name: "保存" }).click();
   await toast("已保存");
+  await page.getByRole("button", { name: "删除页面" }).click();
+  await page.getByRole("alertdialog").getByText("删除页面「仅项目可见」？").waitFor();
+  await page.getByRole("button", { name: "取消" }).click();
 });
 await step("read-only-no-submit", async () => {
   await page.goto(BASE + "/pages/" + IDS["只读报告"]);
   await page.getByText("技术选型投票").waitFor();
   await page.getByText("报告", { exact: true }).waitFor(); // 类型徽标
   if (await page.getByRole("button", { name: "提交" }).count()) throw new Error("read-only page shows submit button");
-  if (await page.getByRole("button", { name: "查看结果" }).count()) throw new Error("read-only page shows results button");
+  if (await dock().getByRole("button", { name: /^结果/ }).count()) throw new Error("read-only page shows results button");
   if (await page.getByText("不接受提交").count()) throw new Error("read-only page shows block notice");
   await page.screenshot({ path: `${OUT}/read-only.png`, fullPage: true });
 });
@@ -301,34 +397,60 @@ await step("knowledge-toc", async () => {
   await page.screenshot({ path: `${OUT}/knowledge.png`, fullPage: true });
   await page.setViewportSize({ width: 1200, height: 900 });
 });
-await step("list-filter-by-type", async () => {
+await step("list-filter-chips", async () => {
   await page.goto(BASE + "/o/demo/p/demo");
   await page.getByText("示例：vote.openui").waitFor();
-  const filters = page.getByRole("group", { name: "按类型筛选" });
-  // 筛选 chips：选中底色是滑动指示块，切换后滑到新选中的 chip 上
-  const ind = filters.locator("[data-slot=tabs-indicator]");
-  const onPressed = () => page.waitForFunction(() => {
-    const g = document.querySelector("[aria-label=按类型筛选]"), b = g.querySelector("[aria-pressed=true]"), i = g.querySelector("[data-slot=tabs-indicator]");
-    return b && i.style.getPropertyValue("--x") === b.offsetLeft + "px" && i.style.getPropertyValue("--w") === b.offsetWidth + "px";
-  }, null, { timeout: 3000 });
-  await onPressed();
-  if ((await ind.evaluate((e) => getComputedStyle(e).transitionDuration)).split(",")[0].trim() !== "0.25s") throw new Error("chip indicator has no slide transition");
-  await filters.getByRole("button", { name: "只读", exact: true }).click();
-  await onPressed();
-  await page.waitForFunction(() => document.querySelectorAll(".list-title").length === 3);
+  const filters = page.getByRole("group", { name: "筛选" });
   const titles = async () => (await page.locator(".list-title").allTextContents()).sort();
+  await filters.getByRole("button", { name: "文档", exact: true }).click();
+  // 切换时旧行淡出（layout 动画），等列表真正变成 3 条再断言
+  await page.waitForFunction(() => document.querySelectorAll(".list-title").length === 3);
   let t = await titles();
-  if (JSON.stringify(t) !== JSON.stringify(["只读报告", "流程图", "知识库"].sort())) throw new Error("只读: " + t);
-  await filters.getByRole("button", { name: "流程图", exact: true }).click();
-  await page.waitForFunction(() => document.querySelectorAll(".list-title").length === 1);
+  if (JSON.stringify(t) !== JSON.stringify(["只读报告", "流程图", "知识库"].sort())) throw new Error("文档: " + t);
+  if ((await filters.getByRole("button", { pressed: true }).textContent()) !== "文档") throw new Error("pressed chip");
+  await filters.getByRole("button", { name: /^等我参与/ }).click();
+  await page.locator(".list-title", { hasText: "评审组可见" }).waitFor();
+  // 文档类的行淡出后才从 DOM 移除
+  await page.waitForFunction(() => ![...document.querySelectorAll(".list-title")].some((e) => ["只读报告", "流程图", "知识库"].includes(e.textContent)));
   t = await titles();
-  if (JSON.stringify(t) !== JSON.stringify(["流程图"])) throw new Error("流程图: " + t);
-  await filters.getByRole("button", { name: "收集", exact: true }).click();
-  await page.locator(".list-title", { hasText: "示例：vote.openui" }).waitFor();
-  t = await titles();
-  if (t.some((x) => ["只读报告", "流程图", "知识库"].includes(x))) throw new Error("收集: " + t);
+  if (t.some((x) => ["只读报告", "流程图", "知识库"].includes(x))) throw new Error("等我参与: " + t);
+  await page.locator("mark.hl", { hasText: /^等你(投票|填写)$/ }).first().waitFor();
   await page.screenshot({ path: `${OUT}/project-filter.png`, fullPage: true });
   await filters.getByRole("button", { name: "全部", exact: true }).click();
+});
+await step("tab-in-url", async () => {
+  await page.goto(BASE + "/o/demo/p/demo");
+  await page.getByRole("tab", { name: "成员与权限" }).click();
+  await page.waitForURL(/\?tab=members$/);
+  await page.reload();
+  await page.getByRole("tab", { name: "成员与权限", selected: true }).waitFor();
+  await page.getByText("群组授权").first().waitFor();
+  await page.goto(BASE + "/o/demo?tab=members");
+  await page.getByRole("tab", { name: "成员", exact: true, selected: true }).waitFor();
+});
+await step("cmdk-search-jump", async () => {
+  await page.goto(BASE + "/");
+  await page.locator(".feed-row").first().waitFor();
+  await page.keyboard.press("Control+k");
+  await page.getByPlaceholder("搜索项目、页面，或输入操作").fill("vote.openui");
+  await page.getByRole("option", { name: /示例：vote\.openui/ }).click();
+  await page.waitForURL(voteUrl);
+  await page.getByText("技术选型投票").waitFor();
+});
+await step("todo-count-after-submit", async () => {
+  // 等我参与 = 收集类、仍接受提交、我还没提交过；提交后回到首页数量减 1
+  await page.goto(BASE + "/");
+  const chip = page.getByTestId("todo-count");
+  await chip.waitFor();
+  const before = Number(await chip.textContent());
+  await page.goto(BASE + "/pages/" + IDS["评审组可见"]);
+  await page.getByText("A. Kafka").click();
+  await page.getByRole("button", { name: "提交" }).click();
+  await toast("已提交");
+  await page.goto(BASE + "/");
+  await page.locator(".feed-row").first().waitFor();
+  await page.waitForFunction((b) => Number(document.querySelector("[data-testid=todo-count]")?.textContent ?? 0) === b - 1, before, { timeout: 5000 })
+    .catch(async () => { throw new Error(`todo ${before} → ${await chip.textContent().catch(() => "无")}`); });
 });
 await step("perm-outsider-404", async () => {
   const c2 = await browser.newContext();
@@ -385,7 +507,7 @@ await step("reduced-motion", async () => {
     await p.waitForTimeout(100);
     const r = await p.evaluate(() => ({
       running: document.getAnimations().filter((a) => a.playState === "running" && a.effect?.getComputedTiming().duration > 0).map((a) => a.animationName ?? a.transitionProperty ?? "waapi"),
-      hidden: [...document.querySelectorAll(".list > *")].filter((e) => getComputedStyle(e).opacity !== "1").length,
+      hidden: [...document.querySelectorAll(".list > *, .feed > *")].filter((e) => getComputedStyle(e).opacity !== "1").length,
     }));
     if (r.running.length || r.hidden) throw new Error(`${where}: running ${r.running} hidden rows ${r.hidden}`);
   };
@@ -396,8 +518,8 @@ await step("reduced-motion", async () => {
     await settled("project");
     const ind = p.locator("[data-slot=tabs-indicator]").first();
     if ((await ind.evaluate((e) => getComputedStyle(e).transitionDuration)).split(",").some((d) => d.trim() !== "0s")) throw new Error("indicator transition not zeroed");
-    await p.getByRole("group", { name: "按类型筛选" }).getByRole("button", { name: "收集", exact: true }).click();
-    await p.locator(".list-title", { hasText: "示例：vote.openui" }).click(); // 列表 → 页面（减少动态时不走 View Transition）
+    await p.getByRole("group", { name: "筛选" }).getByRole("button", { name: "文档", exact: true }).click();
+    await p.locator(".list-title", { hasText: "只读报告" }).click(); // 列表 → 页面（减少动态时不走 View Transition）
     await p.getByText("技术选型投票").waitFor();
     await settled("vote");
     await p.goto(BASE + "/pages/" + IDS["示例：report.openui"]);
