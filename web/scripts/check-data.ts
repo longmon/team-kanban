@@ -47,3 +47,15 @@ assert.equal(colLabel("approved.ch101", L), "同意上线：CH-101");
 assert.equal(colLabel("comment", L), "comment");
 assert.equal(valLabel("choice", "Z", L), "Z");
 console.log("labels ok");
+
+// 默认值不改直接提交：useField 把 fieldDefault / checkedDefault 写进表单状态，提交的 values 就是界面显示的默认项
+import { checkedDefault, fieldDefault } from "../src/openui-lib/forms";
+assert.equal(fieldDefault(undefined, "B"), "B"); // RadioGroup defaultValue
+assert.equal(fieldDefault("草稿", undefined), "草稿"); // Input / TextArea / Select / DatePicker 字面量 value
+assert.deepEqual(fieldDefault(undefined, [30]), [30]); // Slider defaultValue
+assert.equal(fieldDefault({ __reactive: "assign", target: "$x", expr: null }, "B"), undefined); // $变量绑定不写默认
+assert.equal(fieldDefault(undefined, undefined), undefined);
+assert.deepEqual(checkedDefault([{ name: "a", defaultChecked: true }, { name: "b" }]), { a: true, b: false });
+assert.equal(checkedDefault([{ name: "a" }, { name: "b", defaultChecked: false }]), undefined);
+assert.deepEqual(normalizeValues({ vote: { choice: { value: fieldDefault(undefined, "B") } } }, "vote"), { choice: "B" });
+console.log("defaults ok");

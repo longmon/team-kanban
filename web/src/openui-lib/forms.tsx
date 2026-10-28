@@ -3,7 +3,8 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ACTION_STEPS, defineComponent, FormNameContext, FormValidationContext, parseStructuredRules, reactive, useCreateFormValidation,
-  useFormName, useFormValidation, useGetFieldValue, useIsStreaming, useSetFieldValue, useStateField, useTriggerAction, action,
+  useFormName, useFormValidation, useGetFieldValue, useIsStreaming, useSetDefaultValue, useSetFieldValue, useStateField, useTriggerAction, action,
+  isReactiveAssign,
 } from "@openuidev/react-lang";
 import { Check, CircleAlert } from "lucide-react";
 import { useAnimate } from "motion/react";
@@ -43,11 +44,21 @@ const DIM = "opacity-45 saturate-50";
 
 const itemsOf = (v: unknown) => asArray(v).map((n) => ((n as { props?: Record<string, unknown> })?.props ?? {}) as Record<string, unknown>);
 
+/** 字段默认值：字面量 value，其次 defaultValue；reactive 绑定（$变量）由 store 自管，不写默认 */
+export const fieldDefault = (value: unknown, def?: unknown) => (isReactiveAssign(value) ? undefined : value ?? def);
+/** CheckBoxGroup / SwitchGroup 默认值：有子项 defaultChecked 时为 { 子项 name: 是否勾选 }（含所有子项），否则 undefined */
+export const checkedDefault = (items: Record<string, unknown>[]) =>
+  items.some((it) => it.defaultChecked === true) ? Object.fromEntries(items.map((it) => [String(it.name), it.defaultChecked === true])) : undefined;
+
 /** 字段状态 + 校验注册（各输入组件共用） */
-function useField<T>(name: string, value: unknown, rawRules: unknown) {
+function useField<T>(name: string, value: unknown, rawRules: unknown, def?: unknown) {
   const streaming = useIsStreaming();
   const fv = useFormValidation();
   const field = useStateField(name, value);
+  const formName = useFormName();
+  const getFieldValue = useGetFieldValue();
+  // 默认值在流式结束后写进表单状态（用户未改时）：不改直接提交时，校验、提交、锁定回填拿到的都是界面上显示的默认项
+  useSetDefaultValue({ formName, name: field.name, existingValue: getFieldValue(formName, field.name), defaultValue: fieldDefault(value, def) });
   const rules = useMemo(() => parseStructuredRules(rawRules as never), [rawRules]);
   const has = rules.length > 0;
   useEffect(() => {
@@ -274,7 +285,7 @@ export const RadioGroup = defineComponent({
   }),
   description: "",
   component: ({ props }) => {
-    const f = useField<string>(props.name, props.value, props.rules);
+    const f = useField<string>(props.name, props.value, props.rules, props.defaultValue);
     const lk = useLocked(props.name);
     const items = itemsOf(props.items);
     if (!items.length) return null;
@@ -314,8 +325,8 @@ export const CheckBoxGroup = defineComponent({
   }),
   description: "",
   component: ({ props }) => {
-    const f = useField<Record<string, boolean>>(props.name, props.value, props.rules);
     const items = useMemo(() => itemsOf(props.items), [props.items]);
+    const f = useField<Record<string, boolean>>(props.name, props.value, props.rules, checkedDefault(items));
     const aggregate = useAggregate(f, items);
     const lk = useLocked(props.name);
     if (!items.length) return null;
@@ -353,9 +364,9 @@ export const SwitchGroup = defineComponent({
   }),
   description: "Group of switch toggles",
   component: ({ props }) => {
-    const f = useField<Record<string, boolean>>(props.name, props.value, undefined);
     const uid = useId();
     const items = useMemo(() => itemsOf(props.items), [props.items]);
+    const f = useField<Record<string, boolean>>(props.name, props.value, undefined, checkedDefault(items));
     const aggregate = useAggregate(f, items);
     const lk = useLocked(props.name);
     if (!items.length) return null;
@@ -482,7 +493,7 @@ export const Slider = defineComponent({
   }),
   description: "Numeric slider input; supports continuous and discrete (stepped) variants",
   component: ({ props }) => {
-    const f = useField<number[]>(props.name, props.value, props.rules);
+    const f = useField<number[]>(props.name, props.value, props.rules, props.defaultValue);
     const [dragging, setDragging] = useState(false);
     const lk = useLocked(props.name);
     const value = (lk && Array.isArray(lk.v) ? (lk.v as number[]) : undefined) ?? f.value ?? props.defaultValue ?? [props.min];

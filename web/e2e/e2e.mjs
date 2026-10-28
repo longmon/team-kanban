@@ -60,6 +60,10 @@ await call(demo, "POST", `/groups/${group.id}/members`, { user_id: member.user.i
 const vote = readFileSync(new URL("vote.openui", exDir), "utf8");
 await addPage("仅项目可见", "openui", vote, { visibility: "project" });
 await addPage("评审组可见", "openui", vote, { visibility: "groups", group_ids: [group.id] });
+// 带默认值的投票：RadioGroup defaultValue="B"、Slider defaultValue=[4]，都必填；不改直接提交应成功
+await addPage("默认值投票", "openui", vote.replace('RadioGroup("choice", [optA, optB, optC], null,', 'RadioGroup("choice", [optA, optB, optC], "B",')
+  .replace("[choiceField, commentField]", "[choiceField, scoreField, commentField]")
+  .replace("commentField =", `scoreField = FormControl("信心", Slider("score", "discrete", 1, 5, 1, [4], null, { required: true }))\ncommentField =`));
 // 任务树：Member 负责，Demo 评审（组织可见，Member 不在项目里也能看）
 const TASKS = (await call(demo, "POST", "/pages", { project_id: project.id, title: "支付上线清单", kind: "openui", page_type: "task_tree", visibility: "org",
   summary: "支付通道上线的任务清单", reviewers: { users: ["demo@example.com"] },
@@ -274,6 +278,21 @@ await step("vote-locked-after-reload-and-duplicate-rejected", async () => {
     body: JSON.stringify({ data: { action: "提交", form: "vote", values: { choice: "A" }, params: {} } }) });
   const j = await r.json();
   if (r.status !== 409 || j.error?.code !== "already_submitted") throw new Error(`duplicate → ${r.status} ${JSON.stringify(j)}`);
+});
+await step("vote-default-value-submit", async () => {
+  // 默认选中项不改直接提交：不报「必填」，提交值即默认项，原题回填锁定显示该默认项
+  const id = IDS["默认值投票"];
+  await page.goto(BASE + "/pages/" + id);
+  await page.getByText("技术选型投票").waitFor();
+  await ticket(page, "B. NATS").and(page.locator("[data-on]")).waitFor();
+  await page.getByRole("button", { name: "提交" }).click();
+  await toast("已提交（#1）");
+  await assertLocked(page, "B. NATS", 1);
+  const mine = await call(demo, "GET", `/pages/${id}/responses`);
+  const v = mine.responses?.[0]?.data?.values;
+  if (v?.choice !== "B" || JSON.stringify(v?.score) !== "[4]") throw new Error("submitted values " + JSON.stringify(v));
+  await page.reload();
+  await assertLocked(page, "B. NATS", 1);
 });
 await step("copy-link", async () => {
   await rail().getByRole("button", { name: "复制链接" }).click();
