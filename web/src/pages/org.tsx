@@ -113,7 +113,7 @@ export function MemberPicker({ orgId, onPick, label = "添加" }: { orgId: strin
 
 function Groups({ org }: { org: Org }) {
   const admin = isAdmin(org);
-  const list = usePaged<Group>(`/orgs/${org.id}/groups`);
+  const list = usePaged<Group>(`/orgs/${org.id}/groups?include=project`);
   const [open, setOpen] = useState<string | null>(null);
   const [f, setF] = useState({ name: "", description: "" });
   const a = useAction();

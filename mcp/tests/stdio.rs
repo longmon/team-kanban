@@ -876,6 +876,11 @@ async fn auto_group_and_create_tools() {
     a["groups"] = json!(["reviewers"]);
     ok_json(call(&c, "publish_page", a).await);
     assert_eq!(last(&st)["group_ids"], json!([GROUP]));
+    // 项目群组名只从 /api/projects/{id}/groups 解析
+    let mut a = args.clone();
+    a["groups"] = json!(["后端组"]);
+    ok_json(call(&c, "publish_page", a).await);
+    assert_eq!(last(&st)["group_ids"], json!(["01928f7a-0000-7000-8000-000000000101"]));
 
     // create_project：slug 由名称生成；中文名用 p-xxxx
     let r = ok_json(call(&c, "create_project", json!({ "name": "Design Team" })).await);

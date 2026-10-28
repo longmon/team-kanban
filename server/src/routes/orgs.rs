@@ -603,23 +603,37 @@ fn grant_json(gid: Uuid, name: &str, role: &str, t: &DateTime<Utc>) -> Value {
 
 type ProjectGroupRow = (Uuid, String, Option<Uuid>, String, DateTime<Utc>, i64, Option<DateTime<Utc>>, String);
 
+/// 本项目最近更新的这么多个页面里找各群组的 last_page_at（上界，不随群组历史页面数增长）
+const GROUP_RECENT_SCAN: i64 = 1000;
+
 /// 本项目的群组（项目群组在前）与已授权的组织级群组。
-/// last_page_at：最近一次有页面发给该群组的时间（page_groups 关联的未删除页面的 updated_at 最大值，发布与更新都会刷新）；
-/// active：last_page_at 在 ACTIVE_GROUP_SECS 内。
+/// last_page_at：本项目里最近一次有页面发给该群组的时间（page_groups 关联的本项目未删除页面的 updated_at 最大值，发布与更新都会刷新；
+/// 只看本项目，不暴露其他项目的发页时间）；active：last_page_at 在 ACTIVE_GROUP_SECS 内。
 pub async fn list_project_groups(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
     let ctx = require_project(&st.db, &c, id, ProjectRole::Viewer, PUBLISH_OR_MANAGE).await?;
-    // ponytail: last_page_at 每个群组沿 page_groups(group_id) 扫它收到过的全部页面；单群组页面上万时再给 page_groups 加时间列/物化
+    // 沿 pages_project_updated_idx 取本项目最近更新的 GROUP_RECENT_SCAN 个页面，再按 page_groups 主键 (page_id, group_id) 逐页探测
+    // （LATERAL + OFFSET 0：阻止规划器改成对整个 page_groups 的哈希连接）。
+    // ponytail: 群组在本项目的最后一页比最近 1000 个页面都旧时 last_page_at 为 null（active 只在 4 小时内超过 1000 次发布/更新时才会漏）；
+    // 真需要精确值再给 page_groups 加时间列
     let rows: Vec<ProjectGroupRow> = sqlx::query_as(
-        "SELECT g.id, g.name, g.project_id, pg.role, pg.created_at,
+        "WITH recent AS (
+           SELECT p.id, p.updated_at FROM pages p WHERE p.project_id = $2 AND p.deleted_at IS NULL ORDER BY p.updated_at DESC LIMIT $3
+         ), last AS (
+           SELECT x.group_id, max(r.updated_at) AS at FROM recent r
+             CROSS JOIN LATERAL (SELECT x.group_id FROM page_groups x WHERE x.page_id = r.id AND x.org_id = $1 OFFSET 0) x
+            GROUP BY x.group_id
+         )
+         SELECT g.id, g.name, g.project_id, pg.role, pg.created_at,
                 (SELECT count(*) FROM group_members gm WHERE gm.org_id = g.org_id AND gm.group_id = g.id) AS member_count,
-                (SELECT max(p.updated_at) FROM page_groups x JOIN pages p ON p.org_id = x.org_id AND p.id = x.page_id AND p.deleted_at IS NULL
-                  WHERE x.group_id = g.id) AS last_page_at, g.description
+                l.at AS last_page_at, g.description
            FROM project_groups pg JOIN groups g ON g.org_id = pg.org_id AND g.id = pg.group_id
+           LEFT JOIN last l ON l.group_id = g.id
           WHERE pg.org_id = $1 AND pg.project_id = $2
           ORDER BY g.project_id IS NULL, last_page_at DESC NULLS LAST, pg.created_at DESC",
     )
     .bind(ctx.org_id())
     .bind(ctx.project_id())
+    .bind(GROUP_RECENT_SCAN)
     .fetch_all(&st.db)
     .await?;
     let since = Utc::now() - chrono::Duration::seconds(ACTIVE_GROUP_SECS);
@@ -657,6 +671,9 @@ pub async fn grant_project_group(State(st): State<AppState>, c: Caller, P((id, g
     let (name, owner) = row.ok_or_else(AppError::not_found)?;
     if owner.is_some_and(|p| p != ctx.project_id()) {
         return Err(AppError::conflict("group_belongs_to_other_project", "这是其他项目的项目群组，不能授权给本项目"));
+    }
+    if owner.is_some() && role == ProjectRole::Admin {
+        return Err(AppError::field("role", "项目群组的角色只能是 viewer/editor"));
     }
     let created: DateTime<Utc> = sqlx::query_scalar(
         "INSERT INTO project_groups (org_id, project_id, group_id, role) VALUES ($1, $2, $3, $4)

@@ -499,9 +499,20 @@ async fn manage_scope_and_project_groups() {
     let r = h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "前端组" }))).await;
     assert_eq!((r.status, r.code()), (409, "name_taken".into()));
     let grp2 = s(&h.req(&owner, "POST", &format!("/api/projects/{proj2}/groups"), Some(json!({ "name": "前端组", "role": "editor" }))).await.ok(201)["id"]);
-    h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "评审组" }))).await.ok(201);
-    let r = h.req(&owner, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "评审组" }))).await;
-    assert_eq!((r.status, r.code()), (409, "name_taken".into()));
+    // 项目群组不能与组织级群组同名（大小写不敏感），组织级群组也不能与任一项目群组同名；改名同样检查
+    let r = h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "评审组" }))).await;
+    assert_eq!((r.status, r.code()), (409, "name_conflicts_org_group".into()));
+    h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "待命组" }))).await.ok(201);
+    let r = h.req(&owner, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "前端组" }))).await;
+    assert_eq!((r.status, r.code()), (409, "name_conflicts_project_group".into()));
+    let r = h.req(&owner, "PATCH", &format!("/api/groups/{org_grp}"), Some(json!({ "name": "待命组" }))).await;
+    assert_eq!((r.status, r.code()), (409, "name_conflicts_project_group".into()));
+    let r = h.req(&padmin, "PATCH", &format!("/api/groups/{grp}"), Some(json!({ "name": "评审组" }))).await;
+    assert_eq!((r.status, r.code()), (409, "name_conflicts_org_group".into()));
+    // 限定项目的 manage PAT 不能建组织级群组
+    let (oppat, _) = create_pat(&h, &owner, &["manage"], Some(&org), Some(&proj)).await;
+    let r = h.req(&oppat, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "y" }))).await;
+    assert_eq!((r.status, r.code()), (403, "project_scoped_token".into()));
     // 非项目 admin（项目 viewer、无角色成员）不能建项目群组
     assert_eq!(h.req(&pviewer, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "y" }))).await.status, 403);
     assert_eq!(h.req(&mate, "POST", &format!("/api/projects/{proj2}/groups"), Some(json!({ "name": "y" }))).await.status, 404);
@@ -516,18 +527,21 @@ async fn manage_scope_and_project_groups() {
     assert_eq!((r.status, r.code()), (409, "group_belongs_to_other_project".into()));
     let r = h.req(&padmin, "DELETE", &format!("/api/projects/{proj}/groups/{grp}"), None).await;
     assert_eq!((r.status, r.code()), (409, "own_project_group".into()));
+    assert_eq!(h.req(&padmin, "PUT", &format!("/api/projects/{proj}/groups/{grp}"), Some(json!({ "role": "admin" }))).await.status, 400);
     h.req(&padmin, "PUT", &format!("/api/projects/{proj}/groups/{grp}"), Some(json!({ "role": "editor" }))).await.ok(200);
     h.req(&padmin, "PUT", &format!("/api/projects/{proj}/groups/{org_grp}"), Some(json!({ "role": "viewer" }))).await.ok(200);
     h.req(&padmin, "DELETE", &format!("/api/projects/{proj}/groups/{org_grp}"), None).await.ok(204);
     h.req(&padmin, "PUT", &format!("/api/projects/{proj}/groups/{org_grp}"), Some(json!({ "role": "viewer" }))).await.ok(200);
 
-    // 组织群组列表：组织级 + 有角色项目的项目群组（带 project）；mate 看不到 ops 项目的群组
+    // 组织群组列表：默认只有组织级（与旧版一致）；?include=project 附带有角色项目的项目群组（带 project）；mate 看不到 ops 项目的群组
     let names = |v: Value| v["items"].as_array().unwrap().iter().map(|g| (s(&g["name"]), g["project_id"].as_str().map(String::from))).collect::<Vec<_>>();
-    let all = names(h.req(&owner, "GET", &format!("/api/orgs/{org}/groups"), None).await.ok(200));
+    assert_eq!(names(h.req(&owner, "GET", &format!("/api/orgs/{org}/groups"), None).await.ok(200)), vec![("评审组".to_string(), None)]);
+    let all = names(h.req(&owner, "GET", &format!("/api/orgs/{org}/groups?include=project"), None).await.ok(200));
     assert_eq!(all.len(), 4);
-    let seen = names(h.req(&mate, "GET", &format!("/api/orgs/{org}/groups"), None).await.ok(200));
+    let seen = names(h.req(&mate, "GET", &format!("/api/orgs/{org}/groups?include=project"), None).await.ok(200));
     assert!(seen.iter().all(|(_, p)| p.as_deref() != Some(proj2.as_str())), "{seen:?}");
     assert_eq!(seen.len(), 3);
+    assert_eq!(h.req(&owner, "GET", &format!("/api/orgs/{org}/groups?include=x"), None).await.status, 400);
 
     // 发页面：本项目群组、组织级群组可以；别的项目的群组拒绝
     let (pub_pat, _) = create_pat(&h, &padmin, &["publish"], None, None).await;
@@ -537,6 +551,12 @@ async fn manage_scope_and_project_groups() {
     let page = publish_with(&h, &pub_pat, body(vec![&grp])).await;
     let r = h.req(&pub_pat, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "group_ids": [grp2] }))).await;
     assert_eq!(r.code(), "group_not_in_project");
+    // 组织级群组在别的项目（ops）收到的页面不算本项目的活跃/last_page_at
+    h.req(&owner, "PUT", &format!("/api/projects/{proj2}/groups/{org_grp}"), Some(json!({ "role": "viewer" }))).await.ok(200);
+    publish(&h, &owner, &proj2, "groups", &[&org_grp]).await;
+    let l = h.req(&padmin, "GET", &format!("/api/projects/{proj}/groups"), None).await.ok(200);
+    let og = l["items"].as_array().unwrap().iter().find(|g| g["id"] == org_grp.as_str()).unwrap().clone();
+    assert_eq!((og["active"].as_bool(), og["last_page_at"].is_null()), (Some(false), true), "{og}");
     publish_with(&h, &pub_pat, body(vec![&org_grp])).await;
 
     // 活跃：4 小时内有页面 → active；把页面时间改到 5 小时前 → 不活跃
@@ -550,7 +570,7 @@ async fn manage_scope_and_project_groups() {
     assert_eq!((fg["active"].as_bool(), fg["member_count"].as_i64(), fg["role"].as_str()), (Some(true), Some(3), Some("editor")));
     assert!(fg["last_page_at"].is_string());
     assert_eq!(find(&org_grp)["active"], true);
-    let idle = items.iter().find(|g| g["name"] == "评审组" && g["project_id"].is_string()).unwrap();
+    let idle = items.iter().find(|g| g["name"] == "待命组").unwrap();
     assert_eq!((idle["active"].as_bool(), idle["last_page_at"].is_null()), (Some(false), true));
     sqlx::query("UPDATE pages SET created_at = now() - interval '5 hours', updated_at = now() - interval '5 hours' WHERE id = $1")
         .bind(uuid::Uuid::parse_str(&page).unwrap())
@@ -567,31 +587,27 @@ async fn manage_scope_and_project_groups() {
 }
 
 #[tokio::test]
-async fn audience_without_project_role_sees_groups_page_in_list() {
+async fn legacy_org_groups_unchanged() {
     let h = H::new().await;
     let owner = register(&h, "owner@example.com").await;
     let grouped = register(&h, "grouped@example.com").await;
-    let member = register(&h, "member@example.com").await;
     let org = create_org(&h, &owner, "acme").await;
     join_org(&h, &owner, &org, &grouped, "member").await;
-    join_org(&h, &owner, &org, &member, "member").await;
     let proj = create_project(&h, &owner, &org, "p").await;
     // 旧式组织级群组：不授权给项目，只作为页面受众
     let grp = create_group(&h, &owner, &org, "g").await;
     h.req(&owner, "POST", &format!("/api/groups/{grp}/members"), Some(json!({ "user_id": grouped.user_id }))).await.ok(201);
     let gpage = publish(&h, &owner, &proj, "groups", &[&grp]).await;
-    let ppage = publish(&h, &owner, &proj, "project", &[]).await;
-    let ids = |v: Value| v["items"].as_array().unwrap().iter().map(|p| s(&p["id"])).collect::<Vec<_>>();
-    assert_eq!(ids(h.req(&grouped, "GET", "/api/pages", None).await.ok(200)), vec![gpage.clone()]);
-    assert!(ids(h.req(&member, "GET", "/api/pages", None).await.ok(200)).is_empty());
+    // 行为同 0006 之前：受众能凭链接打开，但没有项目角色时列表、动态里看不到
     h.req(&grouped, "GET", &format!("/api/pages/{gpage}/view"), None).await.ok(200);
-    assert_eq!(h.req(&grouped, "GET", &format!("/api/pages/{ppage}/view"), None).await.status, 404);
-    // 动态流同口径
-    let act = h.req(&grouped, "GET", "/api/activity", None).await.ok(200);
-    assert!(act.to_string().contains(&gpage) && !act.to_string().contains(&ppage), "{act}");
-    let act = h.req(&member, "GET", "/api/activity", None).await.ok(200);
-    assert!(!act.to_string().contains(&gpage), "{act}");
-    // 旧组织级群组 project_id 为 null，授权行为不变
+    assert!(h.req(&grouped, "GET", "/api/pages", None).await.ok(200)["items"].as_array().unwrap().is_empty());
+    assert!(!h.req(&grouped, "GET", "/api/activity", None).await.ok(200).to_string().contains(&gpage));
+    // 组织级同名仍 409；project_id 为 null
+    let r = h.req(&owner, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "G" }))).await;
+    assert_eq!((r.status, r.code()), (409, "name_taken".into()));
     let g = h.req(&owner, "GET", &format!("/api/groups/{grp}"), None).await.ok(200);
     assert!(g["project_id"].is_null() && g["project"].is_null());
+    // 授权给项目后成员获得角色，列表可见
+    h.req(&owner, "PUT", &format!("/api/projects/{proj}/groups/{grp}"), Some(json!({ "role": "viewer" }))).await.ok(200);
+    assert_eq!(h.req(&grouped, "GET", "/api/pages", None).await.ok(200)["items"][0]["id"], gpage.as_str());
 }

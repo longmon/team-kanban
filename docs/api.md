@@ -237,7 +237,8 @@ type ProjectGroupItem = ProjectGroupGrant & {
   id: string; name: string; description: string;
   project_id: string | null;     // 等于本项目 = 本项目的项目群组；null = 已授权的组织级群组
   member_count: number;
-  last_page_at: string | null;   // 最近一次有页面发给该群组的时间：page_groups 关联的未删除页面 updated_at 的最大值（发布、更新都会刷新）
+  last_page_at: string | null;   // 本项目里最近一次有页面发给该群组的时间：在本项目最近更新的 1000 个未删除页面中，
+                                 // page_groups 关联该群组的页面 updated_at 最大值（发布、更新都会刷新；不看其他项目；更早的为 null）
   active: boolean                // last_page_at 在 4 小时内（服务端常量 ACTIVE_GROUP_SECS）
 }
 ```
@@ -249,8 +250,8 @@ type ProjectGroupItem = ProjectGroupGrant & {
 | PATCH /api/projects/{id}/members/{user_id} | cookie | 项目 admin | `{ role }` | 200 `ProjectMember` |
 | DELETE /api/projects/{id}/members/{user_id} | cookie | 项目 admin，或本人退出 | – | 204 |
 | GET /api/projects/{id}/groups | cookie, pat:publish, pat:manage | 项目任一角色 | – | 200 `{ items: ProjectGroupItem[] }`（项目群组在前，再按 last_page_at 降序） |
-| POST /api/projects/{id}/groups | cookie, pat:manage | 项目 admin（含 org owner/admin） | `{ name, description?, role?: "viewer"\|"editor"（默认 viewer）, members?: string[] }` | 201 `Group & { role }`：建本项目的项目群组，自动授权给本项目（role），创建者与 members 入组；members 为用户 UUID 或邮箱，必须是组织成员（否则 409 `not_org_member`，details.member），最多 200 个；同项目重名 409 `name_taken` |
-| PUT /api/projects/{id}/groups/{group_id} | cookie | 项目 admin | `{ role }` | 200 `ProjectGroupGrant`（新增或改角色）；其他项目的项目群组 → 409 `group_belongs_to_other_project` |
+| POST /api/projects/{id}/groups | cookie, pat:manage | 项目 admin（含 org owner/admin） | `{ name, description?, role?: "viewer"\|"editor"（默认 viewer）, members?: string[] }` | 201 `Group & { role }`：建本项目的项目群组，自动授权给本项目（role），创建者与 members 入组（审计 group.create 的 meta.member_ids 记录全部初始成员）；members 为用户 UUID 或邮箱，必须是组织成员（否则 409 `not_org_member`，details.member），最多 200 个；同项目重名 409 `name_taken`；与本组织的组织级群组同名 409 `name_conflicts_org_group` |
+| PUT /api/projects/{id}/groups/{group_id} | cookie | 项目 admin | `{ role }` | 200 `ProjectGroupGrant`（新增或改角色）；其他项目的项目群组 → 409 `group_belongs_to_other_project`；本项目群组 role 只能 viewer/editor（admin → 400） |
 | DELETE /api/projects/{id}/groups/{group_id} | cookie | 项目 admin | – | 204；本项目的项目群组 → 409 `own_project_group`（不能撤成孤儿，直接删群组） |
 
 ### 4.5 群组
@@ -261,17 +262,17 @@ type GroupMember = { user: UserBrief & { email: string }; joined_at: string }
 
 | 方法 路径 | 鉴权 | 权限 | 请求 | 响应 |
 |---|---|---|---|---|
-| GET /api/orgs/{org_id}/groups | cookie, pat:publish, pat:manage | member+ | `?limit&cursor` | 200 `{ items: Group[], next_cursor }`：组织级群组 + 调用者有项目角色的未删除项目的项目群组 |
-| POST /api/orgs/{org_id}/groups | cookie, pat:manage | org admin+ | `{ name, description? }` | 201 `Group`（组织级，project_id=null）；409 `name_taken` |
+| GET /api/orgs/{org_id}/groups | cookie, pat:publish, pat:manage | member+ | `?limit&cursor&include=` | 200 `{ items: Group[], next_cursor }`：默认只有组织级群组（与旧版一致）；`include=project` 时附带调用者有项目角色的未删除项目的项目群组；其他取值 400 |
+| POST /api/orgs/{org_id}/groups | cookie, pat:manage | org admin+ | `{ name, description? }` | 201 `Group`（组织级，project_id=null）；409 `name_taken`；与本组织任一项目群组同名 409 `name_conflicts_project_group`；限定了项目的 PAT → 403 `project_scoped_token` |
 | GET /api/groups/{group_id} | cookie | member+ | – | 200 `Group` |
-| PATCH /api/groups/{group_id} | cookie | org admin+；项目群组另允许所属项目 admin | `{ name?, description? }` | 200 `Group` |
+| PATCH /api/groups/{group_id} | cookie | org admin+；项目群组另允许所属项目 admin | `{ name?, description? }` | 200 `Group`；改名同样检查跨类同名（409 `name_conflicts_org_group` / `name_conflicts_project_group`） |
 | DELETE /api/groups/{group_id} | cookie | 同上 | – | 204（同时移除页面受众与项目授权） |
 | GET /api/groups/{group_id}/members | cookie | member+ | `?limit&cursor` | 200 `{ items: GroupMember[], next_cursor }` |
 | POST /api/groups/{group_id}/members | cookie | org admin+；项目群组另允许所属项目 admin | `{ user_id }` | 201 `GroupMember`；409 `not_org_member` / `already_member` |
 | DELETE /api/groups/{group_id}/members/{user_id} | cookie | 同上，或本人退出 | – | 204 |
 
 两类群组：**组织级群组**（`project_id = null`，旧数据全部是这种）可授权给多个项目、可作任意项目页面的受众；名称在组织内唯一。
-**项目群组**（`project_id` 非空）专属一个项目：创建时自动授权给该项目，不能授权给其他项目，也不能单独撤销授权；名称在该项目内唯一，不同项目可同名，也可与组织级群组同名。
+**项目群组**（`project_id` 非空）专属一个项目：创建时自动授权给该项目（只能 viewer/editor），不能授权给其他项目，也不能单独撤销授权；名称在该项目内唯一，不同项目可同名，但不能与本组织的组织级群组同名（反之亦然），避免按名称解析时受众漂移。
 发页面 `visibility=groups` 时 `group_ids` 只能是组织级群组或本页面所属项目的项目群组，其他项目的群组 → 400 `group_not_in_project`。
 
 ## 5. 邀请
@@ -682,7 +683,7 @@ type AuditEntry = {
 - 需要服务器的工具都有可选入参 `server`（profile 名）。选择顺序：入参 `server` → 用户显式设置的默认服务器（`tkanban add --default` / `tkanban default`）→ 只有一个 profile 时用它 → 否则返回「需要选择」。
 - `publish_page` 再按 组织 → 项目 定位（`list_pages` 给了 org/project 时同样）：入参 `org`/`project` 优先，缺省取 profile 的 `org`/`project`（视为已指定；显式给了 `org` 时不再套用 profile 的 `project`）。候选为 `GET /api/me/projects` 里 `can_publish=true` 的项目；`project` 为 UUID 或 `org/slug` 时不再按 org 过滤。
 - 给了群组名而组织不唯一时，先用 `GET /api/orgs/{id}/groups` 找出同时包含这些群组的组织（只认组织级群组和候选项目自己的项目群组）：只有一个就用它，多个就返回 `need_selection: "group"`。
-- 群组名解析（大小写不敏感）：先匹配选定项目的项目群组，再匹配组织级群组；其他项目的群组不认。
+- 群组名解析（大小写不敏感）：先匹配选定项目的项目群组（取自 `GET /api/projects/{id}/groups`），再匹配组织级群组（`GET /api/orgs/{id}/groups`，默认只返回组织级）；其他项目的群组不认。
 - **自动选群组**（`publish_page`）：选定项目后，若入参没给 `groups` 和 `visibility`、profile 也没有默认 `groups`，查 `GET /api/projects/{id}/groups` 的活跃群组（`active`=4 小时内有页面发给它）：
   0 个 → `visibility=project`；恰好 1 个 → 自动发给它，出参附 `auto_group: { id, name, reason: "项目里唯一的活跃群组（4 小时内有页面）" }` 与 `tell_user`（agent 须在回复里告诉用户发给了哪个群组）；
   多个 → `need_selection: "group"`，`candidates` 为这些活跃群组 `{group, id, project_group, last_page_at, member_count}` 加一项 `{visibility: "project", label}`（整个项目），并附 `project`（选定项目）与 `retry` 说明。该查询失败（旧服务端）时按 0 个处理。
@@ -695,7 +696,7 @@ type AuditEntry = {
     hint: "有多个候选：如果对话上下文……能明确对应其中一个，就直接带上该参数重试；仍没把握时请询问用户……再带上参数重试。" }
   ```
 - page_id 定位的工具（`update_page`/`create_share_link`/`get_responses`）只需要 `server`：`publish_page` 的出参带 `server`，后续调用原样带上（不在本地记录 page_id → server 映射）。
-- 可发布目标由 PAT 调 `GET /api/orgs`（任一 scope，空组织也在；旧服务端不支持时退回项目所在组织）、`GET /api/me/projects`（任一 scope，已按 PAT 的 org/project 范围裁剪，只含有项目角色的项目）、`GET /api/projects/{id}/groups`（publish/manage）与 `GET /api/orgs/{id}/groups`（publish/manage，范围外组织 404）拼出。
+- 可发布目标由 PAT 调 `GET /api/orgs`（任一 scope，空组织也在；旧服务端不支持时退回项目所在组织）、`GET /api/me/projects`（任一 scope，已按 PAT 的 org/project 范围裁剪，只含有项目角色的项目）、`GET /api/projects/{id}/groups`（publish/manage，各项目并发请求）与 `GET /api/orgs/{id}/groups`（publish/manage，范围外组织 404）拼出。
 
 ### list_targets
 - 入参：`{ server?: string }`（缺省列出全部 profile）

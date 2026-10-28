@@ -40,12 +40,43 @@ fn name_taken(e: sqlx::Error) -> AppError {
     if unique_violation(&e).is_some() { AppError::conflict("name_taken", "群组名已存在") } else { e.into() }
 }
 
-/// 组织级群组 + 调用者有角色的未删除项目的项目群组（不向无权的组织成员暴露其他项目的群组/项目名）
-pub async fn list_groups(State(st): State<AppState>, c: Caller, P(org_id): P<Uuid>, Q(q): Q<PageQuery>) -> J {
+/// 项目群组不能与本组织的组织级群组同名，组织级群组也不能与本组织任一项目群组同名（避免按名称解析时受众漂移）。
+/// 同名两类各有部分唯一索引兜底；跨类没有约束能表达，用组织级事务 advisory 锁串行化同组织的建/改名。
+async fn check_name_clash(conn: &mut sqlx::PgConnection, org_id: Uuid, name: &str, project_group: bool) -> AppResult<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('groups-name:' || $1::text, 0))").bind(org_id).execute(&mut *conn).await?;
+    let clash: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM groups WHERE org_id = $1 AND lower(name) = lower($2) AND (project_id IS NULL) = $3)",
+    )
+    .bind(org_id)
+    .bind(name)
+    .bind(project_group)
+    .fetch_one(conn)
+    .await?;
+    match (clash, project_group) {
+        (false, _) => Ok(()),
+        (true, true) => Err(AppError::conflict("name_conflicts_org_group", "本组织已有同名的组织级群组，项目群组请换个名字")),
+        (true, false) => Err(AppError::conflict("name_conflicts_project_group", "本组织已有同名的项目群组，组织级群组请换个名字")),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ListGroupsQuery {
+    /// "project"：同时返回调用者有角色的未删除项目的项目群组
+    include: Option<String>,
+}
+
+/// 默认只返回组织级群组（与 0006 之前一致，旧客户端行为不变）；?include=project 时附带调用者有角色的项目的项目群组
+/// （不向无权的组织成员暴露其他项目的群组/项目名）
+pub async fn list_groups(State(st): State<AppState>, c: Caller, P(org_id): P<Uuid>, Q(q): Q<PageQuery>, Q(lq): Q<ListGroupsQuery>) -> J {
     let ctx = require_org(&st.db, &c, org_id, OrgRole::Member, PUBLISH_OR_MANAGE).await?;
+    let with_project = match lq.include.as_deref() {
+        None | Some("") => false,
+        Some("project") => true,
+        Some(_) => return Err(AppError::field("include", "取值只能是 project")),
+    };
     let rows: Vec<GroupRow> = sqlx::query_as(&format!(
         "{GROUP_SELECT} WHERE g.org_id = $1 AND ($2::uuid IS NULL OR g.id < $2)
-            AND (g.project_id IS NULL OR (pr.deleted_at IS NULL AND {} IS NOT NULL))
+            AND (g.project_id IS NULL OR ($6 AND pr.deleted_at IS NULL AND {} IS NOT NULL))
           ORDER BY g.id DESC LIMIT $3",
         role_expr("g.org_id", "g.project_id", "$4", "$5::text")
     ))
@@ -54,6 +85,7 @@ pub async fn list_groups(State(st): State<AppState>, c: Caller, P(org_id): P<Uui
     .bind(q.limit() + 1)
     .bind(ctx.user_id())
     .bind(ctx.role().as_str())
+    .bind(with_project)
     .fetch_all(&st.db)
     .await?;
     let (rows, next) = paginate(rows, q.limit(), |r| r.0.to_string());
@@ -68,10 +100,14 @@ pub struct GroupReq {
 
 pub async fn create_group(State(st): State<AppState>, c: Caller, P(org_id): P<Uuid>, JsonBody(r): JsonBody<GroupReq>) -> AppResult<(StatusCode, Json<Value>)> {
     let ctx = require_org(&st.db, &c, org_id, OrgRole::Admin, MANAGE).await?;
+    if c.p.pat().is_some_and(|p| p.project_id.is_some()) {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "project_scoped_token", "限定了项目的令牌不能创建组织级群组，请使用不限项目的令牌"));
+    }
     let name = text_field("name", r.name.as_deref().unwrap_or(""), 1, 100)?;
     let desc = r.description.as_deref().map(|d| text_field("description", d, 0, 2000)).transpose()?.unwrap_or_default();
     let id = new_id();
     let mut tx = st.db.begin().await?;
+    check_name_clash(&mut tx, ctx.org_id(), &name, false).await?;
     sqlx::query("INSERT INTO groups (id, org_id, name, description, created_by) VALUES ($1, $2, $3, $4, $5)")
         .bind(id)
         .bind(ctx.org_id())
@@ -140,6 +176,7 @@ pub async fn create_project_group(
             uids.push(uid);
         }
     }
+    check_name_clash(&mut tx, ctx.org_id(), &name, true).await?;
     sqlx::query("INSERT INTO groups (id, org_id, project_id, name, description, created_by) VALUES ($1, $2, $3, $4, $5, $6)")
         .bind(id)
         .bind(ctx.org_id())
@@ -170,7 +207,7 @@ pub async fn create_project_group(
         "group.create",
         "group",
         Some(id),
-        json!({ "project_id": ctx.project_id(), "role": role, "members": uids.len() }),
+        json!({ "project_id": ctx.project_id(), "role": role, "member_ids": uids }),
     )
     .await?;
     tx.commit().await?;
@@ -190,6 +227,9 @@ pub async fn update_group(State(st): State<AppState>, c: Caller, P(id): P<Uuid>,
     let name = r.name.as_deref().map(|n| text_field("name", n, 1, 100)).transpose()?;
     let desc = r.description.as_deref().map(|d| text_field("description", d, 0, 2000)).transpose()?;
     let mut tx = st.db.begin().await?;
+    if let Some(n) = &name {
+        check_name_clash(&mut tx, ctx.org_id(), n, ctx.project_id().is_some()).await?;
+    }
     sqlx::query("UPDATE groups SET name = COALESCE($3, name), description = COALESCE($4, description), updated_at = now() WHERE org_id = $1 AND id = $2")
         .bind(ctx.org_id())
         .bind(ctx.group_id())

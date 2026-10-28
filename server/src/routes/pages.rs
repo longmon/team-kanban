@@ -102,8 +102,7 @@ fn counts_sql(x: &str) -> String {
 }
 
 /// list_pages / activity 共用的可见性条件（作用于 page_select 的输出列）
-/// 与 authz::PageRow::can_view 对 project/groups 一致：受众群组成员即使没有项目角色也能看到 groups 页面
-const VISIBLE: &str = "(role IN ('admin', 'editor') OR (visibility = 'groups' AND in_group) OR (role IS NOT NULL AND visibility <> 'groups'))";
+const VISIBLE: &str = "(role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group)))";
 
 impl PageListRow {
     fn json(&self, public_url: &str) -> Value {
@@ -228,7 +227,7 @@ pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQue
             page_select()
         )
     };
-    let page_cols = "x.title, x.page_type, x.project_id, (COALESCE(x.role IN ('admin', 'editor'), false) OR x.results_visible_to = 'viewers') AS can_view_results";
+    let page_cols = "x.title, x.page_type, x.project_id, (x.role IN ('admin', 'editor') OR x.results_visible_to = 'viewers') AS can_view_results";
     let sql = format!(
         "SELECT e.etype, e.at, e.version, e.page_id, e.title, e.page_type, e.project_id, pr.name AS project_name,
                 u.display_name AS actor_name, e.nickname, e.can_view_results

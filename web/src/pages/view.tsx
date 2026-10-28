@@ -452,7 +452,7 @@ function ManagePanel({ view, onSaved }: { view: PageView; onSaved: () => void })
     return c ?? (await get<Page>(`/pages/${id}`));
   }, [id, view.page.updated_at]);
   const inOrg = !!me?.orgs.some((o) => o.id === view.page.org.id);
-  const groups = useLoad(() => (inOrg ? get<Paged<Group>>(`/orgs/${view.page.org.id}/groups?limit=200`) : Promise.resolve({ items: [], next_cursor: null })), [view.page.org.id, inOrg]);
+  const groups = useLoad(() => (inOrg ? get<Paged<Group>>(`/orgs/${view.page.org.id}/groups?limit=200&include=project`) : Promise.resolve({ items: [], next_cursor: null })), [view.page.org.id, inOrg]);
   return (
     <section aria-label="管理" className="page-enter grid gap-8">
       <div className="grid gap-3">

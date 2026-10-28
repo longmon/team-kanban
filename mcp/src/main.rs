@@ -659,10 +659,22 @@ impl Kanban {
         for org in self.orgs(s, &projects).await {
             let id = org["id"].as_str().unwrap_or_default();
             let mut o = org.clone();
+            // 各项目的群组并发查询（current_thread 运行时上交错 IO），按原顺序拼回
+            let mine: Vec<&Value> = projects.iter().filter(|p| p["org"]["id"] == org["id"]).collect();
+            let mut set = tokio::task::JoinSet::new();
+            for (i, p) in mine.iter().enumerate() {
+                let (k, s, pid) = (self.clone(), s.clone(), p["id"].as_str().unwrap_or_default().to_string());
+                set.spawn(async move { (i, k.project_groups(&s, &pid).await) });
+            }
+            let mut results: Vec<Option<R<Vec<Value>>>> = (0..mine.len()).map(|_| None).collect();
+            while let Some(r) = set.join_next().await {
+                let (i, g) = r.map_err(|e| format!("internal_error: {e}"))?;
+                results[i] = Some(g);
+            }
             let mut ps = vec![];
-            for p in projects.iter().filter(|p| p["org"]["id"] == org["id"]) {
+            for (p, groups) in mine.iter().zip(results) {
                 let mut v = json!({ "id": p["id"], "name": p["name"], "slug": p["slug"], "role": p["role"] });
-                match self.project_groups(s, p["id"].as_str().unwrap_or_default()).await {
+                match groups.unwrap_or_else(|| Err("internal_error: 未返回".into())) {
                     Ok(g) => {
                         v["groups"] = g
                             .iter()
@@ -762,13 +774,7 @@ impl Kanban {
             let mut hits = vec![];
             for o in unique_orgs(&cands) {
                 let id = o["id"].as_str().unwrap_or_default().to_string();
-                // 只认组织级群组和候选项目自己的项目群组
-                let gs: Vec<Value> = self
-                    .org_groups(s, &id)
-                    .await?
-                    .into_iter()
-                    .filter(|g| g["project_id"].is_null() || cands.iter().any(|p| p["id"] == g["project_id"]))
-                    .collect();
+                let gs = self.org_groups(s, &id).await?;
                 if names
                     .iter()
                     .all(|n| gs.iter().any(|g| eq_ci(&g["name"], n)))
@@ -856,10 +862,15 @@ impl Kanban {
         if groups.iter().all(|g| is_uuid(g)) {
             return Ok(groups.into_iter().map(|g| g.to_ascii_lowercase()).collect());
         }
-        let all = match cached {
+        let mut all = match cached {
             Some(c) => c,
             None => self.org_groups(s, org_id).await?,
         };
+        // 项目群组只从 GET /projects/{id}/groups 取（组织群组列表默认只有组织级群组）；旧服务端失败时只按组织级解析
+        if let Some(pid) = project_id {
+            let own = self.project_groups(s, pid).await.unwrap_or_default();
+            all.extend(own.into_iter().filter(|g| g["project_id"].as_str() == Some(pid)));
+        }
         groups
             .into_iter()
             .map(|g| {

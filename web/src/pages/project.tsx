@@ -262,7 +262,7 @@ function ProjectGroups({ org, project, admin }: { org: Org; project: Project; ad
                 </div>
                 <div className="list-stat">{g.member_count !== undefined && <><b>{g.member_count}</b> 人</>}</div>
                 <div className="list-actions">
-                  {admin ? <NativeSelect aria-label="角色" value={g.role} options={PROJECT_ROLES} onChange={(r) => setRole(g.group.id, r)} /> : ROLE_LABEL[g.role]}
+                  {admin ? <NativeSelect aria-label="角色" value={g.role} options={own ? PROJECT_ROLES.filter(([r]) => r !== "admin") : PROJECT_ROLES} onChange={(r) => setRole(g.group.id, r)} /> : ROLE_LABEL[g.role]}
                   {own && <Button size="sm" variant="ghost" onClick={() => setOpen(open === g.group.id ? null : g.group.id)}>{open === g.group.id ? "收起" : "成员"}</Button>}
                   {admin && !own && (
                     <Button size="sm" variant="ghost-destructive" disabled={a.busy}
