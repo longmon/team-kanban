@@ -1,6 +1,6 @@
 // api.md §1.3 等共用对象
 export type UserBrief = { id: string; display_name: string };
-export type UserFull = { id: string; email: string; display_name: string; email_verified: boolean; created_at: string };
+export type UserFull = { id: string; email: string; display_name: string; email_verified: boolean; created_at: string; must_change_password?: boolean };
 export type OrgRole = "owner" | "admin" | "member";
 export type ProjectRole = "admin" | "editor" | "viewer";
 export type Visibility = "public" | "org" | "project" | "groups";
@@ -70,7 +70,8 @@ export type Paged<T> = { items: T[]; next_cursor: string | null };
 export type Me = { user: UserFull; csrf_token: string; orgs: Org[] };
 
 type Member = { user: UserBrief & { email: string } };
-export type OrgMember = Member & { role: OrgRole; joined_at: string };
+/** must_change_password：仅 owner/admin 拿到，管理员建的账号尚未改过初始密码 */
+export type OrgMember = Member & { role: OrgRole; joined_at: string; must_change_password?: boolean };
 export type ProjectMember = Member & { role: ProjectRole; joined_at: string };
 export type GroupMember = Member & { joined_at: string };
 /** GET /projects/{id}/groups：本项目群组 + 已授权的组织级群组；active = 4 小时内有页面发给它 */

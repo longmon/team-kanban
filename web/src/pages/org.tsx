@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 import { FolderKanban, Mail, ScrollText, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,11 +11,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, qs } from "../api";
 import { Link, navigate } from "../router";
 import {
-  AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Page, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
+  AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Notice, Page, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
   PageHeader, Panel, ROLE_LABEL, TableCard, toast, useAction, useLoad, usePaged, useSession, useTab, loadMyProjects,
 } from "../ui";
 import { autoSlug, SLUG_RE, Tile, TILES, useSlugFallback } from "./home";
-import type { AuditEntry, Group, GroupMember, Invite, Org, OrgMember, OrgRole, Project } from "../types";
+import type { AuditEntry, Group, GroupMember, Invite, Org, OrgMember, OrgRole, Project, ProjectRole } from "../types";
 
 const isAdmin = (o: Org) => o.my_role === "owner" || o.my_role === "admin";
 
@@ -228,9 +229,20 @@ function Members({ org }: { org: Org }) {
   const roles: [OrgRole, string][] = (org.my_role === "owner" ? ["owner", "admin", "member"] as OrgRole[] : ["admin", "member"] as OrgRole[]).map((r) => [r, ROLE_LABEL[r]]);
   const canEdit = (m: OrgMember) => org.my_role === "owner" || (org.my_role === "admin" && m.role !== "owner");
   const canRemove = (m: OrgMember) => org.my_role === "owner" || (org.my_role === "admin" && m.role === "member");
+  const [creating, setCreating] = useState(false);
+  const [secret, setSecret] = useState<{ email: string; password: string | null } | null>(null);
+  const resetPw = (m: OrgMember) =>
+    confirm(`为 ${m.user.display_name} 重新生成一次性密码？旧的初始密码立即失效。`) &&
+    a.run(async () => {
+      const r = await post<{ generated_password: string }>(`/orgs/${org.id}/members/${m.user.id}/reset-password`, {});
+      setSecret({ email: m.user.email, password: r.generated_password });
+    });
   return (
     <div className="stack">
-      <Input className="search" placeholder="搜索邮箱或名字" value={q} onChange={(e) => setQ(e.target.value)} />
+      <div className="row wrap toolbar">
+        <Input className="search" placeholder="搜索邮箱或名字" value={q} onChange={(e) => setQ(e.target.value)} />
+        {isAdmin(org) && <Button size="sm" onClick={() => setCreating(true)}>新建账号</Button>}
+      </div>
       <ErrorBox error={list.error || a.error} />
       <TableCard><Table>
         <TableHeader><TableRow><TableHead>成员</TableHead><TableHead>角色</TableHead><TableHead>加入时间</TableHead><TableHead /></TableRow></TableHeader>
@@ -239,7 +251,11 @@ function Members({ org }: { org: Org }) {
             const self = m.user.id === me!.user.id;
             return (
               <TableRow key={m.user.id}>
-                <TableCell><div className="font-medium">{m.user.display_name}{self && <span className="muted font-normal">（我）</span>}</div><div className="muted small">{m.user.email}</div></TableCell>
+                <TableCell>
+                  <div className="font-medium">{m.user.display_name}{self && <span className="muted font-normal">（我）</span>}
+                    {m.must_change_password && <Badge variant="warning" className="ml-1.5">待改初始密码</Badge>}</div>
+                  <div className="muted small">{m.user.email}</div>
+                </TableCell>
                 <TableCell>
                   {!self && canEdit(m) ? (
                     <NativeSelect aria-label="角色" value={m.role} options={m.role === "owner" && org.my_role !== "owner" ? [["owner", ROLE_LABEL.owner]] : roles}
@@ -248,6 +264,9 @@ function Members({ org }: { org: Org }) {
                 </TableCell>
                 <TableCell>{fmtTime(m.joined_at)}</TableCell>
                 <TableCell className="text-right">
+                  {!self && canRemove(m) && m.must_change_password && (
+                    <Button size="sm" variant="ghost" disabled={a.busy} onClick={() => resetPw(m)}>重置密码</Button>
+                  )}
                   {!self && canRemove(m) && (
                     <Button size="sm" variant="ghost-destructive" disabled={a.busy}
                       onClick={() => confirm(`将 ${m.user.display_name} 移出组织？`) && a.run(async () => (await del(`/orgs/${org.id}/members/${m.user.id}`), list.reload()))}>移除</Button>
@@ -259,7 +278,112 @@ function Members({ org }: { org: Org }) {
         </TableBody>
       </Table></TableCard>
       <MoreButton p={list} />
+      {creating && <NewAccountDialog org={org} onClose={() => setCreating(false)} onCreated={(email, password) => (setCreating(false), setSecret({ email, password }), list.reload())} />}
+      <Dialog open={!!secret} onOpenChange={(o) => !o && setSecret(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>账号已就绪</DialogTitle>
+            <DialogDescription>把邮箱和初始密码交给对方；对方首次登录后必须先修改密码。</DialogDescription>
+          </DialogHeader>
+          <p className="text-sm"><span className="text-muted-foreground">登录邮箱 </span>{secret?.email}</p>
+          {secret?.password ? (
+            <div className="stack">
+              <Notice tone="warning">初始密码只显示这一次，关闭后无法再查看，请立即复制。</Notice>
+              <CopyText text={secret.password} />
+            </div>
+          ) : <p className="text-sm text-muted-foreground">初始密码为你刚才填写的密码。</p>}
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+/** 管理员直接建账号（api.md §4.2）：组织角色、可选项目及角色、群组（组织级或所选项目的项目群组）、初始密码手填或系统生成 */
+function NewAccountDialog({ org, onClose, onCreated }: { org: Org; onClose: () => void; onCreated: (email: string, password: string | null) => void }) {
+  const projects = useLoad(() => get<{ items: Project[] }>(`/orgs/${org.id}/projects?limit=200`), [org.id]);
+  const groups = useLoad(() => get<{ items: Group[] }>(`/orgs/${org.id}/groups?include=project&limit=200`), [org.id]);
+  const [f, setF] = useState({ email: "", display_name: "", role: "member", pw: "generate", password: "" });
+  const [proj, setProj] = useState<Record<string, ProjectRole>>({});
+  const [grp, setGrp] = useState<string[]>([]);
+  const a = useAction();
+  const roleOpts: [string, string][] = (org.my_role === "owner" ? ["member", "admin"] : ["member"]).map((r) => [r, ROLE_LABEL[r]]);
+  const visibleGroups = (groups.data?.items ?? []).filter((g) => !g.project_id || g.project_id in proj);
+  const toggleProj = (id: string, on: boolean) => {
+    const next = { ...proj };
+    if (on) next[id] = "viewer";
+    else delete next[id];
+    setProj(next);
+  };
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    a.run(async () => {
+      const keep = new Set(visibleGroups.map((g) => g.id));
+      const r = await post<{ member: OrgMember; generated_password: string | null }>(`/orgs/${org.id}/members/accounts`, {
+        email: f.email, display_name: f.display_name, role: f.role,
+        password: f.pw === "manual" ? f.password : undefined,
+        projects: Object.entries(proj).map(([project_id, role]) => ({ project_id, role })),
+        group_ids: grp.filter((id) => keep.has(id)),
+      });
+      onCreated(r.member.user.email, r.generated_password);
+    });
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>新建账号</DialogTitle>
+          <DialogDescription>直接为同事建好账号并加入本组织，无需邮件验证；对方首次登录后必须修改密码。已注册的人请改用邀请。</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="form">
+          <Field label="邮箱"><Input type="email" required value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field>
+          <Field label="姓名"><Input required maxLength={50} value={f.display_name} onChange={(e) => setF({ ...f, display_name: e.target.value })} /></Field>
+          <Field label="组织角色" hint={org.my_role === "owner" ? undefined : "只有所有者能直接授予管理员"}>
+            <NativeSelect aria-label="组织角色" value={f.role} onChange={(v) => setF({ ...f, role: v })} options={roleOpts} />
+          </Field>
+          <Field label="初始密码">
+            <NativeSelect aria-label="初始密码" value={f.pw} onChange={(v) => setF({ ...f, pw: v })}
+              options={[["generate", "系统生成一次性密码（推荐）"], ["manual", "我来填写"]]} />
+          </Field>
+          {f.pw === "manual" && (
+            <Field label="密码" hint="10–128 个字符">
+              <Input type="text" autoComplete="new-password" required minLength={10} maxLength={128} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} />
+            </Field>
+          )}
+          <div className="grid gap-2">
+            <span className="text-[13px] font-medium">加入项目（可选）</span>
+            <div className="grid gap-1.5">
+              {projects.data?.items.length === 0 && <span className="muted small">本组织还没有项目</span>}
+              {projects.data?.items.map((p) => (
+                <div key={p.id} className="flex items-center justify-between gap-2">
+                  <CheckField checked={p.id in proj} onChange={(on) => toggleProj(p.id, on)}>{p.name}</CheckField>
+                  {p.id in proj && (
+                    <NativeSelect size="sm" className="w-28" aria-label={`${p.name} 角色`} value={proj[p.id]}
+                      onChange={(v) => setProj({ ...proj, [p.id]: v })} options={(["viewer", "editor", "admin"] as ProjectRole[]).map((r) => [r, ROLE_LABEL[r]])} />
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="grid gap-2">
+            <span className="text-[13px] font-medium">加入群组（可选）</span>
+            <div className="grid gap-1.5">
+              {visibleGroups.length === 0 && <span className="muted small">暂无可选群组</span>}
+              {visibleGroups.map((g) => (
+                <CheckField key={g.id} checked={grp.includes(g.id)} onChange={(on) => setGrp(on ? [...grp, g.id] : grp.filter((x) => x !== g.id))}>
+                  {g.name}{g.project && <span className="muted small">（项目：{g.project.name}）</span>}
+                </CheckField>
+              ))}
+            </div>
+            <span className="text-xs text-muted-foreground">组织级群组，或上面所选项目的项目群组</span>
+          </div>
+          <ErrorBox error={projects.error || groups.error || a.error} />
+          <div className="form-actions">
+            <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
+            <Button type="submit" loading={a.busy} disabled={a.busy}>创建账号</Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

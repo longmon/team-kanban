@@ -138,6 +138,35 @@ export function ResetPassword() {
   );
 }
 
+/** 管理员建的账号首次登录：改完密码前其它接口都返回 403 password_change_required，整站只显示这一页 */
+export function ForceChangePassword() {
+  const { me, refresh, setMe } = useSession();
+  const [pw, setPw] = useState({ current_password: "", new_password: "" });
+  const a = useAction();
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    a.run(async () => {
+      await post("/auth/password/change", pw);
+      await refresh();
+      navigate("/", true);
+    });
+  };
+  const logout = () => a.run(async () => (await post("/auth/logout"), setMe(null), navigate("/login", true)));
+  return (
+    <AuthCard title="请先修改密码" desc={`${me?.user.email ?? ""} 是管理员为你创建的账号，首次登录需要换成你自己的密码。`}>
+      <form onSubmit={submit} className="grid gap-4">
+        <Field label="初始密码"><Input type="password" autoComplete="current-password" required value={pw.current_password} onChange={(e) => setPw({ ...pw, current_password: e.target.value })} /></Field>
+        <Field label="新密码" hint="10–128 个字符，不能与初始密码相同">
+          <Input type="password" autoComplete="new-password" required minLength={10} maxLength={128} value={pw.new_password} onChange={(e) => setPw({ ...pw, new_password: e.target.value })} />
+        </Field>
+        <ErrorBox error={a.error} />
+        <Button type="submit" loading={a.busy} disabled={a.busy} className="mt-1 w-full">修改密码并进入</Button>
+      </form>
+      <Foot><button type="button" className="link" onClick={logout}>退出登录</button></Foot>
+    </AuthCard>
+  );
+}
+
 export function VerifyEmail() {
   const token = useQuery("token") ?? "";
   const { refresh } = useSession();

@@ -15,7 +15,10 @@ use crate::{
         role_expr,
     },
     error::{AppError, AppResult, JsonBody, P, Q, unique_violation},
-    util::{PageQuery, like_prefix, new_id, paginate, slug_field, text_field, time_cursor, ts},
+    ratelimit::HOUR,
+    util::{
+        PageQuery, email_field, hash_password, like_prefix, new_id, paginate, password_field, random_token, slug_field, text_field, time_cursor, ts,
+    },
 };
 
 type J = AppResult<Json<Value>>;
@@ -148,8 +151,8 @@ pub async fn list_members(State(st): State<AppState>, c: Caller, P(org_id): P<Uu
     let ctx = require_org(&st.db, &c, org_id, OrgRole::Member, Allow::Session).await?;
     let cur = page.cursor_time()?;
     let pat = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| like_prefix(&s.to_lowercase()));
-    let rows: Vec<MemberRow> = sqlx::query_as(
-        "SELECT u.id, u.display_name, u.email, m.role, m.created_at FROM memberships m JOIN users u ON u.id = m.user_id
+    let rows: Vec<(Uuid, String, String, String, DateTime<Utc>, bool)> = sqlx::query_as(
+        "SELECT u.id, u.display_name, u.email, m.role, m.created_at, u.must_change_password FROM memberships m JOIN users u ON u.id = m.user_id
           WHERE m.org_id = $1 AND ($2::text IS NULL OR u.email LIKE $2 OR lower(u.display_name) LIKE $2)
             AND ($3::timestamptz IS NULL OR (m.created_at, m.user_id) < ($3, $4))
           ORDER BY m.created_at DESC, m.user_id DESC LIMIT $5",
@@ -162,7 +165,19 @@ pub async fn list_members(State(st): State<AppState>, c: Caller, P(org_id): P<Uu
     .fetch_all(&st.db)
     .await?;
     let (rows, next) = paginate(rows, page.limit(), |r| time_cursor(&r.4, &r.0));
-    Ok(Json(list(rows.iter().map(|(id, n, e, r, t)| member_json(*id, n, e, Some(r), t)).collect(), next)))
+    // 待改密（管理员建的账号尚未改过初始密码）只给 owner/admin 看，供「重置一次性密码」
+    let admin = ctx.role() >= OrgRole::Admin;
+    let items = rows
+        .iter()
+        .map(|(id, n, e, r, t, pending)| {
+            let mut v = member_json(*id, n, e, Some(r), t);
+            if admin {
+                v["must_change_password"] = json!(pending);
+            }
+            v
+        })
+        .collect();
+    Ok(Json(list(items, next)))
 }
 
 #[derive(Deserialize)]
@@ -245,6 +260,203 @@ pub async fn remove_member(State(st): State<AppState>, c: Caller, P((org_id, use
     audit::log(&mut tx, Some(ctx.org_id()), &c.actor(), action, "user", Some(user_id), json!({ "role": target.as_str() })).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------- 管理员直接建账号
+
+const MAX_ACCOUNT_TARGETS: usize = 50;
+
+/// 初始密码：给了就按注册的强度规则校验；没给就用 CSPRNG 生成 20 位 base64url 字符。返回 (明文, 是否系统生成)
+fn initial_password(pw: Option<&str>) -> AppResult<(String, bool)> {
+    match pw.filter(|p| !p.is_empty()) {
+        Some(p) => {
+            password_field("password", p)?;
+            Ok((p.to_string(), false))
+        }
+        None => Ok((random_token()[..20].to_string(), true)),
+    }
+}
+
+fn password_mode(generated: bool) -> &'static str {
+    if generated { "generated" } else { "manual" }
+}
+
+#[derive(Deserialize)]
+pub struct AccountProject {
+    project_id: Uuid,
+    role: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateAccountReq {
+    email: String,
+    display_name: String,
+    role: String,
+    password: Option<String>,
+    #[serde(default)]
+    projects: Vec<AccountProject>,
+    #[serde(default)]
+    group_ids: Vec<Uuid>,
+}
+
+/// 组织 owner/admin 直接建账号：邮箱视为已验证，首次登录必须改密码（auth.rs 拦截）。
+/// 系统生成的密码只在本响应里出现一次，不入库明文、不进审计
+pub async fn create_account(State(st): State<AppState>, c: Caller, P(org_id): P<Uuid>, JsonBody(r): JsonBody<CreateAccountReq>) -> AppResult<(StatusCode, Json<Value>)> {
+    let ctx = require_org(&st.db, &c, org_id, OrgRole::Admin, Allow::Session).await?;
+    st.rl.hit(&format!("create_account:{}", ctx.user_id()), 30, HOUR)?;
+    let email = email_field(&r.email)?;
+    let name = text_field("display_name", &r.display_name, 1, 50)?;
+    // 与组织邀请一致（invites.rs create_invite）：admin 只有 owner 能授予；owner 不能这样建
+    let role = match r.role.as_str() {
+        "member" => OrgRole::Member,
+        "admin" => OrgRole::Admin,
+        _ => return Err(AppError::field("role", "取值必须是 member/admin")),
+    };
+    if role == OrgRole::Admin && ctx.role() < OrgRole::Owner {
+        return Err(AppError::forbidden());
+    }
+    if r.projects.len() > MAX_ACCOUNT_TARGETS || r.group_ids.len() > MAX_ACCOUNT_TARGETS {
+        return Err(AppError::field("body", "项目、群组各最多 50 个"));
+    }
+    let mut pids = Vec::new();
+    let mut proles = Vec::new();
+    for p in &r.projects {
+        let pr = parse_project_role(&p.role)?;
+        if pids.contains(&p.project_id) {
+            return Err(AppError::field("projects", "项目重复"));
+        }
+        pids.push(p.project_id);
+        proles.push(pr.as_str());
+    }
+    let mut gids = r.group_ids.clone();
+    gids.sort();
+    gids.dedup();
+    let (password, generated) = initial_password(r.password.as_deref())?;
+    // 邮箱已存在：不改其密码、不回显其信息；本组织成员 → already_member，其他已注册用户 → 改用邀请
+    let existing: Option<bool> = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM memberships m WHERE m.org_id = $1 AND m.user_id = u.id) FROM users u WHERE u.email = $2",
+    )
+    .bind(ctx.org_id())
+    .bind(&email)
+    .fetch_optional(&st.db)
+    .await?;
+    let registered = || AppError::conflict("email_registered", "该邮箱已注册，请改用邀请把对方加入组织");
+    match existing {
+        Some(true) => return Err(AppError::conflict("already_member", "该邮箱已是本组织成员")),
+        Some(false) => return Err(registered()),
+        None => {}
+    }
+    let hash = hash_password(password.clone()).await?;
+    let mut tx = st.db.begin().await?;
+    // 项目必须属于本组织且未删除；群组必须属于本组织，项目群组只能是本次所选项目的
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM projects WHERE org_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
+        .bind(ctx.org_id())
+        .bind(&pids)
+        .fetch_one(&mut *tx)
+        .await?;
+    if n as usize != pids.len() {
+        return Err(AppError::field("projects", "包含不存在或不属于本组织的项目"));
+    }
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM groups WHERE org_id = $1 AND id = ANY($2) AND (project_id IS NULL OR project_id = ANY($3))")
+        .bind(ctx.org_id())
+        .bind(&gids)
+        .bind(&pids)
+        .fetch_one(&mut *tx)
+        .await?;
+    if n as usize != gids.len() {
+        return Err(AppError::field("group_ids", "包含不存在、不属于本组织或不属于所选项目的群组"));
+    }
+    let id = new_id();
+    sqlx::query(
+        "INSERT INTO users (id, email, password_hash, display_name, email_verified_at, must_change_password) VALUES ($1, $2, $3, $4, now(), true)",
+    )
+    .bind(id)
+    .bind(&email)
+    .bind(hash)
+    .bind(&name)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| if unique_violation(&e).is_some() { registered() } else { e.into() })?;
+    sqlx::query("INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, $3)").bind(ctx.org_id()).bind(id).bind(role.as_str()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO project_members (org_id, project_id, user_id, role) SELECT $1, unnest($2::uuid[]), $3, unnest($4::text[])")
+        .bind(ctx.org_id())
+        .bind(&pids)
+        .bind(id)
+        .bind(&proles)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO group_members (org_id, group_id, user_id) SELECT $1, unnest($2::uuid[]), $3")
+        .bind(ctx.org_id())
+        .bind(&gids)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    let projects: Vec<Value> = pids.iter().zip(&proles).map(|(p, r)| json!({ "project_id": p, "role": r })).collect();
+    audit::log(
+        &mut tx,
+        Some(ctx.org_id()),
+        &c.actor(),
+        "member.account_create",
+        "user",
+        Some(id),
+        json!({ "role": role.as_str(), "projects": projects, "group_ids": gids, "password": password_mode(generated) }),
+    )
+    .await?;
+    tx.commit().await?;
+    let joined: DateTime<Utc> =
+        sqlx::query_scalar("SELECT created_at FROM memberships WHERE org_id = $1 AND user_id = $2").bind(ctx.org_id()).bind(id).fetch_one(&st.db).await?;
+    let mut member = member_json(id, &name, &email, Some(role.as_str()), &joined);
+    member["must_change_password"] = json!(true);
+    Ok((StatusCode::CREATED, Json(json!({ "member": member, "generated_password": generated.then_some(password) }))))
+}
+
+#[derive(Deserialize)]
+pub struct ResetAccountReq {
+    password: Option<String>,
+}
+
+/// 重置管理员所建、尚未改过密码（must_change_password）的账号的一次性密码；已正常使用的账号一律 409。
+/// 权限同移除成员：owner 可重置任何人，admin 只能重置 member；不能重置自己
+pub async fn reset_account_password(
+    State(st): State<AppState>,
+    c: Caller,
+    P((org_id, user_id)): P<(Uuid, Uuid)>,
+    JsonBody(r): JsonBody<ResetAccountReq>,
+) -> J {
+    let ctx = require_org(&st.db, &c, org_id, OrgRole::Admin, Allow::Session).await?;
+    st.rl.hit(&format!("create_account:{}", ctx.user_id()), 30, HOUR)?;
+    let (password, generated) = initial_password(r.password.as_deref())?;
+    let target: Option<(String, bool)> = sqlx::query_as(
+        "SELECT m.role, u.must_change_password FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.org_id = $1 AND m.user_id = $2",
+    )
+    .bind(ctx.org_id())
+    .bind(user_id)
+    .fetch_optional(&st.db)
+    .await?;
+    let (role, pending) = target.ok_or_else(AppError::not_found)?;
+    if user_id == ctx.user_id() || !(ctx.role() == OrgRole::Owner || role == "member") {
+        return Err(AppError::forbidden());
+    }
+    let in_use = || AppError::conflict("password_in_use", "该账号已改过密码、正常使用中，不能重置（请本人用「忘记密码」）");
+    if !pending {
+        return Err(in_use());
+    }
+    let hash = hash_password(password.clone()).await?;
+    let mut tx = st.db.begin().await?;
+    let n = sqlx::query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND must_change_password")
+        .bind(user_id)
+        .bind(hash)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(in_use());
+    }
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(user_id).execute(&mut *tx).await?;
+    audit::log(&mut tx, Some(ctx.org_id()), &c.actor(), "member.password_reset", "user", Some(user_id), json!({ "password": password_mode(generated) }))
+        .await?;
+    tx.commit().await?;
+    Ok(Json(json!({ "generated_password": generated.then_some(password) })))
 }
 
 // ---------------------------------------------------------------- 审计

@@ -151,13 +151,20 @@ async fn resolve(st: &AppState, req: &Parts) -> AppResult<Caller> {
     let ip = client_ip(h, req.extensions.get::<ConnectInfo<SocketAddr>>(), st.cfg.trust_proxy);
     let unsafe_method = !matches!(req.method, Method::GET | Method::HEAD | Method::OPTIONS);
 
+    let mut must_change_password = false;
     let p = if let Some(auth) = h.get(header::AUTHORIZATION) {
         // 带 Authorization 只认 PAT，无效即 401，不回落 cookie
         let token = auth.to_str().ok().and_then(|v| v.strip_prefix("Bearer ")).map(str::trim).filter(|t| t.starts_with("arp_"));
         let token = token.ok_or_else(AppError::unauthenticated)?;
         Principal::User(load_pat(&st.db, token).await?.ok_or_else(AppError::unauthenticated)?)
     } else if let Some(token) = cookie(h, st.cfg.session_cookie_name()) {
-        load_session(&st.db, token).await?.map_or(Principal::Anonymous, Principal::User)
+        match load_session(&st.db, token).await? {
+            Some((u, must_change)) => {
+                must_change_password = must_change;
+                Principal::User(u)
+            }
+            None => Principal::Anonymous,
+        }
     } else {
         Principal::Anonymous
     };
@@ -180,17 +187,28 @@ async fn resolve(st: &AppState, req: &Parts) -> AppResult<Caller> {
         Principal::User(u) => st.rl.hit(&format!("api:user:{}", u.user_id), 600, MIN)?,
         Principal::Anonymous => {}
     }
+    // 管理员建的账号首次登录必须先改密码：改完前只放行查看自己、改密码、登出
+    if must_change_password {
+        let path = req.uri.path();
+        let path = path.strip_prefix("/api").unwrap_or(path);
+        let allowed = matches!((&req.method, path), (&Method::GET, "/auth/me") | (&Method::POST, "/auth/password/change" | "/auth/logout"));
+        if !allowed {
+            return Err(AppError::new(axum::http::StatusCode::FORBIDDEN, "password_change_required", "首次登录请先修改密码"));
+        }
+    }
     Ok(Caller { p, ip })
 }
 
-async fn load_session(db: &PgPool, token: &str) -> AppResult<Option<UserPrincipal>> {
-    let row: Option<(Uuid, Uuid, String, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT id, user_id, csrf_token, last_seen_at FROM sessions WHERE token_hash = $1 AND expires_at > now()",
+/// 返回 (会话主体, 是否必须先改密码)
+async fn load_session(db: &PgPool, token: &str) -> AppResult<Option<(UserPrincipal, bool)>> {
+    let row: Option<(Uuid, Uuid, String, DateTime<Utc>, bool)> = sqlx::query_as(
+        "SELECT s.id, s.user_id, s.csrf_token, s.last_seen_at, u.must_change_password FROM sessions s JOIN users u ON u.id = s.user_id
+          WHERE s.token_hash = $1 AND s.expires_at > now()",
     )
     .bind(sha256(token))
     .fetch_optional(db)
     .await?;
-    let Some((session_id, user_id, csrf, last_seen)) = row else { return Ok(None) };
+    let Some((session_id, user_id, csrf, last_seen, must_change)) = row else { return Ok(None) };
     // 滑动续期，最多每小时写一次
     if Utc::now() - last_seen > Duration::hours(1) {
         sqlx::query("UPDATE sessions SET last_seen_at = now(), expires_at = now() + make_interval(days => $2) WHERE id = $1")
@@ -199,7 +217,7 @@ async fn load_session(db: &PgPool, token: &str) -> AppResult<Option<UserPrincipa
             .execute(db)
             .await?;
     }
-    Ok(Some(UserPrincipal { user_id, via: Via::Session { session_id, csrf } }))
+    Ok(Some((UserPrincipal { user_id, via: Via::Session { session_id, csrf } }, must_change)))
 }
 
 type PatRow = (Uuid, Uuid, Option<Uuid>, Option<Uuid>, Vec<String>, Option<DateTime<Utc>>);

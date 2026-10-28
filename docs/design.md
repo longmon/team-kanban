@@ -78,7 +78,7 @@ Dockerfile docker-compose.yml Caddyfile.example
 
 ### 3.1 账号
 
-**users** — `id uuid PK`、`email text UNIQUE`（CHECK 已小写去空格）、`password_hash text`、`display_name text(1..50)`、`email_verified_at timestamptz?`、`created_at`、`updated_at`。
+**users** — `id uuid PK`、`email text UNIQUE`（CHECK 已小写去空格）、`password_hash text`、`display_name text(1..50)`、`email_verified_at timestamptz?`、`must_change_password bool NOT NULL DEFAULT false`（0007：管理员建的账号为 true，改密前会话只能看自己/改密码/登出）、`created_at`、`updated_at`。
 扩展余地：接 OAuth 时新增 `user_identities(user_id, provider, subject, UNIQUE(provider, subject))`，`password_hash` 改可空。现在不建。
 
 **sessions** — `id`、`user_id → users CASCADE`、`token_hash bytea UNIQUE`、`csrf_token text`、`ip inet`、`user_agent text`、`created_at`、`last_seen_at`、`expires_at`。索引 `user_id`、`expires_at`。
@@ -178,6 +178,8 @@ project_role(user, project) =
 | 修改组织名称/slug | ✓ | ✓ | |
 | 删除组织（软删） | ✓ | | |
 | 邀请成员（role=member/admin） | ✓ | ✓（只能邀 member） | |
+| 直接建账号（`POST .../members/accounts`，可同时加入项目/群组；不能建 owner） | ✓ | ✓（只能建 member） | |
+| 重置管理员所建、尚未改密账号的一次性密码 | ✓ | ✓（仅 member） | |
 | 修改成员角色 | ✓（任意，含设 owner） | ✓（仅 member↔admin，不能动 owner） | |
 | 移除成员 | ✓ | ✓（不能移除 owner/admin） | |
 | 退出组织 | ✓（不能是最后一个 owner） | ✓ | ✓ |
@@ -330,7 +332,8 @@ SSE（`/responses/stream`）：先按 §5.3 判定查看权限，再要求 `can_
 - 登录/注册成功：生成 32 字节 token，cookie 写明文，库存 `sha256`。同时生成 `csrf_token`。
 - Cookie（名称为历史名称，为兼容保留）：`__Host-relay_session=<token>; Path=/; HttpOnly; Secure; SameSite=Lax`，Max-Age 30 天。`COOKIE_SECURE=false`（仅本地 http 开发）时改名 `relay_session` 且不带 Secure。
 - 有效期 30 天滑动：请求时若 `last_seen_at` 距今 > 1 小时则 `UPDATE last_seen_at, expires_at = now()+30d`（降低写放大）。
-- 登出删除本会话；改密码/重置密码删除该用户其它所有会话。
+- 登出删除本会话；改密码/重置密码删除该用户其它所有会话；管理员重置一次性密码删除该用户全部会话。
+- `users.must_change_password = true` 的会话（管理员建的账号）在 `auth.rs` 统一入口只放行 `GET /auth/me`、`POST /auth/password/change`、`POST /auth/logout`，其它返回 `403 password_change_required`。
 - 每小时后台任务删除过期 sessions、email_tokens。
 - 登录失败统一返回 `401 invalid_credentials`（不区分邮箱不存在/密码错），邮箱不存在时也跑一次 argon2 校验假哈希以抹平时延。
 
@@ -354,6 +357,7 @@ SSE（`/responses/stream`）：先按 §5.3 判定查看权限，再要求 `can_
 | 提交：IP | 30 / 分钟 | 429 |
 | 提交：页面 | 600 / 分钟 | 429 |
 | 接受邀请：IP | 30 / 小时 | 429 |
+| 管理员建账号 + 重置一次性密码：操作者 | 30 / 小时 | 429 |
 | 其它已认证 API：用户/PAT | 600 / 分钟 | 429 |
 
 客户端 IP：`TRUST_PROXY=1` 时取 `X-Forwarded-For` 最右一个由 Caddy 追加的地址（Caddy 已设置为只信任自身），否则 socket 地址。429 带 `Retry-After` 秒数。
@@ -367,7 +371,7 @@ SSE（`/responses/stream`）：先按 §5.3 判定查看权限，再要求 `can_
 ```
 auth.register  auth.password_change  auth.password_reset
 org.create  org.update  org.delete
-member.role_change  member.remove  member.leave
+member.role_change  member.remove  member.leave  member.account_create(meta: role/projects/group_ids/password=generated|manual)  member.password_reset
 project.create  project.update  project.delete
 project_member.add  project_member.role_change  project_member.remove
 project_group.grant  project_group.revoke

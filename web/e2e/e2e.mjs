@@ -596,6 +596,47 @@ await step("perm-anon-login-hint", async () => {
     await p.getByText("页面不存在，或需要登录后才能查看。").waitFor();
   } finally { await c2.close(); }
 });
+await step("admin-create-account-force-change", async () => {
+  // 管理员在成员 tab 建账号（加入项目 + 群组，系统生成一次性密码）→ 新账号登录被要求改密码 → 改完进入首页
+  const c2 = await browser.newContext();
+  const p = await c2.newPage();
+  watch(p);
+  const c3 = await browser.newContext();
+  const q = await c3.newPage();
+  watch(q);
+  try {
+    await login(p, "demo@example.com");
+    await p.goto(BASE + "/o/demo?tab=members");
+    await p.getByRole("button", { name: "新建账号" }).click();
+    const dlg = p.getByRole("dialog", { name: "新建账号" });
+    await dlg.getByLabel("邮箱").fill("newbie@example.com");
+    await dlg.getByLabel("姓名").fill("Newbie");
+    await dlg.getByText("演示项目", { exact: true }).click();
+    await dlg.getByRole("combobox", { name: "演示项目 角色" }).waitFor();
+    await dlg.getByText("评审组", { exact: true }).click();
+    await dlg.getByRole("button", { name: "创建账号" }).click();
+    const done = p.getByRole("dialog", { name: "账号已就绪" });
+    await done.getByText("初始密码只显示这一次").waitFor();
+    const pw = (await done.locator("code").innerText()).trim();
+    if (pw.length < 16) throw new Error("generated password too short: " + pw);
+    await p.screenshot({ path: `${OUT}/account-created.png` });
+    await done.getByRole("button", { name: "关闭" }).click();
+    await p.locator("tr", { hasText: "newbie@example.com" }).getByText("待改初始密码").waitFor();
+
+    await q.goto(BASE + "/login");
+    await q.fill("input[type=email]", "newbie@example.com");
+    await q.fill("input[type=password]", pw);
+    await q.getByRole("button", { name: "登录" }).click();
+    await q.getByRole("heading", { name: "请先修改密码" }).waitFor();
+    await q.screenshot({ path: `${OUT}/force-change-password.png` });
+    await q.fill("input[autocomplete=current-password]", pw);
+    await q.fill("input[autocomplete=new-password]", "newbie-pass-123");
+    await q.getByRole("button", { name: "修改密码并进入" }).click();
+    await q.getByRole("heading", { name: "请先修改密码" }).waitFor({ state: "detached" });
+    await q.waitForURL((u) => u.pathname === "/");
+    await q.getByText("评审组可见").first().waitFor(); // 群组授权生效：首页动态里能看到评审组页面
+  } finally { await c2.close(); await c3.close(); }
+});
 await step("mobile-dark", async () => {
   await page.setViewportSize({ width: 375, height: 800 });
   await page.evaluate(() => localStorage.setItem("openui-theme-mode", '"dark"'));

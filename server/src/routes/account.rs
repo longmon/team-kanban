@@ -230,7 +230,11 @@ pub async fn reset_password(State(st): State<AppState>, c: Caller, JsonBody(r): 
     let hash = hash_password(r.password).await?;
     let mut tx = st.db.begin().await?;
     let uid = consume_email_token(&mut tx, &r.token, "reset_password").await?;
-    sqlx::query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1").bind(uid).bind(hash).execute(&mut *tx).await?;
+    sqlx::query("UPDATE users SET password_hash = $2, must_change_password = false, updated_at = now() WHERE id = $1")
+        .bind(uid)
+        .bind(hash)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&mut *tx).await?;
     let mut actor = c.actor();
     actor.user_id = Some(uid);
@@ -247,14 +251,22 @@ pub struct ChangeReq {
 
 pub async fn change_password(State(st): State<AppState>, c: Caller, JsonBody(r): JsonBody<ChangeReq>) -> AppResult<StatusCode> {
     let (uid, session_id, _) = c.session()?;
-    let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1").bind(uid).fetch_one(&st.db).await?;
+    let (hash, must_change): (String, bool) =
+        sqlx::query_as("SELECT password_hash, must_change_password FROM users WHERE id = $1").bind(uid).fetch_one(&st.db).await?;
+    if must_change && r.new_password == r.current_password {
+        return Err(AppError::field("new_password", "新密码不能与初始密码相同"));
+    }
     if !verify_password(r.current_password, Some(hash)).await {
         return Err(AppError::new(StatusCode::UNAUTHORIZED, "invalid_credentials", "当前密码错误"));
     }
     password_field("new_password", &r.new_password)?;
     let hash = hash_password(r.new_password).await?;
     let mut tx = st.db.begin().await?;
-    sqlx::query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1").bind(uid).bind(hash).execute(&mut *tx).await?;
+    sqlx::query("UPDATE users SET password_hash = $2, must_change_password = false, updated_at = now() WHERE id = $1")
+        .bind(uid)
+        .bind(hash)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id <> $2").bind(uid).bind(session_id).execute(&mut *tx).await?;
     audit::log(&mut tx, None, &c.actor(), "auth.password_change", "user", Some(uid), json!({})).await?;
     tx.commit().await?;

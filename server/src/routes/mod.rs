@@ -45,6 +45,8 @@ pub fn api_router() -> Router<AppState> {
         .route("/orgs/{org_id}", get(orgs::get_org).patch(orgs::update_org).delete(orgs::delete_org))
         .route("/orgs/{org_id}/members", get(orgs::list_members))
         .route("/orgs/{org_id}/members/{user_id}", patch(orgs::update_member).delete(orgs::remove_member))
+        .route("/orgs/{org_id}/members/accounts", post(orgs::create_account))
+        .route("/orgs/{org_id}/members/{user_id}/reset-password", post(orgs::reset_account_password))
         .route("/orgs/{org_id}/audit", get(orgs::list_audit))
         // 项目
         .route("/orgs/{org_id}/projects", get(orgs::list_projects).post(orgs::create_project))
@@ -105,9 +107,15 @@ pub fn list(items: Vec<Value>, next: Option<String>) -> Value {
 }
 
 pub async fn user_full(db: &PgPool, id: Uuid) -> AppResult<Value> {
-    let (email, name, verified, created): (String, String, Option<DateTime<Utc>>, DateTime<Utc>) =
-        sqlx::query_as("SELECT email, display_name, email_verified_at, created_at FROM users WHERE id = $1").bind(id).fetch_one(db).await?;
-    Ok(json!({ "id": id, "email": email, "display_name": name, "email_verified": verified.is_some(), "created_at": ts(&created) }))
+    let (email, name, verified, created, must_change): (String, String, Option<DateTime<Utc>>, DateTime<Utc>, bool) =
+        sqlx::query_as("SELECT email, display_name, email_verified_at, created_at, must_change_password FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(db)
+            .await?;
+    Ok(json!({
+        "id": id, "email": email, "display_name": name, "email_verified": verified.is_some(), "created_at": ts(&created),
+        "must_change_password": must_change,
+    }))
 }
 
 /// 可选更新字段里至少要有一个

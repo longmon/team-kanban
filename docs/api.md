@@ -38,7 +38,8 @@
 
 ```ts
 type UserBrief = { id: string; display_name: string }
-type UserFull  = { id: string; email: string; display_name: string; email_verified: boolean; created_at: string }
+type UserFull  = { id: string; email: string; display_name: string; email_verified: boolean; created_at: string;
+                  must_change_password: boolean }  // true = 管理员建的账号尚未改过初始密码（见 §3「首次登录强制改密」）
 
 type OrgRole     = "owner" | "admin" | "member"
 type ProjectRole = "admin" | "editor" | "viewer"
@@ -112,9 +113,12 @@ type Response = {
 | 403 | `email_unverified` | 接受绑定邮箱的邀请但邮箱未验证 |
 | 403 | `email_mismatch` | 邀请绑定的邮箱与当前账号不一致 |
 | 403 | `signup_disabled` | `ALLOW_SIGNUP=0` 且无有效邀请 |
+| 403 | `password_change_required` | 会话用户是管理员建的账号且尚未改初始密码（见 §3） |
 | 404 | `not_found` | 不存在 / 已删除 / 跨租户 / 无查看权限（统一） |
 | 405 | `method_not_allowed` | |
 | 409 | `email_taken` `slug_taken` `name_taken` `already_member` | 唯一冲突 |
+| 409 | `email_registered` | 管理员建账号时邮箱已被组织外用户注册（请改用邀请） |
+| 409 | `password_in_use` | 重置一次性密码时该账号已改过密码、正常使用中 |
 | 409 | `last_owner` | 操作会让组织没有 owner |
 | 409 | `not_org_member` | 加入项目/群组的用户不是组织成员 |
 | 409 | `responses_closed` | 页面不接受提交（停止收集，或已过截止时间 `closes_at`；后者 message 为「已截止」） |
@@ -173,7 +177,9 @@ type Response = {
 `{ "token": "string", "password": "string" }` → 204；删除该用户全部会话。错误 410 `token_invalid`、400。
 
 ### POST /api/auth/password/change — `cookie`
-`{ "current_password": "string", "new_password": "string" }` → 204；删除该用户其它会话。错误 401 `invalid_credentials`。
+`{ "current_password": "string", "new_password": "string" }` → 204；删除该用户其它会话；清除 `must_change_password`。错误 401 `invalid_credentials`；`must_change_password` 时新旧密码相同 → 400 `validation_failed`。重置密码（`/auth/password/reset`）同样清除 `must_change_password`。
+
+**首次登录强制改密**：管理员建的账号（§4.2 `POST .../members/accounts`）`must_change_password = true`。改密前该会话只能调用 `GET /api/auth/me`、`POST /api/auth/password/change`、`POST /api/auth/logout`，其它 `/api/*` 一律 403 `password_change_required`（会话鉴权统一入口拦截；旧账号该字段为 false，不受影响）。前端据 `me.user.must_change_password` 只显示改密码页。
 
 ### PATCH /api/auth/me — `cookie`
 `{ "display_name": "string" }` → 200 `{ "user": UserFull }`
@@ -203,8 +209,28 @@ type OrgMember = { user: UserBrief & { email: string }; role: OrgRole; joined_at
 | GET /api/orgs/{org_id}/members | cookie | member+ | `?limit&cursor&q=`（q 匹配邮箱/名字前缀） | 200 `{ items: OrgMember[], next_cursor }` |
 | PATCH /api/orgs/{org_id}/members/{user_id} | cookie | 见 design §4.2 | `{ role: OrgRole }` | 200 `OrgMember` |
 | DELETE /api/orgs/{org_id}/members/{user_id} | cookie | 见 design §4.2；`user_id` 为自己 = 退出 | – | 204 |
+| POST /api/orgs/{org_id}/members/accounts | cookie | admin+；`role=admin` 仅 owner | 见下 | 201 `{ member: OrgMember & { must_change_password: true }, generated_password: string \| null }` |
+| POST /api/orgs/{org_id}/members/{user_id}/reset-password | cookie | owner 任意成员；admin 仅 member；不能对自己 | `{ password?: string }` | 200 `{ generated_password: string \| null }` |
 
 错误：409 `last_owner`；403 `forbidden`。
+
+`GET .../members` 对 owner/admin 额外返回每个成员的 `must_change_password`（普通成员看不到该字段）。
+
+**管理员直接建账号** `POST /api/orgs/{org_id}/members/accounts`：
+```json
+{ "email": "a@example.com", "display_name": "1..50", "role": "member | admin",
+  "password": "可选，10..128；省略或空 = 系统生成",
+  "projects": [ { "project_id": "uuid", "role": "admin | editor | viewer" } ],   // 可选，≤50，不可重复
+  "group_ids": [ "uuid" ] }                                                        // 可选，≤50
+```
+- 同一事务：建用户（邮箱视为已验证，`must_change_password = true`，argon2id 同注册）+ 加入组织 + 加入项目 + 加入群组 + 审计 `member.account_create`。
+- 省略 `password` 时用 CSPRNG 生成 20 位 base64url 密码，**只在本响应的 `generated_password` 出现一次**（不入库明文、不进审计、之后无法再查）；手填时 `generated_password = null`。
+- `role`：owner 不能这样建（400）；admin 只有 owner 能授予（与组织邀请一致，admin 调用 → 403）。
+- `projects` 必须是本组织未删除的项目；`group_ids` 必须是本组织的组织级群组，或本次所选项目的项目群组；否则 400 `validation_failed`（`projects` / `group_ids`）。
+- 邮箱已存在：已是本组织成员 → 409 `already_member`；已注册的组织外用户 → 409 `email_registered`（不改其密码、不回显其信息，请改用 §5 邀请）。
+- PAT 一律 403；限流：同一操作者建账号与重置密码合计 30 次 / 小时。
+
+**重置一次性密码** `POST /api/orgs/{org_id}/members/{user_id}/reset-password`：仅限 `must_change_password = true`（管理员建的、尚未改过初始密码）的成员，否则 409 `password_in_use`（不能重置已正常使用账号的密码）。生成/校验规则同建账号；删除该用户全部会话；审计 `member.password_reset`。
 
 ### 4.3 项目
 

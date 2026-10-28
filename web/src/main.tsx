@@ -8,7 +8,7 @@ import { Link, match, navigate, useLocation } from "./router";
 import { Shell } from "./shell";
 import { Loading, Page, REDUCED, SessionProvider, useSession, useTheme } from "./ui";
 import { Toaster } from "@/components/ui/sonner";
-import { ForgotPassword, Login, Register, ResetPassword, VerifyEmail } from "./pages/auth";
+import { ForceChangePassword, ForgotPassword, Login, Register, ResetPassword, VerifyEmail } from "./pages/auth";
 import { AcceptInvite } from "./pages/invite";
 import { Home, OrgsPage } from "./pages/home";
 import { OrgPage } from "./pages/org";
@@ -60,6 +60,14 @@ function App() {
       break;
     }
   }
+  // 首次登录必须先改密码：不渲染外壳（外壳会请求项目列表等被拦截的接口）
+  if (me?.user.must_change_password)
+    return (
+      <>
+        <main className="px-4 pb-10"><ForceChangePassword /></main>
+        <Toaster theme={mode} position="bottom-center" toastOptions={{ classNames: { toast: "toast" } }} />
+      </>
+    );
   return (
     <>
       <Shell banner={me && !me.user.email_verified && (
