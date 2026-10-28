@@ -376,6 +376,40 @@ await step("page-meta-edit", async () => {
   await page.keyboard.press("Escape");
   await page.getByRole("dialog", { name: "管理页面" }).waitFor({ state: "detached" });
 });
+await step("project-group-create", async () => {
+  // 项目页「成员与权限」→ 新建项目群组：出现在列表里，标「项目群组」，成员数 1（创建者自动加入）
+  await page.goto(BASE + "/o/demo/p/demo?tab=members");
+  await page.fill("input[placeholder*=前端组]", "前端组");
+  await page.getByRole("button", { name: "创建群组" }).click();
+  await toast("已创建项目群组");
+  const row = page.locator(".list-row", { hasText: "前端组" });
+  await row.getByText("项目群组").waitFor();
+  await row.locator(".list-stat", { hasText: "1" }).waitFor();
+  await row.getByRole("button", { name: "成员" }).click();
+  await row.getByText("demo@example.com").waitFor();
+  await page.screenshot({ path: `${OUT}/project-groups.png`, fullPage: true });
+});
+await step("page-meta-project-group", async () => {
+  // 页面设置的群组候选：本项目群组在前（带「本项目」），再组织级群组；选本项目群组保存
+  await page.goto(BASE + "/pages/" + IDS["仅项目可见"]);
+  await rail().getByRole("button", { name: "管理" }).click();
+  const dlg = page.getByRole("dialog", { name: "管理页面" });
+  await dlg.getByRole("combobox", { name: "可见性" }).click();
+  await page.getByRole("option", { name: "指定群组" }).click();
+  await dlg.getByText("前端组（本项目）").waitFor();
+  const labels = await dlg.locator("[data-slot=checkbox]").evaluateAll((cs) => cs.map((c) => c.parentElement.textContent));
+  if (labels[0] !== "前端组（本项目）" || !labels.includes("评审组")) throw new Error("group candidates: " + JSON.stringify(labels));
+  await dlg.getByText("前端组（本项目）").click();
+  await dlg.getByRole("button", { name: "保存" }).click();
+  await toast("已保存");
+  const pg = await call(demo, "GET", `/pages/${IDS["仅项目可见"]}`);
+  const groups = (await call(demo, "GET", `/projects/${project.id}/groups`)).items;
+  const fe = groups.find((g) => g.name === "前端组");
+  if (pg.visibility !== "groups" || pg.group_ids.join() !== fe.id || !fe.active) throw new Error("saved: " + JSON.stringify([pg.visibility, pg.group_ids, fe]));
+  await page.keyboard.press("Escape");
+  // 恢复原状，不影响后面的权限场景
+  await call(demo, "PATCH", `/pages/${IDS["仅项目可见"]}`, { visibility: "project" });
+});
 await step("read-only-no-submit", async () => {
   await page.goto(BASE + "/pages/" + IDS["只读报告"]);
   await page.getByText("技术选型投票").waitFor();
@@ -457,7 +491,7 @@ await step("tab-in-url", async () => {
   await page.waitForURL(/\?tab=members$/);
   await page.reload();
   await page.getByRole("tab", { name: "成员与权限", selected: true }).waitFor();
-  await page.getByText("群组授权").first().waitFor();
+  await page.getByText("项目群组").first().waitFor();
   await page.goto(BASE + "/o/demo?tab=members");
   await page.getByRole("tab", { name: "成员", exact: true, selected: true }).waitFor();
 });

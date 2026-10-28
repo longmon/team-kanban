@@ -35,7 +35,7 @@ export function AgentOnboarding({ title = "还没有页面", note }: { title?: s
   const a = useAction();
   const create = () =>
     a.run(async () => {
-      const r = await post<{ pat: Pat; token: string }>("/tokens", { name: `agent ${new Date().toLocaleDateString("zh-CN")}`, scopes: ["publish", "read_responses"], expires_in: 7776000 });
+      const r = await post<{ pat: Pat; token: string }>("/tokens", { name: `agent ${new Date().toLocaleDateString("zh-CN")}`, scopes: ["publish", "read_responses", "manage"], expires_in: 7776000 });
       setToken(r.token);
     });
   if (me && me.orgs.length === 0)
@@ -54,7 +54,7 @@ export function AgentOnboarding({ title = "还没有页面", note }: { title?: s
       </div>
       <ol className="grid gap-5">
         <li className="grid gap-2">
-          <span className="text-[13px] font-medium">1. 创建令牌（发布页面 + 读取提交，90 天有效）</span>
+          <span className="text-[13px] font-medium">1. 创建令牌（发布页面 + 读取提交 + 建项目和群组，90 天有效）</span>
           {token ? (
             <div className="grid gap-2"><Notice tone="warning">令牌只显示这一次，请立即复制。</Notice><CopyText text={token} /></div>
           ) : (
@@ -72,7 +72,7 @@ export function AgentOnboarding({ title = "还没有页面", note }: { title?: s
   );
 }
 
-const SCOPES: [Scope, string][] = [["publish", "发布页面（publish）"], ["read_responses", "读取提交（read_responses）"]];
+const SCOPES: [Scope, string][] = [["publish", "发布页面（publish）"], ["read_responses", "读取提交（read_responses）"], ["manage", "管理（建项目、建群组）"]];
 const PAT_EXPIRES: [string, string][] = [["2592000", "30 天"], ["7776000", "90 天"], ["31536000", "1 年"], ["", "永不过期"]];
 
 export function TokenSettings() {

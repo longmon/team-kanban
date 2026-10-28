@@ -347,9 +347,14 @@ fn print_targets(t: &Value) {
                 s(&p["id"]),
                 s(&p["role"])
             );
+            for g in p["groups"].as_array().into_iter().flatten() {
+                let kind = if g["project_group"] == true { "项目群组" } else { "组织群组" };
+                let active = if g["active"] == true { "  活跃" } else { "" };
+                println!("      {kind} {}  {}{active}", s(&g["name"]), s(&g["id"]));
+            }
         }
         for g in o["groups"].as_array().into_iter().flatten() {
-            println!("    群组 {}  {}", s(&g["name"]), s(&g["id"]));
+            println!("    组织群组 {}  {}", s(&g["name"]), s(&g["id"]));
         }
         if let Some(e) = o["groups_error"].as_str() {
             println!("    群组：无法列出（{e}）");

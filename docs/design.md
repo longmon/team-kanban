@@ -181,8 +181,9 @@ project_role(user, project) =
 | 修改成员角色 | ✓（任意，含设 owner） | ✓（仅 member↔admin，不能动 owner） | |
 | 移除成员 | ✓ | ✓（不能移除 owner/admin） | |
 | 退出组织 | ✓（不能是最后一个 owner） | ✓ | ✓ |
-| 创建项目（创建者自动成为项目 admin） | ✓ | ✓ | ✓ |
-| 创建/改/删群组、管理群组成员、发群组邀请 | ✓ | ✓ | |
+| 创建项目（创建者自动成为项目 admin；PAT 需 `manage` 且不限定项目） | ✓ | ✓ | ✓ |
+| 创建/改/删组织级群组、管理其成员、发群组邀请 | ✓ | ✓ | |
+| 创建项目群组（`POST /api/projects/{id}/groups`）、改/删项目群组及管理其成员 | ✓ | ✓ | 仅该项目的 admin |
 | 查看审计日志 | ✓ | ✓ | |
 
 不变量：组织至少一个 owner（降级/移除/退出最后一个 owner → 409 `last_owner`）。
@@ -194,8 +195,9 @@ project_role(user, project) =
 | 查看项目、项目成员 | ✓ | ✓ | ✓ |
 | 修改项目信息 / 删除项目（软删） | ✓ | | |
 | 增删改项目成员（只能加本组织成员）、发项目邀请 | ✓ | | |
-| 授权/取消群组访问项目 | ✓ | | |
-| 页面列表 | ✓ 全部 | ✓ 全部 | 按可见性过滤 |
+| 授权/取消组织级群组访问项目（项目群组不能授权给别的项目，本项目群组的授权不能单独取消） | ✓ | | |
+| 新建本项目的项目群组（自动授权 viewer/editor，创建者入组）、管理其成员 | ✓ | | |
+| 页面列表 | ✓ 全部 | ✓ 全部 | 按可见性过滤（visibility=groups 的页面对受众群组成员可见，即使其没有项目角色，与查看判定一致） |
 | 发布 / 更新 / 删除页面（任意作者） | ✓ | ✓ | |
 | 管理临时链接（创建/吊销） | ✓ | ✓ | |
 | 查看提交结果（表格、SSE 实时） | ✓ | ✓ | 仅当 `results_visible_to=viewers` 且能查看页面 |
@@ -210,9 +212,10 @@ PAT 的有效权限 = **用户本人当前权限 ∩ PAT 限定范围 ∩ PAT sc
 
 | scope | 允许的接口 |
 |---|---|
-| `publish` | `GET /api/me/projects`、`GET /api/orgs/{id}/groups`、`GET /api/pages`、`GET /api/pages/{id}`、`POST /api/pages`、`PATCH /api/pages/{id}`、`DELETE /api/pages/{id}`、`GET/POST /api/pages/{id}/share-links`、`DELETE /api/share-links/{id}` |
-| `read_responses` | `GET /api/me/projects`、`GET /api/pages`、`GET /api/pages/{id}`、`GET /api/pages/{id}/responses`、`GET /api/pages/{id}/responses.csv` |
-| 任何 scope 都不行 | 账号/会话、组织/项目/群组/成员/邀请管理、PAT 管理、审计查询、提交（`POST .../responses`）、SSE |
+| `publish` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/orgs/{id}/groups`、`GET /api/projects/{id}/groups`、`GET /api/pages`、`GET /api/pages/{id}`、`POST /api/pages`、`PATCH /api/pages/{id}`、`DELETE /api/pages/{id}`、`GET/POST /api/pages/{id}/share-links`、`DELETE /api/share-links/{id}` |
+| `manage` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/orgs/{id}/groups`、`GET /api/projects/{id}/groups`、`POST /api/orgs/{id}/projects`（PAT 不能限定项目）、`POST /api/projects/{id}/groups`、`POST /api/orgs/{id}/groups`（角色要求不变）、`GET /api/pages`、`GET /api/pages/{id}` |
+| `read_responses` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/pages`、`GET /api/pages/{id}`、`GET /api/pages/{id}/responses`、`GET /api/pages/{id}/responses.csv` |
+| 任何 scope 都不行 | 账号/会话、组织/项目/群组的修改删除、成员/邀请管理、PAT 管理、审计查询、提交（`POST .../responses`）、SSE |
 
 限定范围：`org_id` 非空 → 只能触达该组织的资源；`project_id` 非空 → 只能触达该项目的页面（`/api/me/projects` 只返回该项目）。越界一律 404。PAT 请求不需要 CSRF；带 `Authorization` 头的请求**忽略 cookie**。
 
@@ -435,7 +438,7 @@ Strict-Transport-Security 由 Caddy 加
 
 ### 7.4 前端（web/）
 
-路由：`/login` `/register` `/verify-email?token=` `/forgot-password` `/reset-password?token=` `/invite/:token` `/` (我的组织) `/o/:orgSlug`（项目、群组、成员、邀请、审计 tabs）`/o/:orgSlug/p/:projectSlug`（页面列表、成员、群组授权）`/pages/:id`（查看/提交）`/pages/:id/results`（表格 + CSV + 实时）`/pages/:id/links`（临时链接）`/s/:token`（临时链接查看/提交）`/settings/tokens`（PAT）`/settings/account`。
+路由：`/login` `/register` `/verify-email?token=` `/forgot-password` `/reset-password?token=` `/invite/:token` `/` (我的组织) `/o/:orgSlug`（项目、群组、成员、邀请、审计 tabs）`/o/:orgSlug/p/:projectSlug`（页面列表、成员、项目群组）`/pages/:id`（查看/提交）`/pages/:id/results`（表格 + CSV + 实时）`/pages/:id/links`（临时链接）`/s/:token`（临时链接查看/提交）`/settings/tokens`（PAT）`/settings/account`。
 
 - 管理界面与 OpenUI 渲染共用 shadcn/ui 组件（`web/src/components/ui`）与同一套主题 token（`web/src/theme.css`），不再引入其它 UI 库；配色、字体、阴影、动效与组件状态以 [design-system.md](design-system.md) 为准。
 - 查看 openui 页面：`<Renderer response={spec} library={kanbanLibrary} onAction={…} toolProvider={null} publishObservability={false} />`，onAction 规则见 api.md §10。

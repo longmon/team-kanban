@@ -1,4 +1,4 @@
-//! 通过 stdio 拉起编译好的二进制，对一个按 docs/api.md 实现的极简 mock 服务跑 7 个工具。
+//! 通过 stdio 拉起编译好的二进制，对一个按 docs/api.md 实现的极简 mock 服务跑各个工具。
 
 use std::{
     collections::HashMap,
@@ -41,6 +41,8 @@ struct Mock {
     /// 收到的 POST/PATCH body，供断言
     writes: Vec<Value>,
     responses: Vec<Value>,
+    /// GET /api/projects/{id}/groups 里 active=true 的群组名
+    active: Vec<String>,
 }
 
 type St = Arc<(Mutex<Mock>, Notify)>;
@@ -111,6 +113,56 @@ async fn groups(h: HeaderMap, Path(org): Path<String>) -> Response {
     }
     let id = if org == ORG { GROUP } else { GROUP2 };
     Json(json!({ "items": [{ "id": id, "org_id": org, "name": "Reviewers", "description": "", "member_count": 1, "created_at": "" }], "next_cursor": null }))
+        .into_response()
+}
+
+async fn orgs(h: HeaderMap) -> Response {
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    let mut items = vec![json!({ "id": ORG, "name": "Acme", "slug": "acme", "my_role": "owner" })];
+    if h.get(header::AUTHORIZATION).is_some_and(|v| v == format!("Bearer {MULTI}").as_str()) {
+        items.push(json!({ "id": ORG2, "name": "Beta", "slug": "beta", "my_role": "member" }));
+    }
+    Json(json!({ "items": items, "next_cursor": null })).into_response()
+}
+
+/// 项目群组列表：Reviewers（组织级，已授权）；mock 的 active 由 St.active 控制
+async fn project_groups(State(s): State<St>, h: HeaderMap, Path(project): Path<String>) -> Response {
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    let (org, gid) = if project == PROJECT2 { (ORG2, GROUP2) } else { (ORG, GROUP) };
+    let active = s.0.lock().unwrap().active.clone();
+    let mut items = vec![json!({ "group": { "id": gid, "name": "Reviewers" }, "id": gid, "name": "Reviewers", "project_id": null,
+        "role": "viewer", "member_count": 1, "last_page_at": null, "active": active.iter().any(|a| a == "Reviewers"), "org_id": org })];
+    for (i, n) in ["前端组", "后端组"].iter().enumerate() {
+        let id = format!("01928f7a-0000-7000-8000-00000000010{i}");
+        items.push(json!({ "group": { "id": id, "name": n }, "id": id, "name": n, "project_id": project, "role": "viewer",
+            "member_count": 2, "last_page_at": "2026-10-21T08:00:00.000Z", "active": active.iter().any(|a| a == n) }));
+    }
+    Json(json!({ "items": items })).into_response()
+}
+
+async fn create_project(State(s): State<St>, h: HeaderMap, Path(org): Path<String>, Json(b): Json<Value>) -> Response {
+    if h.get(header::AUTHORIZATION).is_some_and(|v| v == format!("Bearer {MULTI}").as_str()) {
+        return err(StatusCode::FORBIDDEN, "forbidden");
+    }
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    s.0.lock().unwrap().writes.push(b.clone());
+    (StatusCode::CREATED, Json(json!({ "id": "01928f7a-0000-7000-8000-000000000200", "org_id": org, "name": b["name"], "slug": b["slug"], "my_role": "admin" })))
+        .into_response()
+}
+
+async fn create_group(State(s): State<St>, h: HeaderMap, Path(project): Path<String>, Json(b): Json<Value>) -> Response {
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    s.0.lock().unwrap().writes.push(b.clone());
+    (StatusCode::CREATED, Json(json!({ "id": "01928f7a-0000-7000-8000-000000000300", "name": b["name"], "project_id": project,
+        "role": b["role"].as_str().unwrap_or("viewer"), "member_count": 1 })))
         .into_response()
 }
 
@@ -269,7 +321,10 @@ async fn start_mock() -> (String, St) {
         .route("/openui/library.schema.json", get(schema))
         .route("/openui/prompt.md", get(|| async { PROMPT }))
         .route("/api/me/projects", get(me_projects))
+        .route("/api/orgs", get(orgs))
         .route("/api/orgs/{org}/groups", get(groups))
+        .route("/api/orgs/{org}/projects", post(create_project))
+        .route("/api/projects/{id}/groups", get(project_groups).post(create_group))
         .route("/api/pages", get(list_pages).post(create_page))
         .route("/api/pages/{id}", get(get_page).patch(patch_page))
         .route("/api/pages/{id}/share-links", post(share))
@@ -342,7 +397,7 @@ fn ok_json(r: (bool, String)) -> Value {
 }
 
 #[tokio::test]
-async fn seven_tools_happy_path() {
+async fn tools_happy_path() {
     let (url, st) = start_mock().await;
     let c = client(&url, TOKEN).await;
 
@@ -357,6 +412,8 @@ async fn seven_tools_happy_path() {
     assert_eq!(
         names,
         [
+            "create_group",
+            "create_project",
             "create_share_link",
             "get_responses",
             "get_ui_guide",
@@ -604,6 +661,7 @@ fn need(r: (bool, String), level: &str) -> Value {
     let v = ok_json(r);
     assert_eq!(v["need_selection"], level, "{v}");
     assert!(v["hint"].as_str().unwrap().contains("请询问用户"), "{v}");
+    assert!(v["hint"].as_str().unwrap().contains("对话上下文"), "{v}");
     v
 }
 
@@ -781,4 +839,58 @@ fn legacy_config_is_migrated() {
         .output()
         .unwrap();
     assert!(!String::from_utf8_lossy(&out.stderr).contains("迁移"));
+}
+
+/// 没给 groups/visibility 时按活跃群组决定：0 个 → project；1 个 → 自动发；多个 → need_selection=group。另测 create_project / create_group。
+#[tokio::test]
+async fn auto_group_and_create_tools() {
+    let (url, st) = start_mock().await;
+    let spec = include_str!("../guide/vote.oui");
+    let c = client(&url, TOKEN).await;
+    let args = json!({ "page_type": "vote", "model": "Claude Opus 5.5", "project": "acme/demo", "title": "t", "spec": spec });
+    let last = |st: &St| st.0.lock().unwrap().writes.last().unwrap().clone();
+
+    let r = ok_json(call(&c, "publish_page", args.clone()).await);
+    assert_eq!((r["visibility"].as_str(), r.get("auto_group")), (Some("project"), None));
+
+    st.0.lock().unwrap().active = vec!["前端组".into()];
+    let r = ok_json(call(&c, "publish_page", args.clone()).await);
+    assert_eq!(r["visibility"], "groups");
+    assert_eq!(r["auto_group"]["name"], "前端组");
+    assert!(r["tell_user"].as_str().unwrap().contains("前端组"), "{r}");
+    assert_eq!(last(&st)["group_ids"], json!(["01928f7a-0000-7000-8000-000000000100"]));
+
+    st.0.lock().unwrap().active = vec!["前端组".into(), "Reviewers".into()];
+    let writes = st.0.lock().unwrap().writes.len();
+    let v = need(call(&c, "publish_page", args.clone()).await, "group");
+    let cands = v["candidates"].as_array().unwrap();
+    assert_eq!(cands.len(), 3);
+    assert_eq!(cands[2]["visibility"], "project");
+    assert_eq!(v["project"]["ref"], "acme/demo");
+    assert_eq!(st.0.lock().unwrap().writes.len(), writes);
+    // 显式 visibility=project 或给了 groups 时不自动选；群组名先匹配本项目的项目群组
+    let mut a = args.clone();
+    a["visibility"] = json!("project");
+    assert_eq!(ok_json(call(&c, "publish_page", a).await)["visibility"], "project");
+    let mut a = args.clone();
+    a["groups"] = json!(["reviewers"]);
+    ok_json(call(&c, "publish_page", a).await);
+    assert_eq!(last(&st)["group_ids"], json!([GROUP]));
+
+    // create_project：slug 由名称生成；中文名用 p-xxxx
+    let r = ok_json(call(&c, "create_project", json!({ "name": "Design Team" })).await);
+    assert_eq!(r["project"]["ref"], "acme/design-team");
+    let r = ok_json(call(&c, "create_project", json!({ "name": "设计" })).await);
+    assert!(r["project"]["slug"].as_str().unwrap().starts_with("p-"), "{r}");
+    // create_group：调新路由，带 role/members
+    let r = ok_json(call(&c, "create_group", json!({ "project": "acme/demo", "name": "设计组", "role": "editor", "members": ["a@example.com"] })).await);
+    assert_eq!((r["group"]["role"].as_str(), r["group"]["project_id"].as_str()), (Some("editor"), Some(PROJECT)));
+    assert_eq!(last(&st)["members"], json!(["a@example.com"]));
+    c.cancel().await.unwrap();
+
+    // 权限不足（没有 manage）：提示重建令牌
+    let c = client(&url, MULTI).await;
+    let (e, t) = call(&c, "create_project", json!({ "org": "acme", "name": "x" })).await;
+    assert!(e && t.starts_with("forbidden:") && t.contains("设置→访问令牌"), "{t}");
+    c.cancel().await.unwrap();
 }

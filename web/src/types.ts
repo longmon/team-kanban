@@ -7,14 +7,18 @@ export type Visibility = "public" | "org" | "project" | "groups";
 export type PageKind = "openui" | "html";
 export type PageType = "general" | "report" | "knowledge" | "flowchart" | "architecture" | "vote" | "requirement" | "task" | "task_tree";
 export type PageCategory = "read" | "collect" | "collab";
-export type Scope = "publish" | "read_responses";
+export type Scope = "publish" | "read_responses" | "manage";
 
 export type Org = { id: string; name: string; slug: string; my_role: OrgRole; created_at: string };
 export type Project = {
   id: string; org_id: string; name: string; slug: string; description: string;
   my_role: ProjectRole | null; created_at: string; updated_at: string;
 };
-export type Group = { id: string; org_id: string; name: string; description: string; member_count: number; created_at: string };
+/** project_id 非空 = 专属该项目的项目群组；null = 组织级群组（旧后端无这两个字段，按组织级处理） */
+export type Group = {
+  id: string; org_id: string; name: string; description: string; member_count: number; created_at: string;
+  project_id?: string | null; project?: { id: string; name: string } | null;
+};
 
 export type Page = {
   id: string; org_id: string; project_id: string;
@@ -69,7 +73,12 @@ type Member = { user: UserBrief & { email: string } };
 export type OrgMember = Member & { role: OrgRole; joined_at: string };
 export type ProjectMember = Member & { role: ProjectRole; joined_at: string };
 export type GroupMember = Member & { joined_at: string };
-export type ProjectGroupGrant = { group: { id: string; name: string }; role: ProjectRole; created_at: string };
+/** GET /projects/{id}/groups：本项目群组 + 已授权的组织级群组；active = 4 小时内有页面发给它 */
+export type ProjectGroupGrant = {
+  group: { id: string; name: string }; role: ProjectRole; created_at: string;
+  id?: string; name?: string; description?: string; project_id?: string | null;
+  member_count?: number; last_page_at?: string | null; active?: boolean;
+};
 
 export type Invite = {
   id: string; org_id: string; target_type: "org" | "project" | "group";

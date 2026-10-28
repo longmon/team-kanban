@@ -52,7 +52,7 @@ pub fn api_router() -> Router<AppState> {
         .route("/me/projects", get(orgs::my_projects))
         .route("/projects/{id}/members", get(orgs::list_project_members).post(orgs::add_project_member))
         .route("/projects/{id}/members/{user_id}", patch(orgs::update_project_member).delete(orgs::remove_project_member))
-        .route("/projects/{id}/groups", get(orgs::list_project_groups))
+        .route("/projects/{id}/groups", get(orgs::list_project_groups).post(groups::create_project_group))
         .route("/projects/{id}/groups/{group_id}", axum::routing::put(orgs::grant_project_group).delete(orgs::revoke_project_group))
         // 群组
         .route("/orgs/{org_id}/groups", get(groups::list_groups).post(groups::create_group))

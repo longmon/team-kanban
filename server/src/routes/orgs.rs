@@ -10,7 +10,10 @@ use super::{brief, list, org_json, require_any};
 use crate::{
     AppState, audit,
     auth::Caller,
-    authz::{Allow, ANY_SCOPE, OrgRole, ProjectRole, Scope, require_org, require_project, require_user, role_expr},
+    authz::{
+        ACTIVE_GROUP_SECS, Allow, ANY_SCOPE, MANAGE, OrgRole, PUBLISH_OR_MANAGE, ProjectRole, Scope, require_org, require_project, require_user,
+        role_expr,
+    },
     error::{AppError, AppResult, JsonBody, P, Q, unique_violation},
     util::{PageQuery, like_prefix, new_id, paginate, slug_field, text_field, time_cursor, ts},
 };
@@ -29,15 +32,17 @@ async fn org_by_id(db: &PgPool, org_id: Uuid, role: OrgRole) -> J {
     Ok(Json(org_json(org_id, &name, &slug, role.as_str(), &created)))
 }
 
+/// 会话或任意 scope 的 PAT；PAT 限定了组织时只返回该组织（agent 据此在空组织里建第一个项目）
 pub async fn list_orgs(State(st): State<AppState>, c: Caller, Q(q): Q<PageQuery>) -> J {
-    let uid = c.session_user()?;
+    let uid = require_user(&c, ANY_SCOPE)?;
     let rows: Vec<(Uuid, String, String, String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT o.id, o.name, o.slug, m.role, o.created_at FROM memberships m JOIN orgs o ON o.id = m.org_id AND o.deleted_at IS NULL
-          WHERE m.user_id = $1 AND ($2::uuid IS NULL OR o.id < $2) ORDER BY o.id DESC LIMIT $3",
+          WHERE m.user_id = $1 AND ($2::uuid IS NULL OR o.id < $2) AND ($4::uuid IS NULL OR o.id = $4) ORDER BY o.id DESC LIMIT $3",
     )
     .bind(uid)
     .bind(q.cursor_id()?)
     .bind(q.limit() + 1)
+    .bind(c.p.pat().and_then(|p| p.org_id))
     .fetch_all(&st.db)
     .await?;
     let (rows, next) = paginate(rows, q.limit(), |r| r.0.to_string());
@@ -349,7 +354,10 @@ fn description(d: Option<&str>) -> AppResult<Option<String>> {
 }
 
 pub async fn create_project(State(st): State<AppState>, c: Caller, P(org_id): P<Uuid>, JsonBody(r): JsonBody<ProjectReq>) -> AppResult<(StatusCode, Json<Value>)> {
-    let ctx = require_org(&st.db, &c, org_id, OrgRole::Member, Allow::Session).await?;
+    let ctx = require_org(&st.db, &c, org_id, OrgRole::Member, MANAGE).await?;
+    if c.p.pat().is_some_and(|p| p.project_id.is_some()) {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "project_scoped_token", "限定了项目的令牌不能创建项目，请使用不限项目的令牌"));
+    }
     let name = text_field("name", r.name.as_deref().unwrap_or(""), 1, 100)?;
     let slug = slug_field(r.slug.as_deref().unwrap_or(""))?;
     let desc = description(r.description.as_deref())?.unwrap_or_default();
@@ -593,26 +601,63 @@ fn grant_json(gid: Uuid, name: &str, role: &str, t: &DateTime<Utc>) -> Value {
     json!({ "group": { "id": gid, "name": name }, "role": role, "created_at": ts(t) })
 }
 
+type ProjectGroupRow = (Uuid, String, Option<Uuid>, String, DateTime<Utc>, i64, Option<DateTime<Utc>>, String);
+
+/// 本项目的群组（项目群组在前）与已授权的组织级群组。
+/// last_page_at：最近一次有页面发给该群组的时间（page_groups 关联的未删除页面的 updated_at 最大值，发布与更新都会刷新）；
+/// active：last_page_at 在 ACTIVE_GROUP_SECS 内。
 pub async fn list_project_groups(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
-    let ctx = require_project(&st.db, &c, id, ProjectRole::Viewer, Allow::Session).await?;
-    let rows: Vec<(Uuid, String, String, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT g.id, g.name, pg.role, pg.created_at FROM project_groups pg JOIN groups g ON g.org_id = pg.org_id AND g.id = pg.group_id
-          WHERE pg.org_id = $1 AND pg.project_id = $2 ORDER BY pg.created_at DESC",
+    let ctx = require_project(&st.db, &c, id, ProjectRole::Viewer, PUBLISH_OR_MANAGE).await?;
+    // ponytail: last_page_at 每个群组沿 page_groups(group_id) 扫它收到过的全部页面；单群组页面上万时再给 page_groups 加时间列/物化
+    let rows: Vec<ProjectGroupRow> = sqlx::query_as(
+        "SELECT g.id, g.name, g.project_id, pg.role, pg.created_at,
+                (SELECT count(*) FROM group_members gm WHERE gm.org_id = g.org_id AND gm.group_id = g.id) AS member_count,
+                (SELECT max(p.updated_at) FROM page_groups x JOIN pages p ON p.org_id = x.org_id AND p.id = x.page_id AND p.deleted_at IS NULL
+                  WHERE x.group_id = g.id) AS last_page_at, g.description
+           FROM project_groups pg JOIN groups g ON g.org_id = pg.org_id AND g.id = pg.group_id
+          WHERE pg.org_id = $1 AND pg.project_id = $2
+          ORDER BY g.project_id IS NULL, last_page_at DESC NULLS LAST, pg.created_at DESC",
     )
     .bind(ctx.org_id())
     .bind(ctx.project_id())
     .fetch_all(&st.db)
     .await?;
-    Ok(Json(json!({ "items": rows.iter().map(|(g, n, r, t)| grant_json(*g, n, r, t)).collect::<Vec<_>>() })))
+    let since = Utc::now() - chrono::Duration::seconds(ACTIVE_GROUP_SECS);
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|(g, n, pid, r, t, mc, last, desc)| {
+            let mut v = grant_json(*g, n, r, t);
+            v["group"]["project_id"] = json!(pid);
+            for (k, x) in [
+                ("id", json!(g)),
+                ("name", json!(n)),
+                ("description", json!(desc)),
+                ("project_id", json!(pid)),
+                ("member_count", json!(mc)),
+                ("last_page_at", json!(last.as_ref().map(ts))),
+                ("active", json!(last.is_some_and(|l| l > since))),
+            ] {
+                v[k] = x;
+            }
+            v
+        })
+        .collect();
+    Ok(Json(json!({ "items": items })))
 }
 
 pub async fn grant_project_group(State(st): State<AppState>, c: Caller, P((id, group_id)): P<(Uuid, Uuid)>, JsonBody(r): JsonBody<RoleReq>) -> J {
     let ctx = require_project(&st.db, &c, id, ProjectRole::Admin, Allow::Session).await?;
     let role = parse_project_role(&r.role)?;
     let mut tx = st.db.begin().await?;
-    let name: Option<String> =
-        sqlx::query_scalar("SELECT name FROM groups WHERE org_id = $1 AND id = $2").bind(ctx.org_id()).bind(group_id).fetch_optional(&mut *tx).await?;
-    let name = name.ok_or_else(AppError::not_found)?;
+    let row: Option<(String, Option<Uuid>)> = sqlx::query_as("SELECT name, project_id FROM groups WHERE org_id = $1 AND id = $2")
+        .bind(ctx.org_id())
+        .bind(group_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let (name, owner) = row.ok_or_else(AppError::not_found)?;
+    if owner.is_some_and(|p| p != ctx.project_id()) {
+        return Err(AppError::conflict("group_belongs_to_other_project", "这是其他项目的项目群组，不能授权给本项目"));
+    }
     let created: DateTime<Utc> = sqlx::query_scalar(
         "INSERT INTO project_groups (org_id, project_id, group_id, role) VALUES ($1, $2, $3, $4)
          ON CONFLICT (project_id, group_id) DO UPDATE SET role = EXCLUDED.role RETURNING created_at",
@@ -640,6 +685,15 @@ pub async fn grant_project_group(State(st): State<AppState>, c: Caller, P((id, g
 pub async fn revoke_project_group(State(st): State<AppState>, c: Caller, P((id, group_id)): P<(Uuid, Uuid)>) -> AppResult<StatusCode> {
     let ctx = require_project(&st.db, &c, id, ProjectRole::Admin, Allow::Session).await?;
     let mut tx = st.db.begin().await?;
+    let own: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM groups WHERE org_id = $1 AND id = $2 AND project_id = $3)")
+        .bind(ctx.org_id())
+        .bind(group_id)
+        .bind(ctx.project_id())
+        .fetch_one(&mut *tx)
+        .await?;
+    if own {
+        return Err(AppError::conflict("own_project_group", "本项目的项目群组不能单独撤销授权，请直接删除该群组"));
+    }
     let n = sqlx::query("DELETE FROM project_groups WHERE org_id = $1 AND project_id = $2 AND group_id = $3")
         .bind(ctx.org_id())
         .bind(ctx.project_id())
@@ -655,4 +709,3 @@ pub async fn revoke_project_group(State(st): State<AppState>, c: Caller, P((id, 
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
-

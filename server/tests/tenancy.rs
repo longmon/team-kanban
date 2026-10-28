@@ -229,7 +229,6 @@ async fn pat_scopes_and_bounds() {
     // 任何 scope 都不能：账号、组织管理、PAT 管理、审计、提交、SSE、view
     for (m, p) in [
         ("GET", "/api/auth/me".to_string()),
-        ("GET", "/api/orgs".into()),
         ("GET", format!("/api/orgs/{org}")),
         ("GET", format!("/api/orgs/{org}/audit")),
         ("GET", "/api/tokens".into()),
@@ -241,6 +240,14 @@ async fn pat_scopes_and_bounds() {
         assert_eq!(h.req(&pub_pat, m, &p, None).await.status, 403, "{m} {p}");
     }
     assert_eq!(h.req(&pub_pat, "DELETE", &format!("/api/tokens/{pub_id}"), None).await.status, 403);
+    // 任意 scope 的 PAT 都能列组织（agent 在空组织里建第一个项目用）；publish-only 不能建项目/群组
+    assert_eq!(h.req(&reader, "GET", "/api/orgs", None).await.ok(200)["items"][0]["my_role"], "owner");
+    let r = h.req(&pub_pat, "POST", &format!("/api/orgs/{org}/projects"), Some(json!({ "name": "x", "slug": "x" }))).await;
+    assert_eq!((r.status, r.code()), (403, "forbidden".into()));
+    assert_eq!(h.req(&pub_pat, "POST", &format!("/api/projects/{p1}/groups"), Some(json!({ "name": "x" }))).await.status, 403);
+    assert_eq!(h.req(&pub_pat, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "x" }))).await.status, 403);
+    h.req(&pub_pat, "GET", &format!("/api/projects/{p1}/groups"), None).await.ok(200);
+    assert_eq!(h.req(&reader, "GET", &format!("/api/projects/{p1}/groups"), None).await.status, 403);
     let r = h.req(&pub_pat, "POST", &format!("/api/pages/{page}/responses"), Some(json!({ "data": {} }))).await;
     assert_eq!((r.status, r.code()), (409, "not_allowed".into()));
 
@@ -442,4 +449,149 @@ async fn pat_lists_publish_targets() {
     assert_eq!(mp["items"][0]["id"], p1b.as_str());
     assert_eq!(h.req(&proj_pat, "GET", &format!("/api/orgs/{o1}/groups"), None).await.ok(200)["items"][0]["name"], "g1");
     assert_eq!(h.req(&proj_pat, "GET", &format!("/api/orgs/{o2}/groups"), None).await.status, 404);
+}
+
+#[tokio::test]
+async fn manage_scope_and_project_groups() {
+    let h = H::new().await;
+    let owner = register(&h, "owner@example.com").await;
+    let padmin = register(&h, "padmin@example.com").await;
+    let pviewer = register(&h, "pviewer@example.com").await;
+    let mate = register(&h, "mate@example.com").await;
+    let outsider = register(&h, "outsider@example.com").await;
+    let org = create_org(&h, &owner, "acme").await;
+    for u in [&padmin, &pviewer, &mate] {
+        join_org(&h, &owner, &org, u, "member").await;
+    }
+    let other_org = create_org(&h, &outsider, "other").await;
+
+    // manage PAT：成员可建项目（自己成为项目 admin）；项目级 PAT 不能建项目；越界组织 404
+    let (mpat, _) = create_pat(&h, &padmin, &["manage"], None, None).await;
+    let orgs = h.req(&mpat, "GET", "/api/orgs", None).await.ok(200);
+    assert_eq!(orgs["items"].as_array().unwrap().len(), 1);
+    let p = h.req(&mpat, "POST", &format!("/api/orgs/{org}/projects"), Some(json!({ "name": "设计", "slug": "design" }))).await.ok(201);
+    assert_eq!(p["my_role"], "admin");
+    let proj = s(&p["id"]);
+    let proj2 = create_project(&h, &owner, &org, "ops").await;
+    let (ppat, _) = create_pat(&h, &padmin, &["manage", "publish"], Some(&org), Some(&proj)).await;
+    let r = h.req(&ppat, "POST", &format!("/api/orgs/{org}/projects"), Some(json!({ "name": "x", "slug": "x" }))).await;
+    assert_eq!((r.status, r.code()), (403, "project_scoped_token".into()));
+    assert_eq!(h.req(&mpat, "POST", &format!("/api/orgs/{other_org}/projects"), Some(json!({ "name": "x", "slug": "x" }))).await.status, 404);
+    // 组织级群组仍要求 org admin（manage PAT 也一样）
+    assert_eq!(h.req(&mpat, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "x" }))).await.status, 403);
+    let (opat, _) = create_pat(&h, &owner, &["manage"], None, None).await;
+    let org_grp = s(&h.req(&opat, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "评审组" }))).await.ok(201)["id"]);
+
+    // 项目群组：manage PAT 建，自动授权 viewer、创建者与 members（邮箱/UUID）入组
+    add_project_member(&h, &padmin, &proj, &pviewer, "viewer").await;
+    let g = h
+        .req(&mpat, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "前端组", "members": ["MATE@example.com", pviewer.user_id] })))
+        .await
+        .ok(201);
+    assert_eq!((g["project_id"].as_str(), g["role"].as_str(), g["member_count"].as_i64()), (Some(proj.as_str()), Some("viewer"), Some(3)));
+    let grp = s(&g["id"]);
+    // mate 原本没有项目角色，入组后获得 viewer
+    assert_eq!(h.req(&mate, "GET", &format!("/api/projects/{proj}"), None).await.ok(200)["my_role"], "viewer");
+    // 非组织成员 → 409；role 只能 viewer/editor；同项目重名 409；不同项目可同名；与组织级群组同名也可以
+    let r = h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "x", "members": ["outsider@example.com"] }))).await;
+    assert_eq!((r.status, r.code()), (409, "not_org_member".into()));
+    assert_eq!(h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "x", "role": "admin" }))).await.status, 400);
+    let r = h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "前端组" }))).await;
+    assert_eq!((r.status, r.code()), (409, "name_taken".into()));
+    let grp2 = s(&h.req(&owner, "POST", &format!("/api/projects/{proj2}/groups"), Some(json!({ "name": "前端组", "role": "editor" }))).await.ok(201)["id"]);
+    h.req(&padmin, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "评审组" }))).await.ok(201);
+    let r = h.req(&owner, "POST", &format!("/api/orgs/{org}/groups"), Some(json!({ "name": "评审组" }))).await;
+    assert_eq!((r.status, r.code()), (409, "name_taken".into()));
+    // 非项目 admin（项目 viewer、无角色成员）不能建项目群组
+    assert_eq!(h.req(&pviewer, "POST", &format!("/api/projects/{proj}/groups"), Some(json!({ "name": "y" }))).await.status, 403);
+    assert_eq!(h.req(&mate, "POST", &format!("/api/projects/{proj2}/groups"), Some(json!({ "name": "y" }))).await.status, 404);
+    // 项目 admin 能管理自己项目的群组成员；管不了组织级群组
+    h.req(&padmin, "DELETE", &format!("/api/groups/{grp}/members/{}", mate.user_id), None).await;
+    h.req(&padmin, "POST", &format!("/api/groups/{grp}/members"), Some(json!({ "user_id": mate.user_id }))).await.ok(201);
+    assert_eq!(h.req(&padmin, "POST", &format!("/api/groups/{org_grp}/members"), Some(json!({ "user_id": mate.user_id }))).await.status, 403);
+    assert_eq!(h.req(&padmin, "PATCH", &format!("/api/groups/{grp2}"), Some(json!({ "name": "z" }))).await.status, 403);
+
+    // 授权：项目群组不能授权给其他项目；本项目群组授权不能单独撤销；组织级群组照旧
+    let r = h.req(&owner, "PUT", &format!("/api/projects/{proj}/groups/{grp2}"), Some(json!({ "role": "viewer" }))).await;
+    assert_eq!((r.status, r.code()), (409, "group_belongs_to_other_project".into()));
+    let r = h.req(&padmin, "DELETE", &format!("/api/projects/{proj}/groups/{grp}"), None).await;
+    assert_eq!((r.status, r.code()), (409, "own_project_group".into()));
+    h.req(&padmin, "PUT", &format!("/api/projects/{proj}/groups/{grp}"), Some(json!({ "role": "editor" }))).await.ok(200);
+    h.req(&padmin, "PUT", &format!("/api/projects/{proj}/groups/{org_grp}"), Some(json!({ "role": "viewer" }))).await.ok(200);
+    h.req(&padmin, "DELETE", &format!("/api/projects/{proj}/groups/{org_grp}"), None).await.ok(204);
+    h.req(&padmin, "PUT", &format!("/api/projects/{proj}/groups/{org_grp}"), Some(json!({ "role": "viewer" }))).await.ok(200);
+
+    // 组织群组列表：组织级 + 有角色项目的项目群组（带 project）；mate 看不到 ops 项目的群组
+    let names = |v: Value| v["items"].as_array().unwrap().iter().map(|g| (s(&g["name"]), g["project_id"].as_str().map(String::from))).collect::<Vec<_>>();
+    let all = names(h.req(&owner, "GET", &format!("/api/orgs/{org}/groups"), None).await.ok(200));
+    assert_eq!(all.len(), 4);
+    let seen = names(h.req(&mate, "GET", &format!("/api/orgs/{org}/groups"), None).await.ok(200));
+    assert!(seen.iter().all(|(_, p)| p.as_deref() != Some(proj2.as_str())), "{seen:?}");
+    assert_eq!(seen.len(), 3);
+
+    // 发页面：本项目群组、组织级群组可以；别的项目的群组拒绝
+    let (pub_pat, _) = create_pat(&h, &padmin, &["publish"], None, None).await;
+    let body = |gs: Vec<&str>| json!({ "project_id": proj, "title": "t", "kind": "openui", "content": "root = Stack([])", "visibility": "groups", "group_ids": gs });
+    let r = h.req(&pub_pat, "POST", "/api/pages", Some(body(vec![&grp2]))).await;
+    assert_eq!((r.status, r.code()), (400, "group_not_in_project".into()));
+    let page = publish_with(&h, &pub_pat, body(vec![&grp])).await;
+    let r = h.req(&pub_pat, "PATCH", &format!("/api/pages/{page}"), Some(json!({ "group_ids": [grp2] }))).await;
+    assert_eq!(r.code(), "group_not_in_project");
+    publish_with(&h, &pub_pat, body(vec![&org_grp])).await;
+
+    // 活跃：4 小时内有页面 → active；把页面时间改到 5 小时前 → 不活跃
+    let list = h.req(&pub_pat, "GET", &format!("/api/projects/{proj}/groups"), None).await.ok(200);
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    // 项目群组在前，组织级在后
+    assert!(items[0]["project_id"].is_string() && items[2]["project_id"].is_null(), "{list}");
+    let find = |id: &str| items.iter().find(|g| g["id"] == id).unwrap().clone();
+    let fg = find(&grp);
+    assert_eq!((fg["active"].as_bool(), fg["member_count"].as_i64(), fg["role"].as_str()), (Some(true), Some(3), Some("editor")));
+    assert!(fg["last_page_at"].is_string());
+    assert_eq!(find(&org_grp)["active"], true);
+    let idle = items.iter().find(|g| g["name"] == "评审组" && g["project_id"].is_string()).unwrap();
+    assert_eq!((idle["active"].as_bool(), idle["last_page_at"].is_null()), (Some(false), true));
+    sqlx::query("UPDATE pages SET created_at = now() - interval '5 hours', updated_at = now() - interval '5 hours' WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(&page).unwrap())
+        .execute(&h.db)
+        .await
+        .unwrap();
+    let list = h.req(&padmin, "GET", &format!("/api/projects/{proj}/groups"), None).await.ok(200);
+    let g = list["items"].as_array().unwrap().iter().find(|g| g["id"] == grp.as_str()).unwrap().clone();
+    assert_eq!((g["active"].as_bool(), g["last_page_at"].is_string()), (Some(false), true));
+
+    // 删除项目群组：授权、成员一起消失
+    h.req(&padmin, "DELETE", &format!("/api/groups/{grp}"), None).await.ok(204);
+    assert_eq!(h.req(&mate, "GET", &format!("/api/projects/{proj}"), None).await.status, 404);
+}
+
+#[tokio::test]
+async fn audience_without_project_role_sees_groups_page_in_list() {
+    let h = H::new().await;
+    let owner = register(&h, "owner@example.com").await;
+    let grouped = register(&h, "grouped@example.com").await;
+    let member = register(&h, "member@example.com").await;
+    let org = create_org(&h, &owner, "acme").await;
+    join_org(&h, &owner, &org, &grouped, "member").await;
+    join_org(&h, &owner, &org, &member, "member").await;
+    let proj = create_project(&h, &owner, &org, "p").await;
+    // 旧式组织级群组：不授权给项目，只作为页面受众
+    let grp = create_group(&h, &owner, &org, "g").await;
+    h.req(&owner, "POST", &format!("/api/groups/{grp}/members"), Some(json!({ "user_id": grouped.user_id }))).await.ok(201);
+    let gpage = publish(&h, &owner, &proj, "groups", &[&grp]).await;
+    let ppage = publish(&h, &owner, &proj, "project", &[]).await;
+    let ids = |v: Value| v["items"].as_array().unwrap().iter().map(|p| s(&p["id"])).collect::<Vec<_>>();
+    assert_eq!(ids(h.req(&grouped, "GET", "/api/pages", None).await.ok(200)), vec![gpage.clone()]);
+    assert!(ids(h.req(&member, "GET", "/api/pages", None).await.ok(200)).is_empty());
+    h.req(&grouped, "GET", &format!("/api/pages/{gpage}/view"), None).await.ok(200);
+    assert_eq!(h.req(&grouped, "GET", &format!("/api/pages/{ppage}/view"), None).await.status, 404);
+    // 动态流同口径
+    let act = h.req(&grouped, "GET", "/api/activity", None).await.ok(200);
+    assert!(act.to_string().contains(&gpage) && !act.to_string().contains(&ppage), "{act}");
+    let act = h.req(&member, "GET", "/api/activity", None).await.ok(200);
+    assert!(!act.to_string().contains(&gpage), "{act}");
+    // 旧组织级群组 project_id 为 null，授权行为不变
+    let g = h.req(&owner, "GET", &format!("/api/groups/{grp}"), None).await.ok(200);
+    assert!(g["project_id"].is_null() && g["project"].is_null());
 }

@@ -78,8 +78,8 @@ pub async fn create_token(State(st): State<AppState>, c: Caller, JsonBody(r): Js
     let mut scopes = r.scopes.clone();
     scopes.sort();
     scopes.dedup();
-    if scopes.is_empty() || !scopes.iter().all(|s| s == "publish" || s == "read_responses") {
-        return Err(AppError::field("scopes", "必须非空且只能是 publish/read_responses"));
+    if scopes.is_empty() || !scopes.iter().all(|s| matches!(s.as_str(), "publish" | "read_responses" | "manage")) {
+        return Err(AppError::field("scopes", "必须非空且只能是 publish/read_responses/manage"));
     }
     if let Some(e) = r.expires_in
         && !(86400..=31_536_000).contains(&e) {

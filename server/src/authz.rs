@@ -84,6 +84,7 @@ pub fn role_expr(org: &str, proj: &str, uid: &str, org_role: &str) -> String {
 pub enum Scope {
     Publish,
     ReadResponses,
+    Manage,
 }
 
 impl Scope {
@@ -91,6 +92,7 @@ impl Scope {
         match self {
             Scope::Publish => "publish",
             Scope::ReadResponses => "read_responses",
+            Scope::Manage => "manage",
         }
     }
 }
@@ -104,7 +106,12 @@ pub enum Allow {
 
 pub const PUBLISH: Allow = Allow::Pat(&[Scope::Publish]);
 pub const READ_RESPONSES: Allow = Allow::Pat(&[Scope::ReadResponses]);
-pub const ANY_SCOPE: Allow = Allow::Pat(&[Scope::Publish, Scope::ReadResponses]);
+/// 活跃群组：最近这么多秒内有页面发给它（发布或更新），见 GET /projects/{id}/groups
+pub const ACTIVE_GROUP_SECS: i64 = 4 * 3600;
+
+pub const MANAGE: Allow = Allow::Pat(&[Scope::Manage]);
+pub const PUBLISH_OR_MANAGE: Allow = Allow::Pat(&[Scope::Publish, Scope::Manage]);
+pub const ANY_SCOPE: Allow = Allow::Pat(&[Scope::Publish, Scope::ReadResponses, Scope::Manage]);
 
 fn user_of(c: &Caller) -> AppResult<Uuid> {
     c.p.user_id().ok_or_else(AppError::unauthenticated)
@@ -235,6 +242,8 @@ pub struct GroupCtx {
     org_id: Uuid,
     group_id: Uuid,
     user_id: Uuid,
+    project_id: Option<Uuid>,
+    admin: bool,
 }
 
 impl GroupCtx {
@@ -247,28 +256,40 @@ impl GroupCtx {
     pub fn user_id(&self) -> Uuid {
         self.user_id
     }
+    /// 项目群组所属项目；组织级群组为 None
+    pub fn project_id(&self) -> Option<Uuid> {
+        self.project_id
+    }
+    /// 能否管理该群组：组织 owner/admin，或（项目群组）该项目的 admin
+    pub fn admin(&self) -> bool {
+        self.admin
+    }
 }
 
+/// min = Admin 时，项目群组还接受所属项目的 admin（项目已删除则不算）
 pub async fn require_group(db: &PgPool, c: &Caller, group_id: Uuid, min: OrgRole, allow: Allow) -> AppResult<GroupCtx> {
     let user_id = user_of(c)?;
-    let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
-        "SELECT g.org_id, m.role FROM groups g
+    let sql = format!(
+        "SELECT g.org_id, m.role, g.project_id,
+                CASE WHEN g.project_id IS NULL THEN NULL
+                     ELSE (SELECT {} FROM projects pr WHERE pr.org_id = g.org_id AND pr.id = g.project_id AND pr.deleted_at IS NULL) END
+           FROM groups g
            JOIN orgs o ON o.id = g.org_id AND o.deleted_at IS NULL
            LEFT JOIN memberships m ON m.org_id = g.org_id AND m.user_id = $2
           WHERE g.id = $1",
-    )
-    .bind(group_id)
-    .bind(user_id)
-    .fetch_optional(db)
-    .await?;
-    let (org_id, role) = row.ok_or_else(AppError::not_found)?;
+        role_expr("pr.org_id", "pr.id", "$2", "m.role")
+    );
+    let row: Option<(Uuid, Option<String>, Option<Uuid>, Option<String>)> =
+        sqlx::query_as(&sql).bind(group_id).bind(user_id).fetch_optional(db).await?;
+    let (org_id, role, project_id, project_role) = row.ok_or_else(AppError::not_found)?;
     let role = role.as_deref().and_then(OrgRole::parse).ok_or_else(AppError::not_found)?;
     pat_bounds(c, org_id, None)?;
     check_allow(c, allow)?;
-    if role < min {
+    let admin = role >= OrgRole::Admin || project_role.as_deref() == Some("admin");
+    if role < min && !(min == OrgRole::Admin && admin) {
         return Err(AppError::forbidden());
     }
-    Ok(GroupCtx { org_id, group_id, user_id })
+    Ok(GroupCtx { org_id, group_id, user_id, project_id, admin })
 }
 
 // ---------------------------------------------------------------- 页面

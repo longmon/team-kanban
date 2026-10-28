@@ -1,4 +1,4 @@
-// 项目页：页面格子墙、成员与权限（直接成员、群组授权、邀请）、设置（api.md §4.3、§4.4、§7.1）；页面元数据编辑器供详情页「管理」使用
+// 项目页：页面格子墙、成员与权限（直接成员、项目群组、邀请）、设置（api.md §4.3、§4.4、§7.1）；页面元数据编辑器供详情页「管理」使用
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { SLUG_RE } from "./home";
 import { Wall } from "./feed";
-import { Invites, MemberPicker } from "./org";
+import { GroupDetail, Invites, MemberPicker } from "./org";
 import { AgentOnboarding } from "./settings";
 import type { Group, Org, Page, Paged, Project, ProjectGroupGrant, ProjectMember, ProjectRole, Visibility } from "../types";
 
@@ -73,7 +73,7 @@ export function ProjectPage({ orgSlug, projectSlug }: { orgSlug: string; project
           <PageHeader title={p.name} desc={p.description || undefined} />
           <div className="flex flex-col gap-10">
             <Section title="直接成员" desc="组织所有者/管理员自动拥有项目管理员权限。"><Members org={org} project={p} admin={admin} /></Section>
-            <Section title="群组授权" desc="授权后，群组成员按所选角色访问本项目。"><GroupGrants org={org} project={p} admin={admin} /></Section>
+            <Section title="项目群组" desc="本项目自己的群组（成员自动获得所选角色）和已授权的组织级群组。4 小时内有页面发给它的群组标为活跃，agent 发页面时优先发给活跃群组。"><ProjectGroups org={org} project={p} admin={admin} /></Section>
             {admin && <Section title="邀请" desc="组织外的人用邀请链接加入本项目。"><Invites org={org} listPath={`/projects/${p.id}/invites`} targets={["project"]} projectId={p.id} /></Section>}
           </div>
         </Shell>
@@ -111,6 +111,8 @@ export function PageMetaEditor({ page, groups, onSaved, onDeleted }: { page: Pag
     if (f.visibility === "public" && page.visibility !== "public") setAsk("public");
     else doSave();
   };
+  // 候选：本项目的项目群组在前，再组织级群组；不显示其他项目的群组
+  const candidates = [...groups.filter((g) => g.project_id === page.project_id), ...groups.filter((g) => !g.project_id)];
   const toggleGroup = (id: string) =>
     setF({ ...f, group_ids: f.group_ids.includes(id) ? f.group_ids.filter((g) => g !== id) : [...f.group_ids, id] });
   return (
@@ -122,9 +124,11 @@ export function PageMetaEditor({ page, groups, onSaved, onDeleted }: { page: Pag
       </Field>
       {f.visibility === "groups" && (
         <div className="checks">
-          {groups.length === 0 && <span className="muted small">组织内还没有群组。</span>}
-          {groups.map((g) => (
-            <CheckField key={g.id} checked={f.group_ids.includes(g.id)} onChange={() => toggleGroup(g.id)}>{g.name}</CheckField>
+          {candidates.length === 0 && <span className="muted small">本项目和组织都还没有群组。</span>}
+          {candidates.map((g) => (
+            <CheckField key={g.id} checked={f.group_ids.includes(g.id)} onChange={() => toggleGroup(g.id)}>
+              {g.name}{g.project_id && <span className="muted small">（本项目）</span>}
+            </CheckField>
           ))}
         </div>
       )}
@@ -217,43 +221,87 @@ function Members({ org, project, admin }: { org: Org; project: Project; admin: b
   );
 }
 
-function GroupGrants({ org, project, admin }: { org: Org; project: Project; admin: boolean }) {
+/** 项目群组：本项目自己的群组（可新建、管理成员，授权不能单独撤销）+ 已授权的组织级群组（可授权/撤销） */
+function ProjectGroups({ org, project, admin }: { org: Org; project: Project; admin: boolean }) {
   const grants = useLoad(() => get<{ items: ProjectGroupGrant[] }>(`/projects/${project.id}/groups`), [project.id]);
   const groups = useLoad(() => (admin ? get<Paged<Group>>(`/orgs/${org.id}/groups?limit=200`) : Promise.resolve({ items: [], next_cursor: null })), [org.id, admin]);
   const [pick, setPick] = useState({ group_id: "", role: "viewer" as ProjectRole });
+  const [f, setF] = useState({ name: "", role: "viewer" as ProjectRole });
+  const [open, setOpen] = useState<string | null>(null);
   const a = useAction();
   const setRole = (gid: string, role: ProjectRole) =>
     a.run(async () => (await put(`/projects/${project.id}/groups/${gid}`, { role }), grants.reload()));
-  const granted = new Set(grants.data?.items.map((g) => g.group.id));
+  const create = (e: FormEvent) => {
+    e.preventDefault();
+    a.run(async () => {
+      await post(`/projects/${project.id}/groups`, f);
+      toast.ok("已创建项目群组");
+      setF({ ...f, name: "" });
+      grants.reload();
+    });
+  };
+  const items = grants.data?.items ?? [];
+  const granted = new Set(items.map((g) => g.group.id));
   return (
+    <div className={admin ? "split" : "stack"}>
     <div className="stack">
       <ErrorBox error={grants.error || a.error} />
-      {!!grants.data?.items.length && <TableCard><Table>
-        <TableHeader><TableRow><TableHead>群组</TableHead><TableHead>角色</TableHead><TableHead>授权时间</TableHead><TableHead /></TableRow></TableHeader>
-        <TableBody>
-          {grants.data?.items.map((g) => (
-            <TableRow key={g.group.id}>
-              <TableCell>{g.group.name}</TableCell>
-              <TableCell>{admin ? <NativeSelect aria-label="角色" value={g.role} options={PROJECT_ROLES} onChange={(r) => setRole(g.group.id, r)} /> : ROLE_LABEL[g.role]}</TableCell>
-              <TableCell>{fmtTime(g.created_at)}</TableCell>
-              <TableCell className="text-right">
-                {admin && (
-                  <Button size="sm" variant="ghost-destructive" disabled={a.busy}
-                    onClick={() => a.run(async () => (await del(`/projects/${project.id}/groups/${g.group.id}`), grants.reload()))}>撤销授权</Button>
+      {items.length > 0 && (
+        <div className="list">
+          {items.map((g) => {
+            const own = g.project_id === project.id;
+            return (
+              <div key={g.group.id} className="list-row">
+                <div className="list-main">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="list-title">{g.group.name}</span>
+                    <Badge variant={own ? "info" : "secondary"}>{own ? "项目群组" : "组织群组"}</Badge>
+                    {g.active && <Badge variant="success">活跃</Badge>}
+                  </div>
+                  <div className="list-meta">{g.last_page_at ? `最近发页 ${fmtTime(g.last_page_at)}` : "还没有页面发给它"}</div>
+                </div>
+                <div className="list-stat">{g.member_count !== undefined && <><b>{g.member_count}</b> 人</>}</div>
+                <div className="list-actions">
+                  {admin ? <NativeSelect aria-label="角色" value={g.role} options={PROJECT_ROLES} onChange={(r) => setRole(g.group.id, r)} /> : ROLE_LABEL[g.role]}
+                  {own && <Button size="sm" variant="ghost" onClick={() => setOpen(open === g.group.id ? null : g.group.id)}>{open === g.group.id ? "收起" : "成员"}</Button>}
+                  {admin && !own && (
+                    <Button size="sm" variant="ghost-destructive" disabled={a.busy}
+                      onClick={() => a.run(async () => (await del(`/projects/${project.id}/groups/${g.group.id}`), grants.reload()))}>撤销授权</Button>
+                  )}
+                </div>
+                {own && open === g.group.id && (
+                  <div className="list-expand">
+                    <GroupDetail org={org} canManage={admin} onChange={grants.reload}
+                      group={{ id: g.group.id, org_id: org.id, name: g.group.name, description: g.description ?? "", member_count: g.member_count ?? 0, created_at: g.created_at, project_id: project.id }} />
+                  </div>
                 )}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table></TableCard>}
-      {grants.data?.items.length === 0 && <Empty icon={<ShieldCheck />} title="暂无群组授权">授权后，群组成员会按所选角色访问本项目。</Empty>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {grants.data?.items.length === 0 && <Empty icon={<ShieldCheck />} title="还没有项目群组">新建项目群组后，群组成员会按所选角色访问本项目，agent 也能把页面直接发给这个群组。</Empty>}
+    </div>
       {admin && (
-        <div className="row wrap toolbar">
-          <NativeSelect aria-label="群组" className="w-auto min-w-40" value={pick.group_id} onChange={(v) => setPick({ ...pick, group_id: v })}
-            options={[["", "选择群组"], ...(groups.data?.items.filter((g) => !granted.has(g.id)).map((g) => [g.id, g.name] as [string, string]) ?? [])]} />
-          <NativeSelect aria-label="角色" className="w-auto min-w-32" value={pick.role} onChange={(v) => setPick({ ...pick, role: v })} options={PROJECT_ROLES} />
-          <Button size="sm" disabled={!pick.group_id || a.busy}
-            onClick={() => setRole(pick.group_id, pick.role)?.then(() => setPick({ ...pick, group_id: "" }))}>授权</Button>
+        <div className="stack">
+          <Panel title="新建项目群组" desc="只属于本项目；你会自动加入，成员按所选角色访问本项目。">
+            <form onSubmit={create} className="form">
+              <Field label="名称"><Input required maxLength={100} placeholder="例如：前端组" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+              <Field label="成员角色"><NativeSelect value={f.role} onChange={(v) => setF({ ...f, role: v })} options={PROJECT_ROLES.filter(([r]) => r !== "admin")} /></Field>
+              <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy}>创建群组</Button></div>
+            </form>
+          </Panel>
+          <Panel title="授权组织级群组">
+            <div className="form">
+              <NativeSelect aria-label="群组" value={pick.group_id} onChange={(v) => setPick({ ...pick, group_id: v })}
+                options={[["", "选择群组"], ...(groups.data?.items.filter((g) => !g.project_id && !granted.has(g.id)).map((g) => [g.id, g.name] as [string, string]) ?? [])]} />
+              <NativeSelect aria-label="角色" value={pick.role} onChange={(v) => setPick({ ...pick, role: v })} options={PROJECT_ROLES} />
+              <div className="form-actions">
+                <Button size="sm" disabled={!pick.group_id || a.busy}
+                  onClick={() => setRole(pick.group_id, pick.role)?.then(() => setPick({ ...pick, group_id: "" }))}>授权</Button>
+              </div>
+            </div>
+          </Panel>
         </div>
       )}
     </div>

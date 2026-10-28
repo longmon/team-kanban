@@ -102,7 +102,8 @@ fn counts_sql(x: &str) -> String {
 }
 
 /// list_pages / activity 共用的可见性条件（作用于 page_select 的输出列）
-const VISIBLE: &str = "(role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group)))";
+/// 与 authz::PageRow::can_view 对 project/groups 一致：受众群组成员即使没有项目角色也能看到 groups 页面
+const VISIBLE: &str = "(role IN ('admin', 'editor') OR (visibility = 'groups' AND in_group) OR (role IS NOT NULL AND visibility <> 'groups'))";
 
 impl PageListRow {
     fn json(&self, public_url: &str) -> Value {
@@ -227,7 +228,7 @@ pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQue
             page_select()
         )
     };
-    let page_cols = "x.title, x.page_type, x.project_id, (x.role IN ('admin', 'editor') OR x.results_visible_to = 'viewers') AS can_view_results";
+    let page_cols = "x.title, x.page_type, x.project_id, (COALESCE(x.role IN ('admin', 'editor'), false) OR x.results_visible_to = 'viewers') AS can_view_results";
     let sql = format!(
         "SELECT e.etype, e.at, e.version, e.page_id, e.title, e.page_type, e.project_id, pr.name AS project_name,
                 u.display_name AS actor_name, e.nickname, e.can_view_results
@@ -370,8 +371,8 @@ fn check_results(v: &str) -> AppResult<()> {
     if matches!(v, "managers" | "viewers") { Ok(()) } else { Err(AppError::field("results_visible_to", "取值必须是 managers/viewers")) }
 }
 
-/// visibility=groups 时 group_ids 非空且都属于本组织；否则必须为空
-async fn check_groups(db: &mut sqlx::PgConnection, org_id: Uuid, visibility: &str, ids: Option<&[Uuid]>) -> AppResult<Vec<Uuid>> {
+/// visibility=groups 时 group_ids 非空，且每个都是本组织的组织级群组或本项目（project_id）的项目群组；否则必须为空
+async fn check_groups(db: &mut sqlx::PgConnection, org_id: Uuid, project_id: Uuid, visibility: &str, ids: Option<&[Uuid]>) -> AppResult<Vec<Uuid>> {
     let mut ids = ids.unwrap_or_default().to_vec();
     ids.sort();
     ids.dedup();
@@ -381,9 +382,23 @@ async fn check_groups(db: &mut sqlx::PgConnection, org_id: Uuid, visibility: &st
     if ids.is_empty() {
         return Err(AppError::field("group_ids", "visibility=groups 时必须指定至少一个群组"));
     }
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM groups WHERE org_id = $1 AND id = ANY($2)").bind(org_id).bind(&ids).fetch_one(db).await?;
+    let (n, other): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE project_id IS NOT NULL AND project_id <> $3) FROM groups WHERE org_id = $1 AND id = ANY($2)",
+    )
+    .bind(org_id)
+    .bind(&ids)
+    .bind(project_id)
+    .fetch_one(db)
+    .await?;
     if n as usize != ids.len() {
         return Err(AppError::field("group_ids", "群组不存在或不属于该组织"));
+    }
+    if other > 0 {
+        return Err(AppError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "group_not_in_project",
+            "group_ids 含其他项目的项目群组；只能发给组织级群组或本项目的项目群组",
+        ));
     }
     Ok(ids)
 }
@@ -441,7 +456,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     check_results(&results)?;
     let id = new_id();
     let mut tx = st.db.begin().await?;
-    let groups = check_groups(&mut tx, ctx.org_id(), &r.visibility, r.group_ids.as_deref()).await?;
+    let groups = check_groups(&mut tx, ctx.org_id(), ctx.project_id(), &r.visibility, r.group_ids.as_deref()).await?;
     sqlx::query(
         "INSERT INTO pages (id, org_id, project_id, title, kind, content, visibility, accept_responses, results_visible_to, created_by, created_via_pat, page_type, generated_by,
                             closes_at, summary, highlights)
@@ -555,7 +570,7 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     let new_vis = r.visibility.clone().unwrap_or_else(|| old_vis.clone());
     let new_groups = match (&r.group_ids, new_vis == old_vis) {
         (None, true) => old_groups.clone(),
-        (ids, _) => check_groups(&mut tx, ctx.org_id(), &new_vis, ids.as_deref()).await?,
+        (ids, _) => check_groups(&mut tx, ctx.org_id(), ctx.project_id(), &new_vis, ids.as_deref()).await?,
     };
     let content = match &r.content {
         Some(cnt) => {

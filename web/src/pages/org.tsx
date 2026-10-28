@@ -130,13 +130,16 @@ function Groups({ org }: { org: Org }) {
     <div className="stack">
       <ErrorBox error={list.error} />
       {list.loading && list.items.length === 0 && <ListSkeleton />}
-      {!list.loading && list.items.length === 0 && <Empty icon={<Users />} title="还没有群组">群组用来批量授权项目和页面，例如「评审组」。</Empty>}
+      {!list.loading && list.items.length === 0 && <Empty icon={<Users />} title="还没有群组">群组用来批量授权项目和页面，例如「评审组」。项目专属的群组在项目页「成员与权限」里新建。</Empty>}
       {list.items.length > 0 && (
         <div className="list">
           {list.items.map((g) => (
             <div key={g.id} className="list-row">
               <div className="list-main">
-                <span className="list-title">{g.name}</span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="list-title">{g.name}</span>
+                  {g.project && <Badge variant="info">项目：{g.project.name}</Badge>}
+                </div>
                 {g.description && <div className="list-meta">{g.description}</div>}
               </div>
               <div className="list-stat"><b>{g.member_count}</b> 人</div>
@@ -151,7 +154,7 @@ function Groups({ org }: { org: Org }) {
       <MoreButton p={list} />
     </div>
       {admin && (
-        <Panel title="新建群组">
+        <Panel title="新建组织级群组" desc="可授权给多个项目；只给某个项目用的群组请到该项目页新建。">
           <form onSubmit={submit} className="form">
             <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
             <Field label="描述"><Input value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
@@ -164,9 +167,10 @@ function Groups({ org }: { org: Org }) {
   );
 }
 
-function GroupDetail({ org, group, onChange }: { org: Org; group: Group; onChange: () => void }) {
+/** 群组成员与设置；canManage 缺省为组织管理员（项目页对项目群组传入项目管理员身份） */
+export function GroupDetail({ org, group, onChange, canManage }: { org: Org; group: Group; onChange: () => void; canManage?: boolean }) {
   const { me } = useSession();
-  const admin = isAdmin(org);
+  const admin = canManage ?? isAdmin(org);
   const members = usePaged<GroupMember>(`/groups/${group.id}/members`);
   const [edit, setEdit] = useState({ name: group.name, description: group.description });
   const a = useAction();

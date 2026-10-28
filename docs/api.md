@@ -47,13 +47,15 @@ type PageKind    = "openui" | "html"
 type PageType    = "general" | "report" | "knowledge" | "flowchart" | "architecture"
                  | "vote" | "requirement" | "task" | "task_tree"
 type PageCategory = "read" | "collect" | "collab"   // 由 page_type 推导，不入库（见 §7.0）
-type Scope       = "publish" | "read_responses"
+type Scope       = "publish" | "read_responses" | "manage"
 
 type Org     = { id: string; name: string; slug: string; my_role: OrgRole; created_at: string }
 type Project = { id: string; org_id: string; name: string; slug: string; description: string;
                  my_role: ProjectRole | null; created_at: string; updated_at: string }
 type Group   = { id: string; org_id: string; name: string; description: string;
-                 member_count: number; created_at: string }
+                 member_count: number; created_at: string;
+                 project_id: string | null;                 // 非空 = 专属该项目的「项目群组」；null = 组织级群组
+                 project: { id: string; name: string } | null }
 
 type Page = {
   id: string; org_id: string; project_id: string;
@@ -182,7 +184,7 @@ type Response = {
 
 | 方法 路径 | 鉴权 | 权限 | 请求 | 响应 |
 |---|---|---|---|---|
-| GET /api/orgs | cookie | 登录 | – | 200 `{ items: Org[], next_cursor }` |
+| GET /api/orgs | cookie, pat:任一 scope | 登录 | – | 200 `{ items: Org[], next_cursor }`（含 `my_role`；PAT 限定了组织时只返回该组织；空组织也在，agent 据此建第一个项目） |
 | POST /api/orgs | cookie | 登录 | `{ name, slug }` | 201 `Org`（创建者 owner） |
 | GET /api/orgs/{org_id} | cookie | member+ | – | 200 `Org` |
 | PATCH /api/orgs/{org_id} | cookie | admin+ | `{ name?, slug? }` | 200 `Org` |
@@ -209,11 +211,11 @@ type OrgMember = { user: UserBrief & { email: string }; role: OrgRole; joined_at
 | 方法 路径 | 鉴权 | 权限 | 请求 | 响应 |
 |---|---|---|---|---|
 | GET /api/orgs/{org_id}/projects | cookie | member+ | `?limit&cursor` | 200 `{ items: Project[], next_cursor }`：org admin+ 看全部；其他人只看 `my_role != null` 的 |
-| POST /api/orgs/{org_id}/projects | cookie | member+ | `{ name, slug, description? }` | 201 `Project`（创建者成为项目 admin） |
+| POST /api/orgs/{org_id}/projects | cookie, pat:manage | member+ | `{ name, slug, description? }` | 201 `Project`（创建者成为项目 admin）；限定了项目的 PAT → 403 `project_scoped_token`；PAT 限定的组织外 → 404 |
 | GET /api/projects/{project_id} | cookie | 项目任一角色 | – | 200 `Project` |
 | PATCH /api/projects/{project_id} | cookie | 项目 admin | `{ name?, slug?, description? }` | 200 `Project` |
 | DELETE /api/projects/{project_id} | cookie | 项目 admin | – | 204（软删，页面随之不可访问） |
-| GET /api/me/projects | cookie, pat:publish, pat:read_responses | 登录 | – | 200 `{ items: MyProject[] }`（不分页，受 PAT 范围限制） |
+| GET /api/me/projects | cookie, pat:任一 scope | 登录 | – | 200 `{ items: MyProject[] }`（不分页，受 PAT 范围限制） |
 
 ```ts
 type MyProject = {
@@ -230,6 +232,14 @@ type MyProject = {
 ```ts
 type ProjectMember = { user: UserBrief & { email: string }; role: ProjectRole; joined_at: string }
 type ProjectGroupGrant = { group: { id: string; name: string }; role: ProjectRole; created_at: string }
+// GET /api/projects/{id}/groups 的列表项在 ProjectGroupGrant 之外还有：
+type ProjectGroupItem = ProjectGroupGrant & {
+  id: string; name: string; description: string;
+  project_id: string | null;     // 等于本项目 = 本项目的项目群组；null = 已授权的组织级群组
+  member_count: number;
+  last_page_at: string | null;   // 最近一次有页面发给该群组的时间：page_groups 关联的未删除页面 updated_at 的最大值（发布、更新都会刷新）
+  active: boolean                // last_page_at 在 4 小时内（服务端常量 ACTIVE_GROUP_SECS）
+}
 ```
 
 | 方法 路径 | 鉴权 | 权限 | 请求 | 响应 |
@@ -238,9 +248,10 @@ type ProjectGroupGrant = { group: { id: string; name: string }; role: ProjectRol
 | POST /api/projects/{id}/members | cookie | 项目 admin | `{ user_id, role }` | 201 `ProjectMember`；409 `not_org_member` / `already_member` |
 | PATCH /api/projects/{id}/members/{user_id} | cookie | 项目 admin | `{ role }` | 200 `ProjectMember` |
 | DELETE /api/projects/{id}/members/{user_id} | cookie | 项目 admin，或本人退出 | – | 204 |
-| GET /api/projects/{id}/groups | cookie | 项目任一角色 | – | 200 `{ items: ProjectGroupGrant[] }` |
-| PUT /api/projects/{id}/groups/{group_id} | cookie | 项目 admin | `{ role }` | 200 `ProjectGroupGrant`（新增或改角色） |
-| DELETE /api/projects/{id}/groups/{group_id} | cookie | 项目 admin | – | 204 |
+| GET /api/projects/{id}/groups | cookie, pat:publish, pat:manage | 项目任一角色 | – | 200 `{ items: ProjectGroupItem[] }`（项目群组在前，再按 last_page_at 降序） |
+| POST /api/projects/{id}/groups | cookie, pat:manage | 项目 admin（含 org owner/admin） | `{ name, description?, role?: "viewer"\|"editor"（默认 viewer）, members?: string[] }` | 201 `Group & { role }`：建本项目的项目群组，自动授权给本项目（role），创建者与 members 入组；members 为用户 UUID 或邮箱，必须是组织成员（否则 409 `not_org_member`，details.member），最多 200 个；同项目重名 409 `name_taken` |
+| PUT /api/projects/{id}/groups/{group_id} | cookie | 项目 admin | `{ role }` | 200 `ProjectGroupGrant`（新增或改角色）；其他项目的项目群组 → 409 `group_belongs_to_other_project` |
+| DELETE /api/projects/{id}/groups/{group_id} | cookie | 项目 admin | – | 204；本项目的项目群组 → 409 `own_project_group`（不能撤成孤儿，直接删群组） |
 
 ### 4.5 群组
 
@@ -250,14 +261,18 @@ type GroupMember = { user: UserBrief & { email: string }; joined_at: string }
 
 | 方法 路径 | 鉴权 | 权限 | 请求 | 响应 |
 |---|---|---|---|---|
-| GET /api/orgs/{org_id}/groups | cookie, pat:publish | member+ | `?limit&cursor` | 200 `{ items: Group[], next_cursor }` |
-| POST /api/orgs/{org_id}/groups | cookie | org admin+ | `{ name, description? }` | 201 `Group`；409 `name_taken` |
+| GET /api/orgs/{org_id}/groups | cookie, pat:publish, pat:manage | member+ | `?limit&cursor` | 200 `{ items: Group[], next_cursor }`：组织级群组 + 调用者有项目角色的未删除项目的项目群组 |
+| POST /api/orgs/{org_id}/groups | cookie, pat:manage | org admin+ | `{ name, description? }` | 201 `Group`（组织级，project_id=null）；409 `name_taken` |
 | GET /api/groups/{group_id} | cookie | member+ | – | 200 `Group` |
-| PATCH /api/groups/{group_id} | cookie | org admin+ | `{ name?, description? }` | 200 `Group` |
-| DELETE /api/groups/{group_id} | cookie | org admin+ | – | 204（同时移除页面受众与项目授权） |
+| PATCH /api/groups/{group_id} | cookie | org admin+；项目群组另允许所属项目 admin | `{ name?, description? }` | 200 `Group` |
+| DELETE /api/groups/{group_id} | cookie | 同上 | – | 204（同时移除页面受众与项目授权） |
 | GET /api/groups/{group_id}/members | cookie | member+ | `?limit&cursor` | 200 `{ items: GroupMember[], next_cursor }` |
-| POST /api/groups/{group_id}/members | cookie | org admin+ | `{ user_id }` | 201 `GroupMember`；409 `not_org_member` / `already_member` |
-| DELETE /api/groups/{group_id}/members/{user_id} | cookie | org admin+，或本人退出 | – | 204 |
+| POST /api/groups/{group_id}/members | cookie | org admin+；项目群组另允许所属项目 admin | `{ user_id }` | 201 `GroupMember`；409 `not_org_member` / `already_member` |
+| DELETE /api/groups/{group_id}/members/{user_id} | cookie | 同上，或本人退出 | – | 204 |
+
+两类群组：**组织级群组**（`project_id = null`，旧数据全部是这种）可授权给多个项目、可作任意项目页面的受众；名称在组织内唯一。
+**项目群组**（`project_id` 非空）专属一个项目：创建时自动授权给该项目，不能授权给其他项目，也不能单独撤销授权；名称在该项目内唯一，不同项目可同名，也可与组织级群组同名。
+发页面 `visibility=groups` 时 `group_ids` 只能是组织级群组或本页面所属项目的项目群组，其他项目的群组 → 400 `group_not_in_project`。
 
 ## 5. 邀请
 
@@ -323,7 +338,9 @@ type Pat = {
 | POST /api/tokens | cookie | `{ name, scopes: Scope[], org_id?, project_id?, expires_in? }` | 201 `{ pat: Pat, token: "arp_…" }`（**token 只返回这一次**） |
 | DELETE /api/tokens/{id} | cookie | – | 204（置 revoked_at，立即生效） |
 
-校验：`scopes` 非空且 ⊆ {publish, read_responses}；`project_id` 需同时给 `org_id` 且项目属于该组织；创建者须是该组织成员（有 project_id 时须有项目角色）；`expires_in` 为 null（不过期）或 86400..31536000。
+`manage` scope：建项目（`POST /api/orgs/{id}/projects`，PAT 不能限定项目）、建项目群组（`POST /api/projects/{id}/groups`）、建组织级群组（`POST /api/orgs/{id}/groups`，仍要求 org admin+）。角色要求与网页相同，令牌不放大权限。
+
+校验：`scopes` 非空且 ⊆ {publish, read_responses, manage}；`project_id` 需同时给 `org_id` 且项目属于该组织；创建者须是该组织成员（有 project_id 时须有项目角色）；`expires_in` 为 null（不过期）或 86400..31536000。
 
 ## 7. 页面
 
@@ -664,20 +681,35 @@ type AuditEntry = {
 ### 14.0 目标解析与「需要选择」
 - 需要服务器的工具都有可选入参 `server`（profile 名）。选择顺序：入参 `server` → 用户显式设置的默认服务器（`tkanban add --default` / `tkanban default`）→ 只有一个 profile 时用它 → 否则返回「需要选择」。
 - `publish_page` 再按 组织 → 项目 定位（`list_pages` 给了 org/project 时同样）：入参 `org`/`project` 优先，缺省取 profile 的 `org`/`project`（视为已指定；显式给了 `org` 时不再套用 profile 的 `project`）。候选为 `GET /api/me/projects` 里 `can_publish=true` 的项目；`project` 为 UUID 或 `org/slug` 时不再按 org 过滤。
-- 给了群组名而组织不唯一时，先用 `GET /api/orgs/{id}/groups` 找出同时包含这些群组的组织：只有一个就用它，多个就返回 `need_selection: "group"`。
+- 给了群组名而组织不唯一时，先用 `GET /api/orgs/{id}/groups` 找出同时包含这些群组的组织（只认组织级群组和候选项目自己的项目群组）：只有一个就用它，多个就返回 `need_selection: "group"`。
+- 群组名解析（大小写不敏感）：先匹配选定项目的项目群组，再匹配组织级群组；其他项目的群组不认。
+- **自动选群组**（`publish_page`）：选定项目后，若入参没给 `groups` 和 `visibility`、profile 也没有默认 `groups`，查 `GET /api/projects/{id}/groups` 的活跃群组（`active`=4 小时内有页面发给它）：
+  0 个 → `visibility=project`；恰好 1 个 → 自动发给它，出参附 `auto_group: { id, name, reason: "项目里唯一的活跃群组（4 小时内有页面）" }` 与 `tell_user`（agent 须在回复里告诉用户发给了哪个群组）；
+  多个 → `need_selection: "group"`，`candidates` 为这些活跃群组 `{group, id, project_group, last_page_at, member_count}` 加一项 `{visibility: "project", label}`（整个项目），并附 `project`（选定项目）与 `retry` 说明。该查询失败（旧服务端）时按 0 个处理。
+- agent 的选择方式（写在 INSTRUCTIONS / 工具描述 / CHOOSE_HINT）：先根据对话上下文推测项目和群组（用户提到的团队/小组名、正在讨论的项目），有把握就直接带参数；没把握且有多个候选时再把候选给用户选；没有合适的项目/群组时可调用 `create_project` / `create_group` 创建（创建前在回复里说明要建什么）。
 - 某一级候选多于一个时**不猜**，返回非错误结果（`isError` 不置位）：
   ```ts
   { need_selection: "server" | "org" | "project" | "group",
     candidates: Array<…>,   // server: {name,url,org,project,groups}；org: {id,name,slug,projects[]}；
                             // project: {id,name,slug,ref:"org/slug",org}；group: {org,groups[{id,name}],projects[]}
-    hint: "请询问用户要发到哪个服务器、哪个项目或群组，再带上参数重试（不要自行猜测）。" }
+    hint: "有多个候选：如果对话上下文……能明确对应其中一个，就直接带上该参数重试；仍没把握时请询问用户……再带上参数重试。" }
   ```
 - page_id 定位的工具（`update_page`/`create_share_link`/`get_responses`）只需要 `server`：`publish_page` 的出参带 `server`，后续调用原样带上（不在本地记录 page_id → server 映射）。
-- 服务端不新增端点：可发布目标由 PAT 调 `GET /api/me/projects`（任一 scope，已按 PAT 的 org/project 范围裁剪，只含有项目角色的项目）与 `GET /api/orgs/{id}/groups`（需 `publish`，范围外组织 404）拼出。
+- 可发布目标由 PAT 调 `GET /api/orgs`（任一 scope，空组织也在；旧服务端不支持时退回项目所在组织）、`GET /api/me/projects`（任一 scope，已按 PAT 的 org/project 范围裁剪，只含有项目角色的项目）、`GET /api/projects/{id}/groups`（publish/manage）与 `GET /api/orgs/{id}/groups`（publish/manage，范围外组织 404）拼出。
 
 ### list_targets
 - 入参：`{ server?: string }`（缺省列出全部 profile）
-- 出参：`{ servers: [{ server, url, default: boolean, profile_defaults: {org,project,groups}, orgs: [{ id, name, slug, projects: [{id,name,slug,role}], groups: [{id,name}] | groups_error }] } | { server, url, error }], rule }`，只含 `can_publish` 的项目。
+- 出参：`{ servers: [{ server, url, default: boolean, profile_defaults: {org,project,groups}, orgs: [{ id, name, slug, my_role, projects: [{id,name,slug,role, groups: [{id,name,project_group,role,member_count,active,last_page_at}] | groups_error}], groups: [{id,name}] /* 组织级 */ | groups_error }] } | { server, url, error }], rule }`，只含 `can_publish` 的项目；组织来自 `GET /api/orgs`，没有项目的组织也列出（projects 为空）。
+
+### create_project
+- 入参：`{ server?: string, org?: string /* slug/UUID/名称；缺省取 profile org；只有一个组织时可省略 */, name: string, slug?: string, description?: string }`
+- slug 缺省由 name 生成：转小写，非 `[a-z0-9]` 的连续字符变成一个 `-`，去首尾 `-`，最长 35；生成不了（如纯中文）用 `p-` + 4 位十六进制；自动生成的 slug 撞了（409 `slug_taken`）加 `-xxxx` 后缀重试一次。
+- 调 `POST /api/orgs/{org_id}/projects`；出参 `{ server, project: {id,name,slug,ref:"org/slug"}, org: {id,name,slug}, next_step }`。
+- 403 `forbidden` 时 text 末尾追加提示：令牌缺 `manage`（或本人角色不够），去 设置→访问令牌 重建勾选「管理（建项目、建群组）」的令牌，再 `tkanban remove`/`tkanban add` 换上。
+
+### create_group
+- 入参：`{ server?, org?, project?, name: string, description?: string, role?: "viewer" | "editor", members?: string[] /* 用户 UUID 或邮箱 */ }`；项目定位同 publish_page 的 org/project（含 profile 默认），不要求发布权。
+- 调 `POST /api/projects/{id}/groups`；出参 `{ server, group: {id,name,project_id,role,member_count}, project, next_step }`；权限不足的提示同 create_project。
 
 ### get_ui_guide
 - 入参：`{ kind?: "openui" | "html", server?: string }`（kind 缺省两者都给；server 缺省取默认或第一个，不询问）
@@ -701,7 +733,8 @@ type AuditEntry = {
     html?: string,              // kind=html 时
     file_path?: string,         // 替代 spec/html：从本地文件读取（按 kind 解释）
     visibility?: Visibility,    // 默认 "project"；给了 groups（含 profile 默认 groups）时默认 "groups"
-    groups?: string[],          // 群组 UUID 或群组名（大小写不敏感）；给了就发到这些群组，此时 visibility 只能是 groups 或不填
+    groups?: string[],          // 群组 UUID 或群组名（大小写不敏感，先本项目群组再组织级群组）；给了就发到这些群组，此时 visibility 只能是 groups 或不填；
+                                // groups 与 visibility 都不给时按 §14.0「自动选群组」
     accept_responses?: boolean, // vote 默认 true；只读类默认 false 且不能为 true
     results_visible_to?: "managers" | "viewers",   // 默认 "managers"
     closes_at?: string,         // 截止时间：只接受带时区的 ISO 8601 / RFC 3339（如 "2026-10-31T18:00:00+08:00"），须晚于现在；本地时间由 agent 按用户时区换算后带偏移
@@ -712,7 +745,7 @@ type AuditEntry = {
   `spec`/`html`/`file_path` 恰好一个，且与 kind 匹配。目标按 §14.0 解析；群组名经 `GET /api/orgs/{org_id}/groups` 解析（大小写不敏感，找不到报错）。
 - 选型（写在工具描述与 INSTRUCTIONS 里）：用户明确指定类型时照用；否则只给人看、不需要回复 → `report` / `knowledge` / `flowchart` / `architecture`（流程图、架构图用 `Diagram` 写 Mermaid），需要对方选择或填写 → `vote`；拿不准时需要回复选 vote，不需要选 report。
 - 本地校验（kind=openui）：design §8.3；失败返回 `isError`，text 为 `openui_invalid:` + 错误列表（每条 `行:列 code message`，取自 parser `meta.errors` 与 unresolved 名称）。只读类 spec 含 `@ToAssistant` 或 `Form(` → `page_type_mismatch:`，不调服务端。
-- 出参：`{ server, id, url, version, visibility, page_type, category, warnings: string[], next_step }`（`POST /api/pages`）；`next_step` 提示下一步（只读类：「把 url 发给用户即可，无需等待」；收集类：用 get_responses 等待）；或 §14.0 的「需要选择」
+- 出参：`{ server, id, url, version, visibility, page_type, category, warnings: string[], next_step, auto_group?, tell_user? }`（`POST /api/pages`；后两项仅自动选中唯一活跃群组时出现）；`next_step` 提示下一步（只读类：「把 url 发给用户即可，无需等待」；收集类：用 get_responses 等待）；或 §14.0 的「需要选择」
 
 ### update_page
 - 入参：`{ server?: string, page_id: string, title?, model?, spec?, html?, file_path?, visibility?, groups?, accept_responses?, results_visible_to?, closes_at?, summary?, highlights? }`；至少一个可选字段。`closes_at` / `summary` 传空字符串发送 null（清除），`highlights` 传 `[]` 清除。`model` 同 publish_page（改内容时传自己的模型名称），给了就覆盖页面的 `generated_by`。内容类入参须与页面 kind 一致（先 `GET /api/pages/{id}` 取 kind），openui 同样本地校验。

@@ -9,20 +9,25 @@ use super::{list, orgs::{ensure_org_member, member_json}, require_any};
 use crate::{
     AppState, audit,
     auth::Caller,
-    authz::{Allow, OrgRole, PUBLISH, require_group, require_org},
+    authz::{Allow, MANAGE, OrgRole, PUBLISH_OR_MANAGE, ProjectRole, require_group, require_org, require_project, role_expr},
     error::{AppError, AppResult, JsonBody, P, Q, unique_violation},
     util::{PageQuery, new_id, paginate, text_field, time_cursor, ts},
 };
 
 type J = AppResult<Json<Value>>;
-type GroupRow = (Uuid, Uuid, String, String, i64, DateTime<Utc>);
+type GroupRow = (Uuid, Uuid, String, String, i64, DateTime<Utc>, Option<Uuid>, Option<String>);
 
 const GROUP_SELECT: &str = "SELECT g.id, g.org_id, g.name, g.description,
-        (SELECT count(*) FROM group_members gm WHERE gm.org_id = g.org_id AND gm.group_id = g.id) AS member_count, g.created_at
-   FROM groups g";
+        (SELECT count(*) FROM group_members gm WHERE gm.org_id = g.org_id AND gm.group_id = g.id) AS member_count, g.created_at,
+        g.project_id, pr.name AS project_name
+   FROM groups g LEFT JOIN projects pr ON pr.org_id = g.org_id AND pr.id = g.project_id";
 
+/// project_id 非空 = 项目群组（project 为所属项目）；null = 组织级群组
 fn group_json(r: &GroupRow) -> Value {
-    json!({ "id": r.0, "org_id": r.1, "name": r.2, "description": r.3, "member_count": r.4, "created_at": ts(&r.5) })
+    json!({
+        "id": r.0, "org_id": r.1, "name": r.2, "description": r.3, "member_count": r.4, "created_at": ts(&r.5),
+        "project_id": r.6, "project": r.6.map(|id| json!({ "id": id, "name": r.7 })),
+    })
 }
 
 pub async fn group_by_id(db: &PgPool, org_id: Uuid, group_id: Uuid) -> AppResult<Value> {
@@ -35,14 +40,20 @@ fn name_taken(e: sqlx::Error) -> AppError {
     if unique_violation(&e).is_some() { AppError::conflict("name_taken", "群组名已存在") } else { e.into() }
 }
 
+/// 组织级群组 + 调用者有角色的未删除项目的项目群组（不向无权的组织成员暴露其他项目的群组/项目名）
 pub async fn list_groups(State(st): State<AppState>, c: Caller, P(org_id): P<Uuid>, Q(q): Q<PageQuery>) -> J {
-    let ctx = require_org(&st.db, &c, org_id, OrgRole::Member, PUBLISH).await?;
+    let ctx = require_org(&st.db, &c, org_id, OrgRole::Member, PUBLISH_OR_MANAGE).await?;
     let rows: Vec<GroupRow> = sqlx::query_as(&format!(
-        "{GROUP_SELECT} WHERE g.org_id = $1 AND ($2::uuid IS NULL OR g.id < $2) ORDER BY g.id DESC LIMIT $3"
+        "{GROUP_SELECT} WHERE g.org_id = $1 AND ($2::uuid IS NULL OR g.id < $2)
+            AND (g.project_id IS NULL OR (pr.deleted_at IS NULL AND {} IS NOT NULL))
+          ORDER BY g.id DESC LIMIT $3",
+        role_expr("g.org_id", "g.project_id", "$4", "$5::text")
     ))
     .bind(ctx.org_id())
     .bind(q.cursor_id()?)
     .bind(q.limit() + 1)
+    .bind(ctx.user_id())
+    .bind(ctx.role().as_str())
     .fetch_all(&st.db)
     .await?;
     let (rows, next) = paginate(rows, q.limit(), |r| r.0.to_string());
@@ -56,7 +67,7 @@ pub struct GroupReq {
 }
 
 pub async fn create_group(State(st): State<AppState>, c: Caller, P(org_id): P<Uuid>, JsonBody(r): JsonBody<GroupReq>) -> AppResult<(StatusCode, Json<Value>)> {
-    let ctx = require_org(&st.db, &c, org_id, OrgRole::Admin, Allow::Session).await?;
+    let ctx = require_org(&st.db, &c, org_id, OrgRole::Admin, MANAGE).await?;
     let name = text_field("name", r.name.as_deref().unwrap_or(""), 1, 100)?;
     let desc = r.description.as_deref().map(|d| text_field("description", d, 0, 2000)).transpose()?.unwrap_or_default();
     let id = new_id();
@@ -73,6 +84,99 @@ pub async fn create_group(State(st): State<AppState>, c: Caller, P(org_id): P<Uu
     audit::log(&mut tx, Some(ctx.org_id()), &c.actor(), "group.create", "group", Some(id), json!({})).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(group_by_id(&st.db, ctx.org_id(), id).await?)))
+}
+
+#[derive(Deserialize)]
+pub struct ProjectGroupReq {
+    name: Option<String>,
+    description: Option<String>,
+    /// 群组成员获得的项目角色：viewer（默认）/ editor
+    role: Option<String>,
+    /// 初始成员：user_id 或邮箱，必须是组织成员；创建者总会加入
+    members: Option<Vec<String>>,
+}
+
+const MAX_INITIAL_MEMBERS: usize = 200;
+
+/// POST /projects/{id}/groups：项目 admin 建项目群组，自动授权给本项目（role）并把创建者和 members 加入
+pub async fn create_project_group(
+    State(st): State<AppState>,
+    c: Caller,
+    P(project_id): P<Uuid>,
+    JsonBody(r): JsonBody<ProjectGroupReq>,
+) -> AppResult<(StatusCode, Json<Value>)> {
+    let ctx = require_project(&st.db, &c, project_id, ProjectRole::Admin, MANAGE).await?;
+    let name = text_field("name", r.name.as_deref().unwrap_or(""), 1, 100)?;
+    let desc = r.description.as_deref().map(|d| text_field("description", d, 0, 2000)).transpose()?.unwrap_or_default();
+    let role = match r.role.as_deref().unwrap_or("viewer") {
+        v @ ("viewer" | "editor") => v,
+        _ => return Err(AppError::field("role", "取值必须是 viewer/editor")),
+    };
+    let members = r.members.unwrap_or_default();
+    if members.len() > MAX_INITIAL_MEMBERS {
+        return Err(AppError::field("members", "一次最多 200 人"));
+    }
+    let id = new_id();
+    let mut tx = st.db.begin().await?;
+    let mut uids = vec![ctx.user_id()];
+    for m in &members {
+        let m = m.trim();
+        let by_id = Uuid::parse_str(m).ok();
+        let uid: Option<Uuid> = sqlx::query_scalar(
+            "SELECT u.id FROM users u JOIN memberships ms ON ms.user_id = u.id AND ms.org_id = $1
+              WHERE ($2::uuid IS NOT NULL AND u.id = $2) OR ($2::uuid IS NULL AND u.email = $3)",
+        )
+        .bind(ctx.org_id())
+        .bind(by_id)
+        .bind(m.to_lowercase())
+        .fetch_optional(&mut *tx)
+        .await?;
+        let uid = uid.ok_or_else(|| {
+            let mut e = AppError::conflict("not_org_member", &format!("「{m}」不是本组织成员（只能添加组织成员，组织外的人请先邀请）"));
+            e.details = Some(json!({ "member": m }));
+            e
+        })?;
+        if !uids.contains(&uid) {
+            uids.push(uid);
+        }
+    }
+    sqlx::query("INSERT INTO groups (id, org_id, project_id, name, description, created_by) VALUES ($1, $2, $3, $4, $5, $6)")
+        .bind(id)
+        .bind(ctx.org_id())
+        .bind(ctx.project_id())
+        .bind(&name)
+        .bind(&desc)
+        .bind(ctx.user_id())
+        .execute(&mut *tx)
+        .await
+        .map_err(name_taken)?;
+    sqlx::query("INSERT INTO project_groups (org_id, project_id, group_id, role) VALUES ($1, $2, $3, $4)")
+        .bind(ctx.org_id())
+        .bind(ctx.project_id())
+        .bind(id)
+        .bind(role)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO group_members (org_id, group_id, user_id) SELECT $1, $2, unnest($3::uuid[])")
+        .bind(ctx.org_id())
+        .bind(id)
+        .bind(&uids)
+        .execute(&mut *tx)
+        .await?;
+    audit::log(
+        &mut tx,
+        Some(ctx.org_id()),
+        &c.actor(),
+        "group.create",
+        "group",
+        Some(id),
+        json!({ "project_id": ctx.project_id(), "role": role, "members": uids.len() }),
+    )
+    .await?;
+    tx.commit().await?;
+    let mut g = group_by_id(&st.db, ctx.org_id(), id).await?;
+    g["role"] = json!(role);
+    Ok((StatusCode::CREATED, Json(g)))
 }
 
 pub async fn get_group(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
@@ -154,8 +258,8 @@ pub async fn add_member(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, J
 
 pub async fn remove_member(State(st): State<AppState>, c: Caller, P((id, user_id)): P<(Uuid, Uuid)>) -> AppResult<StatusCode> {
     let ctx = require_group(&st.db, &c, id, OrgRole::Member, Allow::Session).await?;
-    if user_id != ctx.user_id() {
-        require_org(&st.db, &c, ctx.org_id(), OrgRole::Admin, Allow::Session).await?;
+    if user_id != ctx.user_id() && !ctx.admin() {
+        return Err(AppError::forbidden());
     }
     let mut tx = st.db.begin().await?;
     let n = sqlx::query("DELETE FROM group_members WHERE org_id = $1 AND group_id = $2 AND user_id = $3")
