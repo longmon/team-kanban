@@ -105,7 +105,7 @@ Dockerfile docker-compose.yml Caddyfile.example
 
 **pages** — `id`、`org_id`、`project_id`（FK `(org_id, project_id)`）、`title(1..200)`、`kind ∈ {openui, html}`（创建后不可改）、`content text`（openui ≤ 512 KiB，html ≤ 5 MiB，CHECK 兜底）、`version int`（content 变更 +1）、`visibility ∈ {public, org, project, groups}`、`accept_responses bool`、`results_visible_to ∈ {managers, viewers}`、`response_seq bigint`（最后分配的序号 = 提交总数）、`created_by`、`created_via_pat uuid?`、时间戳、`deleted_at?`。索引 `(project_id, id DESC) WHERE deleted_at IS NULL`。
 
-**页面类型**（0002）— `pages.page_type text NOT NULL DEFAULT 'general'`，CHECK 取值 ∈ {general, report, knowledge, flowchart, architecture, vote, requirement, task, task_tree}；与 `kind` 正交，创建后不可改。大类不入库，由代码里的纯函数 `page_category(page_type)` 推导：read = report/knowledge/flowchart/architecture（只读，CHECK `pages_read_only_check` 强制 `accept_responses = false`）；collect = vote/general；collab = requirement/task/task_tree（CHECK `pages_collab_kind_check` 要求 `kind='openui'`，尚未开放，创建时应用层 400）。旧页面全部为 general，行为不变；旧客户端不传 page_type 时也是 general。
+**页面类型**（0002）— `pages.page_type text NOT NULL DEFAULT 'general'`，CHECK 取值 ∈ {general, report, knowledge, flowchart, architecture, vote, requirement, task, task_tree}；与 `kind` 正交，创建后不可改。大类不入库，由代码里的纯函数 `page_category(page_type)` 推导：read = report/knowledge/flowchart/architecture（只读，CHECK `pages_read_only_check` 强制 `accept_responses = false`）；collect = vote/general；collab = requirement/task/task_tree（CHECK `pages_collab_kind_check` 要求 `kind='openui'`；task_tree 已开放（0009，见下「任务树」），requirement/task 仍未开放，创建时应用层 400）。旧页面全部为 general，行为不变；旧客户端不传 page_type 时也是 general。
 **接口文档**（0008）— 新增 `page_type='api_doc'`（read 类）与 `kind='api'`（content 存规范化 JSON，≤512 KiB），CHECK `pages_api_doc_kind_check` 要求两者同时出现；`page_versions.kind` 同步放宽。结构与校验见 api.md §7.5（`server/src/apidoc.rs`，MCP 以 `#[path]` 共用）。
 迁移只做 `ADD COLUMN … DEFAULT 常量`（PG11+ 只改元数据，不重写表）+ 三个 CHECK（校验扫一遍 pages 主表，大字段在 TOAST 不读），文件内 `SET LOCAL lock_timeout = '5s'`，拿不到锁即失败退出、不长时间阻塞。0002 上线后回退到旧镜像会因 sqlx 报版本缺失而起不来，确需回退时先停 app 再执行：
 ```sql
@@ -125,6 +125,21 @@ DROP INDEX IF EXISTS responses_org_created_idx, page_versions_org_created_idx;
 ALTER TABLE pages DROP CONSTRAINT IF EXISTS pages_highlights_check, DROP CONSTRAINT IF EXISTS pages_summary_check,
                   DROP COLUMN IF EXISTS highlights, DROP COLUMN IF EXISTS summary, DROP COLUMN IF EXISTS closes_at;
 DELETE FROM _sqlx_migrations WHERE version = 5;
+COMMIT;
+```
+
+**任务树**（0009，契约见 api.md §7.6）— 三张新表，不改任何已有表、不回填：
+- `tasks`：`id`、`org_id`、`page_id`（FK `(org_id, page_id) → pages CASCADE`）、`parent_id`（FK `(org_id, parent_id) → tasks CASCADE`）、`key`（`UNIQUE (page_id, key)`，重发合并用，也服务按页拉树）、`position`、`title(1..200)`、`description(≤5000)`、`assignee_user_id`（FK `(org_id, assignee_user_id) → memberships ON DELETE SET NULL (assignee_user_id)`，移出组织自动置空）、`assignee_label`、`due_at`、`status ∈ {todo, in_progress, in_review, done}`、`submit_note`/`evidence`（最近一次提交）、`submitted_by`/`submitted_at`、`reject_reason`、`reviewed_by`/`reviewed_at`、`created_by`、时间戳、`deleted_at`（软删）。部分索引 `(assignee_user_id, page_id) WHERE deleted_at IS NULL AND status IN ('todo','in_progress')`（我的待办），`(parent_id)`。
+- `task_events`：只增不改的历史（actor 用户与 PAT、action、from/to、note、evidence、meta）；索引 `(task_id, created_at)`、`(org_id, created_at DESC)`（首页动态）。
+- `page_reviewers`：`(org_id, page_id, user_id | group_id)` 恰好一个非空，两条部分唯一索引；成员 FK 指 memberships（移出组织即失去评审人身份），群组删掉即级联。没有任何行 = 项目 admin 评审。
+- 权限：查看同页面；改任务 = 负责人 / 项目 admin / 页面发布者；评审 = 评审人且不是该任务的 `submitted_by`；PAT 复用 `publish` scope（读用任一 scope），不新增 scope——scope 只区分「接口类别」，谁能评审由身份决定，令牌不放大权限，且新增 scope 要改 PAT 表 CHECK 与令牌界面。
+- 状态机与父子规则见 api.md §7.6；任务状态变化不改 `pages.version`。首页列表 `task_stats` 在 `GET /api/pages` 同一条 SQL 内对当前页的 task_tree 行做子查询（走 `tasks_page_key_key`），不额外请求。
+回退到旧镜像前先停 app 再执行（会丢掉全部任务数据，先导出）：
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+DROP TABLE IF EXISTS page_reviewers, task_events, tasks;
+DELETE FROM _sqlx_migrations WHERE version = 9;
 COMMIT;
 ```
 
@@ -215,9 +230,9 @@ PAT 的有效权限 = **用户本人当前权限 ∩ PAT 限定范围 ∩ PAT sc
 
 | scope | 允许的接口 |
 |---|---|
-| `publish` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/orgs/{id}/groups`、`GET /api/projects/{id}/groups`、`GET /api/pages`、`GET /api/pages/{id}`、`POST /api/pages`、`PATCH /api/pages/{id}`、`DELETE /api/pages/{id}`、`GET/POST /api/pages/{id}/share-links`、`DELETE /api/share-links/{id}` |
+| `publish` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/orgs/{id}/groups`、`GET /api/projects/{id}/groups`、`GET /api/pages`、`GET /api/pages/{id}`、`POST /api/pages`、`PATCH /api/pages/{id}`、`DELETE /api/pages/{id}`、`GET/POST /api/pages/{id}/share-links`、`DELETE /api/share-links/{id}`、任务树 `GET/POST /api/pages/{id}/tasks`、`PATCH /api/tasks/{id}`、`POST /api/tasks/{id}/review`、`GET /api/tasks/{id}/events` |
 | `manage` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/orgs/{id}/groups`、`GET /api/projects/{id}/groups`、`POST /api/orgs/{id}/projects`（PAT 不能限定项目）、`POST /api/projects/{id}/groups`、`POST /api/orgs/{id}/groups`（角色要求不变）、`GET /api/pages`、`GET /api/pages/{id}` |
-| `read_responses` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/pages`、`GET /api/pages/{id}`、`GET /api/pages/{id}/responses`、`GET /api/pages/{id}/responses.csv` |
+| `read_responses` | `GET /api/orgs`、`GET /api/me/projects`、`GET /api/pages`、`GET /api/pages/{id}`、`GET /api/pages/{id}/responses`、`GET /api/pages/{id}/responses.csv`、`GET /api/pages/{id}/tasks`、`GET /api/tasks/{id}/events` |
 | 任何 scope 都不行 | 账号/会话、组织/项目/群组的修改删除、成员/邀请管理、PAT 管理、审计查询、提交（`POST .../responses`）、SSE |
 
 限定范围：`org_id` 非空 → 只能触达该组织的资源；`project_id` 非空 → 只能触达该项目的页面（`/api/me/projects` 只返回该项目）。越界一律 404。PAT 请求不需要 CSRF；带 `Authorization` 头的请求**忽略 cookie**。

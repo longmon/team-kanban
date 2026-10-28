@@ -60,6 +60,10 @@ await call(demo, "POST", `/groups/${group.id}/members`, { user_id: member.user.i
 const vote = readFileSync(new URL("vote.openui", exDir), "utf8");
 await addPage("仅项目可见", "openui", vote, { visibility: "project" });
 await addPage("评审组可见", "openui", vote, { visibility: "groups", group_ids: [group.id] });
+// 任务树：Member 负责，Demo 评审（组织可见，Member 不在项目里也能看）
+const TASKS = (await call(demo, "POST", "/pages", { project_id: project.id, title: "支付上线清单", kind: "openui", page_type: "task_tree", visibility: "org",
+  summary: "支付通道上线的任务清单", reviewers: { users: ["demo@example.com"] },
+  tasks: [{ key: "launch", title: "支付上线", assignee: "member@example.com", children: [{ key: "api", title: "接口联调", assignee: "member@example.com" }] }] })).id;
 // 页面类型：只读报告（故意带表单，验证前端不渲染提交入口）、流程图（Mermaid）、知识库（目录）
 await addPage("只读报告", "openui", vote, { page_type: "report", model: "Claude Opus 5.5" });
 await addPage("流程图", "openui", String.raw`root = Stack([d])
@@ -697,6 +701,65 @@ await step("admin-create-account-force-change", async () => {
     await q.waitForURL((u) => u.pathname === "/");
     await q.getByText("评审组可见").first().waitFor(); // 群组授权生效：首页动态里能看到评审组页面
   } finally { await c2.close(); await c3.close(); }
+});
+await step("task-tree-review", async () => {
+  // 发布任务树 → 负责人勾选完成进入待评审 → 评审人驳回（必须填理由）→ 再提交 → 评审通过 → 进度更新
+  const cm = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const pm = await cm.newPage();
+  watch(pm);
+  const cd = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const pd = await cd.newPage();
+  watch(pd);
+  const toastOn = (p, t) => p.locator(".toast", { hasText: t }).first().waitFor({ timeout: 5000 });
+  const submit = async (note) => {
+    await pm.goto(BASE + "/pages/" + TASKS);
+    await pm.getByRole("button", { name: "勾选完成：接口联调" }).click();
+    const dlg = pm.getByRole("dialog", { name: "完成并提交评审" });
+    await dlg.getByLabel("完成说明").fill(note);
+    await dlg.getByLabel("证据链接").fill("https://ci.example.com/run/1");
+    await dlg.getByRole("button", { name: "提交评审" }).click();
+    await toastOn(pm, "已提交评审");
+    await pm.locator("li[data-task=api][data-status=in_review]").waitFor();
+  };
+  try {
+    await login(pm, "member@example.com");
+    // 父节点有未完成子任务：勾选圈提示不能提交
+    await pm.goto(BASE + "/pages/" + TASKS);
+    await pm.getByRole("tree", { name: "任务树" }).getByText("接口联调").waitFor();
+    await submit("联调通过");
+    await login(pd, "demo@example.com");
+    // 首页卡片：待你评审 1 项
+    await pd.goto(BASE + "/");
+    await pd.locator("article.tile", { hasText: "支付上线清单" }).getByText("待你评审 1 项").waitFor();
+    await pd.goto(BASE + "/pages/" + TASKS);
+    await pd.getByRole("region", { name: "待你评审" }).or(pd.locator("[aria-label=待你评审]")).getByText("接口联调").waitFor();
+    await pd.locator("li[data-task=api]").getByRole("button", { name: "评审" }).click();
+    const rd = pd.getByRole("dialog", { name: "评审任务" });
+    await rd.getByText("联调通过").waitFor();
+    await rd.getByRole("button", { name: "驳回" }).click();
+    await rd.getByRole("alert").filter({ hasText: "驳回必须写理由" }).waitFor();
+    await rd.getByLabel("评审意见").fill("缺少回调验签");
+    await rd.getByRole("button", { name: "驳回" }).click();
+    await toastOn(pd, "已驳回");
+    // 负责人看到被驳回与理由，再提交
+    await pm.goto(BASE + "/pages/" + TASKS);
+    await pm.locator("li[data-task=api]").getByText("缺少回调验签").waitFor();
+    await pm.locator("li[data-task=api]").getByText("被驳回", { exact: true }).waitFor();
+    await submit("已补回调验签");
+    await pd.goto(BASE + "/pages/" + TASKS);
+    await pd.locator("li[data-task=api]").getByRole("button", { name: "评审" }).click();
+    await pd.getByRole("dialog", { name: "评审任务" }).getByRole("button", { name: "通过" }).click();
+    await toastOn(pd, "已通过");
+    await pd.locator("li[data-task=api][data-status=done]").waitFor();
+    await pd.getByText("1 / 2 已完成").first().waitFor();
+    // 历史时间线：两次提交、一次驳回、一次通过
+    await pd.locator("li[data-task=api]").getByRole("button", { name: "接口联调", exact: true }).click();
+    const hist = pd.locator("li[data-task=api] ol");
+    await hist.getByText("评审通过").waitFor();
+    if ((await hist.getByText("提交评审").count()) !== 2) throw new Error("history should have 2 submits");
+    await hist.getByText("缺少回调验签").waitFor();
+    await pd.screenshot({ path: `${OUT}/task-tree.png`, fullPage: true });
+  } finally { await cm.close(); await cd.close(); }
 });
 await step("mobile-dark", async () => {
   await page.setViewportSize({ width: 375, height: 800 });

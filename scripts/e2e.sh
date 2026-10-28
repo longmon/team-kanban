@@ -57,11 +57,20 @@ JAR=$OUT/alice.jar
 CSRF=$(curl -sf -c "$JAR" -H "$J" -d '{"email":"alice@example.com","password":"alicepass123","display_name":"Alice"}' "$BASE/api/auth/register" | jq -r .csrf_token)
 H=(-sf -b "$JAR" -H "$J" -H "X-CSRF-Token: $CSRF")
 ORG=$(curl "${H[@]}" -d '{"name":"Acme","slug":"acme"}' "$BASE/api/orgs" | jq -r .id)
-curl "${H[@]}" -d '{"name":"Demo","slug":"demo"}' "$BASE/api/orgs/$ORG/projects" >/dev/null
+PROJ=$(curl "${H[@]}" -d '{"name":"Demo","slug":"demo"}' "$BASE/api/orgs/$ORG/projects" | jq -r .id)
 TOKEN=$(curl "${H[@]}" -d '{"name":"mcp","scopes":["publish","read_responses"]}' "$BASE/api/tokens" | jq -r .token)
+# 第二个成员 Bob（项目 viewer）：任务树冒烟里当另一位评审人
+JAR2=$OUT/bob.jar
+BOB=$(curl -sf -c "$JAR2" -H "$J" -d '{"email":"bob@example.com","password":"bobpass12345","display_name":"Bob"}' "$BASE/api/auth/register")
+H2=(-sf -b "$JAR2" -H "$J" -H "X-CSRF-Token: $(jq -r .csrf_token <<<"$BOB")")
+INV=$(curl "${H[@]}" -d '{"target_type":"org","role":"member"}' "$BASE/api/orgs/$ORG/invites" | jq -r .url)
+curl "${H2[@]}" -d '{}' "$BASE/api/invites/by-token/${INV##*/}/accept" >/dev/null
+curl "${H[@]}" -d "{\"user_id\":\"$(jq -r .user.id <<<"$BOB")\",\"role\":\"viewer\"}" "$BASE/api/projects/$PROJ/members" >/dev/null
+TOKEN2=$(curl "${H2[@]}" -d '{"name":"mcp","scopes":["publish"]}' "$BASE/api/tokens" | jq -r .token)
 
 echo "== MCP 冒烟"
-(cd "$ROOT/mcp" && LIVE_TEAM_KANBAN_URL=$BASE LIVE_TEAM_KANBAN_TOKEN=$TOKEN cargo test -q --test live -- --nocapture)
+(cd "$ROOT/mcp" && LIVE_TEAM_KANBAN_URL=$BASE LIVE_TEAM_KANBAN_TOKEN=$TOKEN LIVE_TEAM_KANBAN_TOKEN2=$TOKEN2 LIVE_REVIEWER_EMAIL=bob@example.com \
+  cargo test -q --test live -- --nocapture)
 
 echo "== 浏览器 e2e"
 (cd "$ROOT/web" && BASE=$BASE node e2e/e2e.mjs "$OUT")

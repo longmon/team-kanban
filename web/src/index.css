@@ -94,6 +94,7 @@
 [data-tone=book] { --tone: var(--t-book); --tone-f: var(--t-book-f); --tone-l: var(--t-book-l); --tone-ink: var(--t-book-ink); }
 /* 接口文档沿用架构图的紫色（同属技术类），图标区分 */
 [data-tone=api] { --tone: var(--t-arch); --tone-f: var(--t-arch-f); --tone-l: var(--t-arch-l); --tone-ink: var(--t-arch-ink); }
+[data-tone=task] { --tone: var(--t-task); --tone-f: var(--t-task-f); --tone-l: var(--t-task-l); --tone-ink: var(--t-task-ink); }
 
 @layer components {
   /* 管理端正文里的行内链接 */

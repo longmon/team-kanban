@@ -67,6 +67,7 @@
   --t-flow: #f08c1a;   --t-flow-f: #fff3e3;   --t-flow-l: #fff3e3;   --t-flow-ink: #a85c0a;
   --t-arch: #8e63f2;   --t-arch-f: #f2ecff;   --t-arch-l: #f2ecff;   --t-arch-ink: #6c45cf;
   --t-book: #1e9be0;   --t-book-f: #e5f4fd;   --t-book-l: #e5f4fd;   --t-book-ink: #1672a6;
+  --t-task: #d9488f;   --t-task-f: #fdedf5;   --t-task-l: #fdedf5;   --t-task-ink: #b0326f;
 
   /* 图表 5 色：首色为主色 */
   --chart-1: #5468ff;
@@ -126,6 +127,7 @@
   --t-flow: #f5a54a;   --t-flow-f: #3a2c25;   --t-flow-l: #3a2c25;   --t-flow-ink: #f7b366;
   --t-arch: #ab8cff;   --t-arch-f: #2d2557;   --t-arch-l: #2d2557;   --t-arch-ink: #bea6ff;
   --t-book: #5bb8f0;   --t-book-f: #17304a;   --t-book-l: #17304a;   --t-book-ink: #7cc8f5;
+  --t-task: #f07ab5;   --t-task-f: #3d1f33;   --t-task-l: #3d1f33;   --t-task-ink: #f59cc8;
 
   --chart-1: #8b9bff;
   --chart-2: #f59d4f;

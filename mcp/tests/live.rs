@@ -151,5 +151,49 @@ async fn live_smoke() {
     let l2 = ok_json(call(&c, "list_pages", json!({ "project": slug })).await);
     assert_eq!(l2["pages"].as_array().unwrap().len(), l["pages"].as_array().unwrap().len());
 
+    // 11. 任务树：发布 → list_tasks → update_task 提交评审 → 自评被拒 → 另一位评审人（第二个令牌）通过。
+    // 需要 LIVE_TEAM_KANBAN_TOKEN2（同项目另一成员的 publish 令牌）与 LIVE_REVIEWER_EMAIL（该成员邮箱）
+    if let (Ok(token2), Ok(bob)) = (std::env::var("LIVE_TEAM_KANBAN_TOKEN2"), std::env::var("LIVE_REVIEWER_EMAIL")) {
+        let p = ok_json(call(&c, "publish_page", json!({ "page_type": "task_tree", "model": "Claude Opus 5.5", "project": slug, "title": "上线清单",
+            "visibility": "project", "summary": "支付上线的任务清单", "reviewers": ["me", bob],
+            "tasks": [{ "key": "deploy", "title": "上线", "assignee": "me", "assignee_label": "Claude Opus 5.5",
+                        "children": [{ "key": "migrate", "title": "执行迁移", "assignee": "me" }] }],
+        })).await);
+        assert_eq!(p["category"], "collab");
+        let pid = p["id"].as_str().unwrap().to_string();
+        let tasks_of = |t: &str| -> Value { serde_json::from_str(t.split_once("\n\n").unwrap().1).unwrap() };
+        let (e, t) = call(&c, "list_tasks", json!({ "page_id": pid, "filter": "mine" })).await;
+        assert!(!e, "{t}");
+        let list = tasks_of(&t);
+        let find = |k: &str| list["tasks"].as_array().unwrap().iter().find(|x| x["key"] == k).unwrap()["id"].as_str().unwrap().to_string();
+        let (deploy, migrate) = (find("deploy"), find("migrate"));
+        // 父节点在子任务完成前不能提交
+        let (e, t) = call(&c, "update_task", json!({ "page_id": pid, "task_id": deploy, "status": "in_review" })).await;
+        assert!(e && t.starts_with("children_not_done:"), "{t}");
+        let r = ok_json(call(&c, "update_task", json!({ "page_id": pid, "task_id": migrate, "status": "in_review", "note": "迁移已执行并核对",
+            "evidence": ["https://ci.example.com/run/42"] })).await);
+        assert_eq!(r["task"]["status"], "in_review");
+        let (e, t) = call(&c, "review_task", json!({ "task_id": migrate, "decision": "approve" })).await;
+        assert!(e && t.starts_with("self_review:"), "{t}");
+        let c2 = client(&base, &token2).await;
+        let (_, t) = call(&c2, "list_tasks", json!({ "page_id": pid, "filter": "review" })).await;
+        assert_eq!(tasks_of(&t)["tasks"].as_array().unwrap().len(), 1, "{t}");
+        let r = ok_json(call(&c2, "review_task", json!({ "task_id": migrate, "decision": "approve", "note": "核对无误" })).await);
+        assert_eq!(r["task"]["status"], "done");
+        let (_, t) = call(&c, "list_tasks", json!({ "page_id": pid })).await;
+        assert_eq!(tasks_of(&t)["progress"], json!({ "total": 2, "done": 1, "in_review": 0 }));
+        c2.cancel().await.unwrap();
+    } else {
+        eprintln!("跳过任务树冒烟：未设置 LIVE_TEAM_KANBAN_TOKEN2 / LIVE_REVIEWER_EMAIL");
+    }
+
+    // 12. 接口文档与任务树并存：发布 api_doc 仍正常（只读、带「接口 N 个」）
+    let api = json!({ "title": "支付接口", "servers": [{ "name": "生产", "url": "https://pay.example.com" }],
+        "groups": [{ "name": "订单", "endpoints": [{ "method": "post", "path": "/orders", "title": "下单" }, { "method": "get", "path": "/orders/query", "title": "查单" }] }] });
+    let d = ok_json(call(&c, "publish_page", json!({ "page_type": "api_doc", "model": "Claude Opus 5.5", "project": slug, "title": "支付接口", "visibility": "public", "api": api })).await);
+    assert_eq!((d["page_type"].clone(), d["category"].clone()), (json!("api_doc"), json!("read")));
+    let view: Value = http.get(format!("{base}/api/pages/{}/view", d["id"].as_str().unwrap())).send().await.unwrap().json().await.unwrap();
+    assert_eq!(view["page"]["highlights"][0], json!({ "label": "接口", "value": "2 个" }), "{view}");
+
     c.cancel().await.unwrap();
 }

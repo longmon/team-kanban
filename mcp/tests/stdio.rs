@@ -65,7 +65,7 @@ fn page(id: &str, project: &str, title: &str, version: i64, body: &Value) -> Val
         "id": id, "org_id": ORG, "project_id": project, "title": title,
         "kind": body["kind"], "version": version, "visibility": body["visibility"],
         "page_type": body["page_type"],
-        "category": if body["page_type"] == "vote" { "collect" } else { "read" },
+        "category": match body["page_type"].as_str() { Some("vote") => "collect", Some("task_tree") => "collab", _ => "read" },
         "group_ids": body.get("group_ids").cloned().unwrap_or(json!([])),
         "accept_responses": true, "results_visible_to": "managers", "response_count": 0,
         "url": format!("http://relay.test/pages/{id}"),
@@ -303,6 +303,48 @@ async fn responses(
     .into_response()
 }
 
+/// 任务接口：记录 {_path, ...body}，返回带 id 的任务
+async fn list_tasks(h: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    Json(json!({ "tasks": [{ "id": "t1", "title": "<script>x</script>", "status": "in_review" }], "page": id, "filter": q.get("filter") })).into_response()
+}
+
+async fn add_task(State(s): State<St>, h: HeaderMap, Path(id): Path<String>, Json(mut b): Json<Value>) -> Response {
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    let mut m = s.0.lock().unwrap();
+    let tid = format!("01928f7a-0000-7000-8000-{:012}", 900 + m.writes.len());
+    let out = json!({ "id": tid, "key": b["key"], "title": b["title"], "parent_id": b["parent_id"], "status": "todo" });
+    b["_path"] = format!("/api/pages/{id}/tasks").into();
+    m.writes.push(b);
+    (StatusCode::CREATED, Json(out)).into_response()
+}
+
+async fn patch_task(State(s): State<St>, h: HeaderMap, Path(id): Path<String>, Json(mut b): Json<Value>) -> Response {
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    let out = json!({ "id": id, "status": b.get("status").cloned().unwrap_or(json!("todo")) });
+    b["_path"] = format!("/api/tasks/{id}").into();
+    s.0.lock().unwrap().writes.push(b);
+    Json(out).into_response()
+}
+
+async fn review_task(State(s): State<St>, h: HeaderMap, Path(id): Path<String>, Json(mut b): Json<Value>) -> Response {
+    if let Some(e) = denied(&h) {
+        return e;
+    }
+    if b["decision"] == "approve" {
+        return err(StatusCode::FORBIDDEN, "self_review");
+    }
+    b["_path"] = format!("/api/tasks/{id}/review").into();
+    s.0.lock().unwrap().writes.push(b);
+    Json(json!({ "id": id, "status": "in_progress" })).into_response()
+}
+
 fn submit(s: &St, choice: &str) {
     let mut m = s.0.lock().unwrap();
     let seq = m.responses.len() + 1;
@@ -329,6 +371,9 @@ async fn start_mock() -> (String, St) {
         .route("/api/pages/{id}", get(get_page).patch(patch_page))
         .route("/api/pages/{id}/share-links", post(share))
         .route("/api/pages/{id}/responses", get(responses))
+        .route("/api/pages/{id}/tasks", get(list_tasks).post(add_task))
+        .route("/api/tasks/{id}", axum::routing::patch(patch_task))
+        .route("/api/tasks/{id}/review", post(review_task))
         .with_state(st.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -420,8 +465,11 @@ async fn tools_happy_path() {
             "list_pages",
             "list_projects",
             "list_targets",
+            "list_tasks",
             "publish_page",
-            "update_page"
+            "review_task",
+            "update_page",
+            "update_task"
         ]
     );
 
@@ -953,4 +1001,69 @@ async fn api_doc_publish_validate_and_update() {
     assert!(e && t.starts_with("invalid_argument:"), "{t}");
     std::fs::remove_dir_all(&dir).ok();
     c.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn task_tree_tools() {
+    let (url, st) = start_mock().await;
+    let c = client(&url, TOKEN).await;
+    let (_, guide) = call(&c, "get_ui_guide", json!({ "kind": "html" })).await;
+    assert!(guide.contains("任务树") && guide.contains("in_review"), "{guide}");
+    // 发布：spec 可省略；tasks 原样透传；评审群组名解析成 UUID
+    let tasks = json!([{ "key": "api", "title": "接口", "assignee": "me", "assignee_label": "Claude", "children": [{ "key": "api-auth", "title": "鉴权" }] }]);
+    let r = ok_json(call(&c, "publish_page", json!({ "page_type": "task_tree", "model": "Claude Opus 5.5", "project": PROJECT, "title": "上线清单",
+        "visibility": "project", "tasks": tasks, "reviewers": ["bob@example.com"], "reviewer_groups": ["Reviewers"] })).await);
+    assert_eq!((r["page_type"].clone(), r["category"].clone()), (json!("task_tree"), json!("collab")));
+    assert!(r["next_step"].as_str().unwrap().contains("list_tasks"));
+    let page_id = r["id"].as_str().unwrap().to_string();
+    {
+        let m = st.0.lock().unwrap();
+        let w = m.writes.last().unwrap();
+        assert_eq!(w["tasks"], tasks);
+        assert_eq!(w["reviewers"], json!({ "users": ["bob@example.com"], "groups": [GROUP] }));
+        assert!(w.get("content").is_none_or(Value::is_null), "{w}");
+    }
+    // 说明区不能放提交入口；非任务页不能带 tasks（都不发请求）
+    let n = st.0.lock().unwrap().writes.len();
+    let (e, t) = call(&c, "publish_page", json!({ "page_type": "task_tree", "model": "m", "project": PROJECT, "title": "t", "spec": "root = Form(\"f\", [])" })).await;
+    assert!(e && t.starts_with("page_type_mismatch:"), "{t}");
+    let (e, t) = call(&c, "publish_page", json!({ "page_type": "vote", "model": "m", "project": PROJECT, "title": "t", "spec": "root = Stack([])", "tasks": [] })).await;
+    assert!(e && t.starts_with("invalid_argument:"), "{t}");
+    assert_eq!(st.0.lock().unwrap().writes.len(), n);
+    // list_tasks：filter 透传，带数据提示
+    let (e, t) = call(&c, "list_tasks", json!({ "page_id": page_id, "filter": "review" })).await;
+    assert!(!e && t.starts_with('⚠'), "{t}");
+    let v: Value = serde_json::from_str(t.split_once("\n\n").unwrap().1).unwrap();
+    assert_eq!((v["filter"].clone(), v["server"].clone()), (json!("review"), json!("env")));
+    // update_task：先追加（嵌套）子任务，再提交评审
+    let tid = "01928f7a-0000-7000-8000-0000000000f1";
+    let r = ok_json(call(&c, "update_task", json!({ "page_id": page_id, "task_id": tid, "status": "in_review", "note": "完成", "evidence": ["https://ci/1"],
+        "assignee": "", "add_subtasks": [{ "title": "补测试", "children": [{ "title": "e2e" }] }] })).await);
+    assert_eq!(r["task"]["status"], "in_review");
+    assert_eq!(r["added"].as_array().unwrap().len(), 2);
+    assert!(r["next_step"].as_str().unwrap().contains("评审"));
+    {
+        let m = st.0.lock().unwrap();
+        let w = &m.writes[n..];
+        assert_eq!(w.len(), 3);
+        assert_eq!((w[0]["_path"].clone(), w[0]["parent_id"].clone()), (json!(format!("/api/pages/{page_id}/tasks")), json!(tid)));
+        assert_eq!(w[1]["parent_id"], r["added"][0]["id"]);
+        assert_eq!(w[2]["_path"], format!("/api/tasks/{tid}"));
+        assert_eq!((w[2]["status"].clone(), w[2]["note"].clone(), w[2]["evidence"].clone(), w[2]["assignee"].clone()),
+            (json!("in_review"), json!("完成"), json!(["https://ci/1"]), Value::Null));
+    }
+    let (e, t) = call(&c, "update_task", json!({ "page_id": page_id, "task_id": tid })).await;
+    assert!(e && t.starts_with("invalid_argument:"), "{t}");
+    let (e, t) = call(&c, "update_task", json!({ "page_id": page_id, "status": "in_progress" })).await;
+    assert!(e && t.starts_with("invalid_argument:"), "{t}");
+    // review_task：驳回透传理由；服务端错误码原样返回
+    let r = ok_json(call(&c, "review_task", json!({ "task_id": tid, "decision": "reject", "note": "缺测试" })).await);
+    assert_eq!(r["task"]["status"], "in_progress");
+    assert_eq!(st.0.lock().unwrap().writes.last().unwrap()["note"], "缺测试");
+    let (e, t) = call(&c, "review_task", json!({ "task_id": tid, "decision": "approve" })).await;
+    assert!(e && t.starts_with("self_review:"), "{t}");
+    // update_page 透传 tasks 与评审人
+    ok_json(call(&c, "update_page", json!({ "page_id": page_id, "tasks": [{ "key": "api", "title": "接口 v2" }], "reviewers": [], "reviewer_groups": [] })).await);
+    let w = st.0.lock().unwrap().writes.last().unwrap().clone();
+    assert_eq!((w["tasks"][0]["title"].clone(), w["reviewers"].clone()), (json!("接口 v2"), json!({ "users": [], "groups": [] })));
 }

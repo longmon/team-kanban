@@ -482,8 +482,8 @@ async fn page_types_read_only() {
     assert_eq!((r.status, r.json()["error"]["details"]["fields"]["accept_responses"].is_string()), (400, true));
     let vote = h.req(&w.owner, "POST", "/api/pages", Some(with(json!({ "page_type": "vote" })))).await.ok(201);
     assert_eq!((vote["category"].clone(), vote["accept_responses"].clone()), (json!("collect"), json!(true)));
-    // 非法类型 / 协作类（P1 未开放）→ 400
-    for t in ["nope", "task_tree"] {
+    // 非法类型 / 未开放的协作类（task_tree 已开放，见 tests/tasks.rs）→ 400
+    for t in ["nope", "task"] {
         let r = h.req(&w.owner, "POST", "/api/pages", Some(with(json!({ "page_type": t })))).await;
         assert_eq!((r.status, r.code()), (400, "validation_failed".into()), "{t}");
     }

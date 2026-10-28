@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use super::{brief, list, require_any};
+use super::{brief, list, require_any, tasks};
 use crate::{
     AppState, apidoc, audit,
     auth::Caller,
@@ -52,6 +52,7 @@ struct PageListRow {
     highlights: Option<Value>,
     respondent_count: i64,
     eligible_count: Option<i64>,
+    task_stats: Option<Value>,
 }
 
 /// $1 = 调用者 user_id
@@ -120,13 +121,19 @@ impl PageListRow {
             "my_submitted": self.my_submitted,
             "closes_at": ts_opt(&self.closes_at), "summary": self.summary, "highlights": self.highlights,
             "respondent_count": self.respondent_count, "eligible_count": self.eligible_count,
+            "task_stats": self.task_stats,
         })
     }
 }
 
 async fn page_by_id(st: &AppState, org_id: Uuid, page_id: Uuid, uid: Uuid) -> AppResult<Value> {
     let row: PageListRow =
-        sqlx::query_as(&format!("SELECT x.*, {} FROM ({} WHERE p.org_id = $2 AND p.id = $3 AND p.deleted_at IS NULL) x", counts_sql("x"), page_select()))
+        sqlx::query_as(&format!(
+            "SELECT x.*, {}, {} FROM ({} WHERE p.org_id = $2 AND p.id = $3 AND p.deleted_at IS NULL) x",
+            counts_sql("x"),
+            tasks::task_stats_sql("x"),
+            page_select()
+        ))
         .bind(uid)
         .bind(org_id)
         .bind(page_id)
@@ -160,7 +167,7 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
     // ponytail: 跨所有项目扫描再按角色过滤；单用户页面数很大时给 project_id 走索引
     // 计数只对 LIMIT 之后的当前页行计算
     let sql = format!(
-        "SELECT x.*, {} FROM (SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
+        "SELECT x.*, {}, {} FROM (SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
              AND ($2::uuid IS NULL OR p.org_id = $2) AND ($3::uuid IS NULL OR p.project_id = $3)
              AND ($4::uuid IS NULL OR p.project_id = $4) AND ($5::uuid IS NULL OR p.id < $5)
              AND ($7::text[] IS NULL OR p.page_type = ANY($7))
@@ -168,6 +175,7 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
           WHERE {VISIBLE}
           ORDER BY id DESC LIMIT $6) x ORDER BY x.id DESC",
         counts_sql("x"),
+        tasks::task_stats_sql("x"),
         page_select()
     );
     let rows: Vec<PageListRow> = sqlx::query_as(&sql)
@@ -204,6 +212,8 @@ struct ActivityRow {
     actor_name: Option<String>,
     nickname: Option<String>,
     can_view_results: bool,
+    task_action: Option<String>,
+    task_title: Option<String>,
 }
 
 /// 动态流每个组织每类事件最多检查的最近事件数
@@ -230,28 +240,37 @@ pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQue
     let page_cols = "x.title, x.page_type, x.project_id, (x.role IN ('admin', 'editor') OR x.results_visible_to = 'viewers') AS can_view_results";
     let sql = format!(
         "SELECT e.etype, e.at, e.version, e.page_id, e.title, e.page_type, e.project_id, pr.name AS project_name,
-                u.display_name AS actor_name, e.nickname, e.can_view_results
+                u.display_name AS actor_name, e.nickname, e.can_view_results, e.task_action, e.task_title
            FROM memberships mm
            JOIN orgs mo ON mo.id = mm.org_id AND mo.deleted_at IS NULL
            CROSS JOIN LATERAL (
              (SELECT CASE WHEN v.version = 1 THEN 'published' ELSE 'updated' END AS etype, v.created_at AS at, v.version, v.page_id,
-                     v.created_by AS actor_id, NULL::text AS nickname, {page_cols}
+                     v.created_by AS actor_id, NULL::text AS nickname, {page_cols}, NULL::text AS task_action, NULL::text AS task_title
                 FROM (SELECT page_id, version, created_by, created_at FROM page_versions
                        WHERE org_id = mm.org_id ORDER BY created_at DESC LIMIT {ACTIVITY_SCAN}) v {}
                WHERE {VISIBLE}
                ORDER BY v.created_at DESC LIMIT $5)
              UNION ALL
-             (SELECT 'submitted', r.created_at, r.page_version, r.page_id, r.user_id, r.nickname, {page_cols}
+             (SELECT 'submitted', r.created_at, r.page_version, r.page_id, r.user_id, r.nickname, {page_cols}, NULL, NULL
                 FROM (SELECT page_id, page_version, user_id, nickname, created_at FROM responses
                        WHERE org_id = mm.org_id ORDER BY created_at DESC LIMIT {ACTIVITY_SCAN}) r {}
                WHERE {VISIBLE}
-               ORDER BY r.created_at DESC LIMIT $5)) e
+               ORDER BY r.created_at DESC LIMIT $5)
+             UNION ALL
+             (SELECT 'task', te.created_at, 0, te.page_id, te.actor_user_id, NULL, {page_cols}, te.action, te.task_title
+                FROM (SELECT ev.page_id, ev.actor_user_id, ev.action, ev.created_at, tk.title AS task_title FROM task_events ev
+                        JOIN tasks tk ON tk.org_id = ev.org_id AND tk.id = ev.task_id
+                       WHERE ev.org_id = mm.org_id AND ev.action IN ('started', 'submitted', 'approved', 'rejected')
+                       ORDER BY ev.created_at DESC LIMIT {ACTIVITY_SCAN}) te {}
+               WHERE {VISIBLE}
+               ORDER BY te.created_at DESC LIMIT $5)) e
            JOIN projects pr ON pr.id = e.project_id
            LEFT JOIN users u ON u.id = e.actor_id
           WHERE mm.user_id = $1 AND ($2::uuid IS NULL OR mm.org_id = $2)
           ORDER BY e.at DESC LIMIT $5",
         vis("v"),
-        vis("r")
+        vis("r"),
+        vis("te")
     );
     let rows: Vec<ActivityRow> = sqlx::query_as(&sql)
         .bind(uid)
@@ -271,10 +290,14 @@ pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQue
                 (None, Some(n)) => json!({ "kind": "anonymous", "name": n }),
                 _ => Value::Null,
             };
-            json!({
+            let mut v = json!({
                 "type": r.etype, "at": ts(&r.at), "version": r.version, "actor": actor,
                 "page": { "id": r.page_id, "title": r.title, "page_type": r.page_type, "project": { "id": r.project_id, "name": r.project_name } },
-            })
+            });
+            if let (Some(action), Some(title)) = (&r.task_action, &r.task_title) {
+                v["task"] = json!({ "action": action, "title": title });
+            }
+            v
         })
         .collect();
     Ok(Json(json!({ "items": items })))
@@ -446,7 +469,8 @@ pub struct CreateReq {
     kind: String,
     page_type: Option<String>,
     model: Option<String>,
-    content: String,
+    /// task_tree 可省略（说明区为空）
+    content: Option<String>,
     visibility: String,
     group_ids: Option<Vec<Uuid>>,
     accept_responses: Option<bool>,
@@ -454,6 +478,17 @@ pub struct CreateReq {
     closes_at: Option<String>,
     summary: Option<String>,
     highlights: Option<Value>,
+    /// 仅 task_tree：初始任务树
+    tasks: Option<Vec<tasks::TaskInput>>,
+    /// 仅 task_tree：评审人
+    reviewers: Option<tasks::ReviewersInput>,
+}
+
+/// task_tree 省略说明区时的 OpenUI 内容
+const EMPTY_SPEC: &str = "root = Stack([])";
+
+fn task_only(field: &str) -> AppError {
+    AppError::field(field, "仅任务树页面（page_type=task_tree）可用")
 }
 
 pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): JsonBody<CreateReq>) -> AppResult<(StatusCode, Json<Value>)> {
@@ -467,19 +502,32 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     let closes_at = check_closes_at(r.closes_at.as_deref())?;
     let summary = check_summary(r.summary.as_deref())?;
     let mut highlights = check_highlights(r.highlights.as_ref())?;
+    let task_tree = page_type == "task_tree";
     let read_only = match page_category(page_type) {
-        "collab" => return Err(AppError::field("page_type", "该类型尚未开放")),
-        c => c == "read",
+        "collab" if !task_tree => return Err(AppError::field("page_type", "该类型尚未开放")),
+        c => c != "collect",
     };
     if read_only && r.accept_responses == Some(true) {
         return Err(read_only_accept());
     }
-    let content = match check_content(&r.kind, &r.content)? {
+    if task_tree && r.kind != "openui" {
+        return Err(AppError::field("kind", "任务树页面的说明区只支持 openui"));
+    }
+    if !task_tree && (r.tasks.is_some() || r.reviewers.is_some()) {
+        return Err(task_only(if r.tasks.is_some() { "tasks" } else { "reviewers" }));
+    }
+    let tree = r.tasks.as_deref().map(tasks::parse_tree).transpose()?;
+    let content = match r.content {
+        None if task_tree => EMPTY_SPEC.to_string(),
+        Some(c) if c.is_empty() && task_tree => EMPTY_SPEC.to_string(),
+        c => c.unwrap_or_default(),
+    };
+    let content = match check_content(&r.kind, &content)? {
         Some(a) => {
             highlights = api_highlights(a.endpoints, highlights);
             a.json
         }
-        None => r.content,
+        None => content,
     };
     check_visibility(&r.visibility)?;
     let results = r.results_visible_to.unwrap_or_else(|| "managers".into());
@@ -511,6 +559,12 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     .execute(&mut *tx)
     .await?;
     set_groups(&mut tx, ctx.org_id(), id, &groups).await?;
+    if let Some(rv) = &r.reviewers {
+        tasks::set_reviewers(&mut tx, ctx.org_id(), ctx.project_id(), id, ctx.user_id(), rv).await?;
+    }
+    if let Some(tree) = tree {
+        tasks::sync_tree(&mut tx, ctx.org_id(), id, (ctx.user_id(), c.p.pat().map(|p| p.id)), tree).await?;
+    }
     snapshot(&mut tx, ctx.org_id(), id, ctx.user_id()).await?;
     audit::log(
         &mut tx,
@@ -554,6 +608,10 @@ pub struct UpdateReq {
     summary: Option<Option<String>>,
     #[serde(default, deserialize_with = "nullable")]
     highlights: Option<Option<Value>>,
+    /// 仅 task_tree：整棵树重发，按节点 key 合并（不产生新版本）
+    tasks: Option<Vec<tasks::TaskInput>>,
+    /// 仅 task_tree：整体替换评审人；都为空 = 由项目管理员评审
+    reviewers: Option<tasks::ReviewersInput>,
 }
 
 pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<UpdateReq>) -> J {
@@ -573,7 +631,10 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         r.closes_at.is_some(),
         r.summary.is_some(),
         r.highlights.is_some(),
+        r.tasks.is_some(),
+        r.reviewers.is_some(),
     ])?;
+    let tree = r.tasks.as_deref().map(tasks::parse_tree).transpose()?;
     let closes_at = r.closes_at.as_ref().map(|v| check_closes_at(v.as_deref())).transpose()?;
     let summary = r.summary.as_ref().map(|v| check_summary(v.as_deref())).transpose()?;
     let mut highlights = r.highlights.as_ref().map(|v| check_highlights(v.as_ref())).transpose()?;
@@ -593,8 +654,11 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(AppError::not_found)?;
-    if r.accept_responses == Some(true) && page_category(&page_type) == "read" {
+    if r.accept_responses == Some(true) && page_category(&page_type) != "collect" {
         return Err(read_only_accept());
+    }
+    if page_type != "task_tree" && (tree.is_some() || r.reviewers.is_some()) {
+        return Err(task_only(if tree.is_some() { "tasks" } else { "reviewers" }));
     }
     let old_groups = ctx.page_group_ids(&mut tx).await?;
     let new_vis = r.visibility.clone().unwrap_or_else(|| old_vis.clone());
@@ -654,6 +718,13 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     if content.is_some() {
         snapshot(&mut tx, ctx.org_id(), ctx.page_id(), ctx.user_id()).await?;
     }
+    if let Some(rv) = &r.reviewers {
+        tasks::set_reviewers(&mut tx, ctx.org_id(), ctx.project_id(), ctx.page_id(), ctx.user_id(), rv).await?;
+    }
+    let tasks_changed = match tree {
+        Some(tree) => tasks::sync_tree(&mut tx, ctx.org_id(), ctx.page_id(), (ctx.user_id(), c.p.pat().map(|p| p.id)), tree).await?,
+        None => false,
+    };
     let mut fields = vec![];
     for (name, present) in [
         ("title", title.is_some()),
@@ -666,6 +737,8 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         ("closes_at", closes_at.is_some()),
         ("summary", summary.is_some()),
         ("highlights", highlights.is_some()),
+        ("tasks", tasks_changed),
+        ("reviewers", r.reviewers.is_some()),
     ] {
         if present {
             fields.push(name);
@@ -743,7 +816,7 @@ struct MyResponse {
 }
 
 /// version：要查看的版本（None = 当前）；临时链接访问只给当前版本
-async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
+async fn page_view(st: &AppState, c: &Caller, a: &PageAccess, version: Option<i32>) -> J {
     let p = a.page();
     let v = version.unwrap_or(p.version);
     // 当前版本以 pages 为准；历史版本取 page_versions（html 不读 content）
@@ -836,6 +909,8 @@ async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
     } else {
         Value::Null
     };
+    // 任务树：随查看一起返回（临时链接访问只读）
+    let task_tree = if p.page_type == "task_tree" { tasks::tree_json(st, &tasks::who(st, c, a).await?, None).await? } else { Value::Null };
     let share = a.share().map(|l| {
         json!({ "id": l.id, "label": l.label, "expires_at": ts(&l.expires_at), "remaining_uses": l.max_uses.map(|m| (m - l.use_count).max(0)) })
     });
@@ -858,6 +933,7 @@ async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
         "versions": versions,
         "share_link": share,
         "participation": participation,
+        "task_tree": task_tree,
     })))
 }
 
@@ -875,7 +951,7 @@ pub async fn view_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(
     if c.p.is_pat() {
         return Err(AppError::forbidden());
     }
-    page_view(&st, &a, q.version).await
+    page_view(&st, &c, &a, q.version).await
 }
 
 pub async fn view_share(State(st): State<AppState>, c: Caller, h: HeaderMap, P(token): P<String>) -> J {
@@ -883,7 +959,7 @@ pub async fn view_share(State(st): State<AppState>, c: Caller, h: HeaderMap, P(t
     if c.p.is_pat() {
         return Err(AppError::forbidden());
     }
-    page_view(&st, &a, None).await
+    page_view(&st, &c, &a, None).await
 }
 
 #[derive(Deserialize)]

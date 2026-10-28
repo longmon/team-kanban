@@ -84,14 +84,19 @@ export function useHomeStats(orgId: string | undefined) {
   const full = !c.cursor;
   const by: Record<string, number> = {};
   if (full) for (const p of items) by[p.project_id] = (by[p.project_id] ?? 0) + 1;
-  return { todo: items.filter((p) => isTodo(p, now)).length, mine: full ? items.filter((p) => p.created_by.id === me?.user.id).length : null, by, full };
+  return { todo: items.reduce((n, p) => n + todoWeight(p, now), 0), mine: full ? items.filter((p) => p.created_by.id === me?.user.id).length : null, by, full };
 }
 
 // ---------- 分类 ----------
-/** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本 */
-const isTodo = (p: Page, now = Date.now()) => p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now);
-type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book" | "api";
-const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"], ["api", "接口文档"]];
+/** 任务树页面里等我处理的项数：待我评审 + 分配给我的待办/进行中 */
+const taskTodo = (p: Page) => (p.task_stats ? p.task_stats.my_review + p.task_stats.my_todo : 0);
+/** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本；任务树里有待我评审或分配给我的未完成任务 */
+const isTodo = (p: Page, now = Date.now()) =>
+  (p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now)) || taskTodo(p) > 0;
+/** 左导航「等我处理」计数：收集类每页算 1，任务树按项数算 */
+const todoWeight = (p: Page, now = Date.now()) => (p.task_stats ? taskTodo(p) : isTodo(p, now) ? 1 : 0);
+type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book" | "api" | "task";
+const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"], ["api", "接口文档"], ["task", "任务"]];
 const kindOf = (p: Page): Kind => {
   const t = toneOf(p.page_type, p.category);
   return t === "flow" || t === "arch" ? "diagram" : t;
@@ -245,12 +250,16 @@ function Card({ p, todo, project, now, lazy }: { p: Page; todo: boolean; project
   const n = p.respondent_count ?? p.response_count;
   const collect = p.category === "collect";
   const v = tone === "vote" ? "投" : "填";
-  const chip = todo ? <Chip className="bg-coral-soft text-coral-ink">等你{tone === "vote" ? "投票" : "填写"}</Chip>
+  const ts = p.task_stats;
+  const chip = ts ? (ts.my_review ? <Chip className="bg-coral-soft text-coral-ink">待你评审 {ts.my_review} 项</Chip>
+      : ts.my_todo ? <Chip className="bg-coral-soft text-coral-ink">你有 {ts.my_todo} 项待办</Chip>
+      : ts.total && ts.done === ts.total ? <Chip className="bg-mint-soft text-mint-ink">已全部完成</Chip> : null)
+    : todo ? <Chip className="bg-coral-soft text-coral-ink">等你{tone === "vote" ? "投票" : "填写"}</Chip>
     : p.my_submitted ? <Chip className="bg-mint-soft text-mint-ink">你已{v}</Chip>
     : collect && (closed || !p.accept_responses) ? <Chip className="bg-secondary text-muted-foreground">已截止</Chip>
     : p.version > 1 ? <Chip className="bg-secondary text-muted-foreground">第 {p.version} 版</Chip>
     : null;
-  const right = collect
+  const right = ts ? `${ts.done} / ${ts.total} 项` : collect
     ? p.closes_at ? (closed ? `${fmtDue(p.closes_at, new Date(now))} 已截止` : `${n} ${unit(p)}，${fmtDue(p.closes_at, new Date(now))} 截止`) : `${n} ${unit(p)}`
     : null;
   return (
@@ -318,6 +327,21 @@ function Preview({ p, n, tone, lazy }: { p: Page; n: number; tone: Tone; lazy: b
             <span className="bar-grow block h-full rounded-[4px] bg-primary" style={{ width: `${Math.min(1, n / total) * 100}%` }} />
           </span>
         )}
+      </div>
+    );
+  }
+  if (p.task_stats) {
+    const { total, done, in_review } = p.task_stats;
+    return (
+      <div className="grid gap-2 text-[12px] text-muted-foreground" aria-label="任务进度">
+        <div className="flex justify-between gap-2 tabular-nums">
+          <span>{PAGE_TYPE_LABEL[p.page_type]}：{done} / {total} 项已完成</span>
+          {in_review > 0 && <span className="shrink-0">{in_review} 项待评审</span>}
+        </div>
+        <span className="h-2 overflow-hidden rounded-[4px] bg-muted">
+          <span className="bar-grow block h-full rounded-[4px] bg-mint" style={{ width: `${total ? (done / total) * 100 : 0}%` }} />
+        </span>
+        {p.summary && <p className="line-clamp-2 text-[13px]">{p.summary}</p>}
       </div>
     );
   }
@@ -458,7 +482,10 @@ function TodoCard({ p, now, project }: { p: Page; now: number; project?: string 
   const left = p.closes_at ? fmtLeft(p.closes_at, now) : null;
   const urgent = end !== null && end - now < 2 * 864e5;
   const rest = p.eligible_count ? Math.max(0, p.eligible_count - n) : null;
-  const meta = [project, n ? `已有 ${n} ${unit(p)}` : `还没人${verb(p)}`, rest ? `还差 ${rest} 人` : null].filter(Boolean).join("，");
+  const ts = p.task_stats;
+  const meta = ts
+    ? [project, ts.my_review ? `待你评审 ${ts.my_review} 项` : null, ts.my_todo ? `你的待办 ${ts.my_todo} 项` : null].filter(Boolean).join("，")
+    : [project, n ? `已有 ${n} ${unit(p)}` : `还没人${verb(p)}`, rest ? `还差 ${rest} 人` : null].filter(Boolean).join("，");
   return (
     <article data-todo data-tone={tone} className="relative mt-2.5 rounded-[13px] bg-card p-3.5 text-card-foreground">
       <div className="flex items-start gap-3">
@@ -472,10 +499,10 @@ function TodoCard({ p, now, project }: { p: Page; now: number; project?: string 
       </div>
       <div className="mt-3 flex items-center justify-between gap-2.5">
         <span className={cn("min-w-0 text-[12px]", urgent ? "font-medium text-coral-ink" : "text-muted-foreground")}>
-          {p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left && urgent ? `，还剩 ${left}` : ""}` : "不限截止时间"}
+          {ts ? `${ts.done} / ${ts.total} 项已完成` : p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left && urgent ? `，还剩 ${left}` : ""}` : "不限截止时间"}
         </span>
         <Link to={`/pages/${p.id}`} className="inline-flex h-[34px] shrink-0 items-center rounded-[10px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground outline-none transition-[filter] hover:brightness-[1.08] focus-visible:ring-[3px] focus-visible:ring-ring/80">
-          {tone === "vote" ? "去投票" : "去填写"}
+          {ts ? (ts.my_review ? "去评审" : "去处理") : tone === "vote" ? "去投票" : "去填写"}
         </Link>
       </div>
     </article>
@@ -486,7 +513,10 @@ function TodoCard({ p, now, project }: { p: Page; now: number; project?: string 
 function Ring({ p, now, urgent, n }: { p: Page; now: number; urgent: boolean; n: number }) {
   const C = 2 * Math.PI * 19;
   let frac = 0, label: string;
-  if (p.closes_at) {
+  if (p.task_stats) {
+    frac = p.task_stats.total ? p.task_stats.done / p.task_stats.total : 0;
+    label = `${p.task_stats.done}/${p.task_stats.total}`;
+  } else if (p.closes_at) {
     const end = new Date(p.closes_at).getTime(), start = new Date(p.created_at).getTime();
     frac = Math.max(0, Math.min(1, (end - now) / Math.max(1, end - start)));
     const m = Math.max(0, Math.floor((end - now) / 60000));
@@ -508,7 +538,8 @@ function Ring({ p, now, urgent, n }: { p: Page; now: number; urgent: boolean; n:
 }
 
 // ---------- 实时动态 ----------
-const ACT_VERB: Record<Activity["type"], string> = { published: "发布了", updated: "更新了", submitted: "提交了" };
+const ACT_VERB: Record<Activity["type"], string> = { published: "发布了", updated: "更新了", submitted: "提交了", task: "更新了任务" };
+const TASK_VERB: Record<string, string> = { started: "开始处理", submitted: "提交评审", approved: "评审通过了", rejected: "驳回了" };
 
 function useActivity(projectId?: string) {
   const [items, setItems] = useState<Activity[] | null>(null);
@@ -561,15 +592,20 @@ function ActivityFeed({ projectId }: { projectId?: string }) {
         <ol className="activity">
           <AnimatePresence initial={false}>
             {items.slice(0, 12).map((a) => (
-              <motion.li key={`${a.type}:${a.page.id}:${a.at}`} layout initial={{ opacity: 0, y: -14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              <motion.li key={`${a.type}:${a.page.id}:${a.at}:${a.task?.title ?? ""}`} layout initial={{ opacity: 0, y: -14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                 transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
                 className="flex gap-2.5 border-t py-[9px] text-[13px] text-muted-foreground first:border-t-0">
                 <Initial name={a.actor?.name ?? "?"} className="ring-0" />
                 <div className="min-w-0 [overflow-wrap:anywhere]">
                   <b className="font-semibold text-foreground">{a.actor?.name ?? "有人"}</b>{" "}
-                  {a.type === "updated" ? "把 " : `${a.type === "submitted" && a.page.page_type === "vote" ? "投了" : ACT_VERB[a.type]} `}
-                  <Link to={`/pages/${a.page.id}`} className="text-foreground underline-offset-4 hover:underline">{a.page.title}</Link>
-                  {a.type === "updated" && ` 更新到第 ${a.version} 版`}
+                  {a.type === "task" && a.task ? <>
+                    {TASK_VERB[a.task.action] ?? ACT_VERB.task} 任务「{a.task.title}」，在{" "}
+                    <Link to={`/pages/${a.page.id}`} className="text-foreground underline-offset-4 hover:underline">{a.page.title}</Link>
+                  </> : <>
+                    {a.type === "updated" ? "把 " : `${a.type === "submitted" && a.page.page_type === "vote" ? "投了" : ACT_VERB[a.type]} `}
+                    <Link to={`/pages/${a.page.id}`} className="text-foreground underline-offset-4 hover:underline">{a.page.title}</Link>
+                    {a.type === "updated" && ` 更新到第 ${a.version} 版`}
+                  </>}
                   <time dateTime={a.at} className="block text-[12px] text-faint">{ago(a.at, now)}</time>
                 </div>
               </motion.li>

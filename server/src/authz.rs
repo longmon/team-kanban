@@ -534,7 +534,8 @@ pub async fn page_access(db: &PgPool, cfg: &Config, c: &Caller, target: Target<'
     if share.is_none() && !page.can_view(user) {
         return Err(AppError::not_found());
     }
-    let block_reason = if page_category(&page.page_type) == "read" {
+    // 协作类（任务树）同样不接受提交：任务通过专门的接口改状态
+    let block_reason = if page_category(&page.page_type) != "collect" {
         Some("read_only")
     } else if c.p.is_pat() {
         Some("not_allowed")

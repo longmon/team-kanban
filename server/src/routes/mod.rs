@@ -5,6 +5,7 @@ mod orgs;
 mod pages;
 mod responses;
 mod statics;
+mod tasks;
 mod tokens;
 
 use axum::{
@@ -82,6 +83,11 @@ pub fn api_router() -> Router<AppState> {
         .route("/share-links/{id}", delete(pages::revoke_share_link))
         .route("/s/{token}", get(pages::view_share))
         .route("/s/{token}/unlock", post(pages::unlock_share))
+        // 任务树
+        .route("/pages/{id}/tasks", get(tasks::list_tasks).post(tasks::add_task))
+        .route("/tasks/{id}", patch(tasks::update_task))
+        .route("/tasks/{id}/review", post(tasks::review_task))
+        .route("/tasks/{id}/events", get(tasks::task_events))
         // 提交与结果
         .route("/pages/{id}/responses", get(responses::poll).post(responses::submit_page))
         .route("/pages/{id}/responses/stream", get(responses::stream_page))

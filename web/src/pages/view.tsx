@@ -22,6 +22,7 @@ import { SearchButton } from "../shell";
 import { ShareLinkForm } from "./links";
 import { PageMetaEditor } from "./project";
 import { ResultsView, useResponseStream } from "./results";
+import { TaskAside, TaskBoard, TaskDialogs, useTaskTree } from "./tasks";
 import type { Locked } from "../openui-lib/forms";
 import type { Tally } from "../data";
 import type { Group, Page, Paged, PageView, Response } from "../types";
@@ -124,7 +125,8 @@ function Viewer({ src }: { src: Source }) {
 
   const cv = view ? view.content.version ?? view.page.version : 0;
   const historical = !!view && cv < view.page.version;
-  const collect = !!view && view.page.category !== "read";
+  // 收集类才有提交、结果与参与进度（只读类、协作类任务树都没有）
+  const collect = !!view && view.page.category === "collect";
   const showResults = !!view && view.can_view_results && collect;
   // 一条 SSE 连接：票卡比例、「大家的理由」、结果明细共用
   const stream = useResponseStream(src, view?.page.id ?? "", showResults);
@@ -155,6 +157,8 @@ function Viewer({ src }: { src: Source }) {
     return () => void (live = false);
   }, [checkPrev, view?.page.id, cv, anonLike]); // eslint-disable-line react-hooks/exhaustive-deps
   const resultsRef = useRef<HTMLElement>(null);
+  // 任务树：只有 /pages/:id（非临时链接）能操作
+  const tasks = useTaskTree(view, src.kind === "page" && !historical);
 
   if (error) {
     const code = error instanceof ApiError ? error.code : "";
@@ -201,6 +205,9 @@ function Viewer({ src }: { src: Source }) {
     collect && view.page.closes_at && <span key="due" className={closed ? undefined : "text-coral-ink"}><Clock className="size-[15px]" />{closed ? "已截止" : `${fmtDue(view.page.closes_at, new Date(now))} 截止`}</span>,
   ].filter(Boolean);
   const related = relatedPages(view.page.project.id, pageId);
+  const taskPage = !!view.task_tree;
+  // 任务树省略说明区时（服务端存的是空 Stack）不渲染内容区
+  const emptySpec = taskPage && view.content.kind === "openui" && view.content.spec.trim() === "root = Stack([])";
   return (
     <article data-tone={tone} className="flex flex-col">
       <div className="flex min-w-0 items-center gap-4">
@@ -250,7 +257,8 @@ function Viewer({ src }: { src: Source }) {
           )}
           {resubmit && !resp && <Notice tone="info">页面已更新到第 {cv} 版，可以重新提交。</Notice>}
           {mine && !view.can_view_results && <Notice tone="success">已提交，结果仅页面管理者可见。</Notice>}
-          <Submitter key={cv} view={view} src={src} onSubmitted={onSubmitted} historical={historical} locked={locked} resp={resp} tally={tally} closed={closed} />
+          {!emptySpec && <Submitter key={cv} view={view} src={src} onSubmitted={onSubmitted} historical={historical} locked={locked} resp={resp} tally={tally} closed={closed} />}
+          {taskPage && <TaskBoard t={tasks} />}
           {collect && resp && mineDesc && (
             <Box title="你的回答" note={fmtRel(resp.created_at, new Date(now))}>
               <div className="flex items-center gap-3 rounded-r-[10px] border-l-[3px] border-primary bg-background px-3.5 py-2.5">
@@ -308,6 +316,7 @@ function Viewer({ src }: { src: Source }) {
           )}
         </div>
         <aside aria-label="页面信息" className="flex min-w-0 flex-col gap-3.5">
+          {taskPage && <TaskAside t={tasks} Box={Box} />}
           {collect && <Progress view={view} rows={rowsCv} showResults={showResults} vote={vote} now={now} tally={tally} labels={labels} mine={resp ? valuesOf(resp.data) : null} />}
           {versions.length > 0 && (
             <Box title={<><History className="size-4" />版本</>}>
@@ -347,6 +356,7 @@ function Viewer({ src }: { src: Source }) {
           </div>
         </aside>
       </div>
+      {taskPage && <TaskDialogs t={tasks} />}
       {manage && (
         <Dialog open={manageOpen} onOpenChange={setManageOpen}>
           <DialogContent className="max-h-[88vh] overflow-y-auto rounded-[18px] p-6 sm:max-w-2xl sm:p-7">
@@ -568,7 +578,7 @@ function Submitter({ view, src, onSubmitted, historical, locked, resp, tally, cl
         <Suspense fallback={<ContentSkeleton />}>
           {view.page.page_type === "knowledge"
             ? <KnowledgeLayout><OpenUIView spec={view.content.spec} submit={submit} readOnly /></KnowledgeLayout>
-            : <OpenUIView spec={view.content.spec} submit={submit} readOnly={view.page.category === "read" || historical || closed} locked={locked} tally={tally} />}
+            : <OpenUIView spec={view.content.spec} submit={submit} readOnly={view.page.category !== "collect" || historical || closed} locked={locked} tally={tally} />}
         </Suspense>
       ) : (
         <div className="overflow-hidden rounded-[24px] border">

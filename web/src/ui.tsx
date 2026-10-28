@@ -1,7 +1,7 @@
 // 通用小部件与 hooks；视觉组件来自 shadcn/ui（components/ui）
 import { createContext, useCallback, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast as sonner } from "sonner";
-import { BookOpen, Braces, Check, CircleAlert, ClipboardList, Copy, FileChartColumn, Layers, Vote, Workflow } from "lucide-react";
+import { BookOpen, Braces, Check, CircleAlert, ClipboardList, Copy, FileChartColumn, Layers, ListChecks, Vote, Workflow } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -453,8 +453,8 @@ export const PAGE_TYPE_LABEL: Record<string, string> = {
   general: "通用", report: "报告", knowledge: "知识库", flowchart: "流程图", architecture: "架构图", api_doc: "接口文档", vote: "投票",
   requirement: "需求对接", task: "任务页", task_tree: "任务树",
 };
-/** 页面类型 → 六种糖纸色调（index.css [data-tone]）。通用页按大类：收集类算表单，只读类算知识库；任务类暂归表单 */
-export type Tone = "vote" | "form" | "report" | "flow" | "arch" | "book" | "api";
+/** 页面类型 → 糖纸色调（index.css [data-tone]）。通用页按大类：收集类算表单，只读类算知识库；接口文档、任务树各自一色，其它协作类暂归表单 */
+export type Tone = "vote" | "form" | "report" | "flow" | "arch" | "book" | "api" | "task";
 export function toneOf(type: string, category?: string): Tone {
   switch (type) {
     case "vote": return "vote";
@@ -463,13 +463,14 @@ export function toneOf(type: string, category?: string): Tone {
     case "architecture": return "arch";
     case "knowledge": return "book";
     case "api_doc": return "api";
+    case "task_tree": return "task";
     case "general": return category === "read" ? "book" : "form";
     default: return "form";
   }
 }
 /** 六个线性类型图标 */
 export const TONE_ICON: Record<Tone, typeof Vote> = {
-  vote: Vote, form: ClipboardList, report: FileChartColumn, flow: Workflow, arch: Layers, book: BookOpen, api: Braces,
+  vote: Vote, form: ClipboardList, report: FileChartColumn, flow: Workflow, arch: Layers, book: BookOpen, api: Braces, task: ListChecks,
 };
 /** 圆角方块里的类型图标（格子、题头、动态）；白底 + 类型强调色 */
 export function ToneIcon({ tone, className }: { tone: Tone; className?: string }) {

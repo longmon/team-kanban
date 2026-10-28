@@ -39,12 +39,43 @@ export type Page = {
   respondent_count?: number;
   /** 可提交的组织内人数（public 页面为 null） */
   eligible_count?: number | null;
+  /** 任务树页面的统计（其它类型为 null；旧后端无） */
+  task_stats?: TaskStats | null;
+};
+export type TaskStats = { total: number; done: number; in_review: number; my_todo: number; my_review: number };
+export type TaskStatus = "todo" | "in_progress" | "in_review" | "done";
+/** api.md §7.6：任务节点（扁平，按 parent_id 拼树） */
+export type Task = {
+  id: string; key: string; parent_id: string | null; position: number;
+  title: string; description: string; status: TaskStatus;
+  assignee: { user: UserBrief | null; label: string | null } | null;
+  due_at: string | null;
+  submit_note: string | null; evidence: string[];
+  submitted_by: UserBrief | null; submitted_at: string | null;
+  reject_reason: string | null;
+  reviewed_by: UserBrief | null; reviewed_at: string | null;
+  created_at: string; updated_at: string;
+  can_edit: boolean; can_review: boolean;
+};
+export type TaskTree = {
+  tasks: Task[];
+  reviewers: { users: UserBrief[]; groups: { id: string; name: string }[]; fallback: "project_admins" | null };
+  progress: { total: number; done: number; in_review: number };
+  me: { user_id: string | null; can_manage: boolean; can_review: boolean };
+  limits: { max_depth: number; max_nodes: number };
+};
+export type TaskEvent = {
+  id: string; action: "created" | "edited" | "moved" | "started" | "reverted" | "submitted" | "approved" | "rejected" | "deleted" | "restored";
+  from_status: TaskStatus | null; to_status: TaskStatus | null; note: string | null; evidence: string[] | null;
+  meta: Record<string, unknown> | null; at: string; actor: UserBrief | null; via_token: boolean;
 };
 export type Highlight = { label: string; value: string };
 export type Participation = { eligible_count: number | null; respondent_count: number; pending: UserBrief[] | null };
 /** GET /api/activity */
 export type Activity = {
-  type: "published" | "updated" | "submitted"; at: string; version: number;
+  type: "published" | "updated" | "submitted" | "task"; at: string; version: number;
+  /** type=task：任务状态变化（started/submitted/approved/rejected） */
+  task?: { action: string; title: string };
   page: { id: string; title: string; page_type: PageType; project: { id: string; name: string } };
   actor: { kind: "user" | "anonymous"; name: string } | null;
 };
@@ -123,6 +154,8 @@ export type PageView = {
   share_link: null | { id: string; label: string; expires_at: string; remaining_uses: number | null };
   /** 参与进度（旧后端无） */
   participation?: Participation | null;
+  /** 任务树页面的任务（其它类型为 null） */
+  task_tree?: TaskTree | null;
 };
 
 export type MyResponse = { seq: number; page_version: number; data: Record<string, unknown>; created_at: string };
