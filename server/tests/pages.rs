@@ -967,3 +967,76 @@ async fn activity_feed() {
     h.req(&w.owner, "DELETE", &format!("/api/pages/{hidden}"), None).await.ok(204);
     assert!(!feed(w.owner.clone(), String::new()).await.iter().any(|e| e["page"]["id"] == hidden.as_str()));
 }
+
+fn api_doc(n: usize) -> Value {
+    let ep = |i: usize| json!({ "method": "post", "path": format!("/orders/{{id}}/e{i}"), "title": format!("接口 {i}"),
+        "params": [{ "name": "id", "in": "path", "example": "o 1" }],
+        "body": { "fields": [{ "name": "amount", "type": "integer", "required": true }], "example": { "amount": 100 } },
+        "responses": [{ "status": 200, "example": { "ok": true } }], "errors": [{ "code": "E1", "description": "错" }] });
+    json!({ "title": " 支付 API ", "servers": [{ "name": "测试", "url": "https://t.example.com/" }, { "name": "生产", "url": "https://api.example.com" }],
+            "auth": { "type": "header", "name": "X-Api-Key", "value": "{{API_KEY}}" },
+            "groups": [{ "name": "订单", "endpoints": (0..n).map(ep).collect::<Vec<_>>() }] })
+}
+
+#[tokio::test]
+async fn api_doc_pages() {
+    let h = H::new().await;
+    let w = world(&h).await;
+    let body = |content: String| json!({ "project_id": w.proj, "title": "接口文档", "kind": "api", "page_type": "api_doc", "content": content, "visibility": "public",
+        "highlights": [{ "label": "版本", "value": "v1" }, { "label": "接口", "value": "伪造" }] });
+    let page = h.req(&w.owner, "POST", "/api/pages", Some(body(api_doc(2).to_string()))).await.ok(201);
+    let id = s(&page["id"]);
+    assert_eq!((page["category"].clone(), page["accept_responses"].clone(), page["kind"].clone()), (json!("read"), json!(false), json!("api")));
+    // 卡片关键数字：第一项固定为接口数，覆盖同名项
+    assert_eq!(page["highlights"], json!([{ "label": "接口", "value": "2 个" }, { "label": "版本", "value": "v1" }]));
+    // 入库的是规范化 JSON；查看端点返回 kind=api
+    let got = h.req(&w.owner, "GET", &format!("/api/pages/{id}"), None).await.ok(200);
+    let doc: Value = serde_json::from_str(got["content"].as_str().unwrap()).unwrap();
+    assert_eq!((doc["title"].clone(), doc["groups"][0]["endpoints"][0]["method"].clone(), doc["servers"][0]["url"].clone()), (json!("支付 API"), json!("POST"), json!("https://t.example.com")));
+    let v = h.req(&C::anon(), "GET", &format!("/api/pages/{id}/view"), None).await.ok(200);
+    assert_eq!((v["content"]["kind"].clone(), v["submit_block_reason"].clone()), (json!("api"), json!("read_only")));
+    assert!(v["content"]["spec"].as_str().unwrap().contains("X-Api-Key"));
+    // 只读：不能开提交、不能提交
+    let mut b = body(api_doc(1).to_string());
+    b["accept_responses"] = true.into();
+    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(b)).await.status, 400);
+    assert_eq!(submit_anon(&h, &id).await.code(), "read_only_page");
+    // 校验失败：逐条错误
+    let mut bad = api_doc(1);
+    bad["servers"][0]["url"] = "ftp://x".into();
+    bad["groups"][0]["endpoints"][0]["method"] = "FETCH".into();
+    let r = h.req(&w.owner, "POST", "/api/pages", Some(body(bad.to_string()))).await;
+    assert_eq!((r.status, r.code()), (400, "api_doc_invalid".into()), "{}", r.text());
+    assert_eq!(r.json()["error"]["details"]["errors"].as_array().unwrap().len(), 2);
+    let r = h.req(&w.owner, "POST", "/api/pages", Some(body("not json".into()))).await;
+    assert_eq!(r.code(), "api_doc_invalid");
+    // 上限：接口数、大小
+    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(body(api_doc(301).to_string()))).await.code(), "api_doc_invalid");
+    let r = h.req(&w.owner, "POST", "/api/pages", Some(body("x".repeat(512 * 1024 + 1)))).await;
+    assert_eq!(r.code(), "validation_failed");
+    // kind 与 page_type 必须配套
+    let mut b = body(api_doc(1).to_string());
+    b["kind"] = "openui".into();
+    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(b)).await.status, 400);
+    let mut b = body("root = Stack([])".into());
+    b["page_type"] = "report".into();
+    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(b)).await.status, 400);
+    // 更新内容：新版本、接口数重算；只改关键数字也保留接口数
+    let p = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "content": api_doc(3).to_string() }))).await.ok(200);
+    assert_eq!((p["version"].clone(), p["highlights"][0]["value"].clone(), p["highlights"][1]["value"].clone()), (json!(2), json!("3 个"), json!("v1")));
+    let p = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "highlights": [] }))).await.ok(200);
+    assert_eq!(p["highlights"], json!([{ "label": "接口", "value": "3 个" }]));
+    let r = h.req(&w.owner, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "content": bad.to_string() }))).await;
+    assert_eq!(r.code(), "api_doc_invalid");
+    // 历史版本、分享链接、列表筛选与标题搜索都可用
+    let v1 = h.req(&w.owner, "GET", &format!("/api/pages/{id}/view?version=1"), None).await.ok(200);
+    assert_eq!((v1["content"]["kind"].clone(), v1["versions"].as_array().unwrap().len()), (json!("api"), 2));
+    let link = h.req(&w.owner, "POST", &format!("/api/pages/{id}/share-links"), Some(json!({ "expires_in": 3600 }))).await.ok(201);
+    let token = s(&link["url"]).rsplit('/').next().unwrap().to_string();
+    assert_eq!(h.req(&C::anon(), "GET", &format!("/api/s/{token}"), None).await.ok(200)["content"]["kind"], "api");
+    let items = h.req(&w.owner, "GET", "/api/pages?page_type=api_doc&q=接口", None).await.ok(200);
+    assert_eq!(items["items"].as_array().unwrap().len(), 1);
+    // 数据库 CHECK 兜底
+    let err = sqlx::query("UPDATE pages SET kind = 'openui' WHERE id = $1::uuid").bind(&id).execute(&h.db).await.unwrap_err();
+    assert!(err.to_string().contains("pages_api_doc_kind_check"), "{err}");
+}

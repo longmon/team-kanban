@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "mock": "node mock/server.mjs",
     "gen": "tsx scripts/gen-openui.ts",
-    "check": "tsx scripts/check-examples.ts && tsx scripts/check-data.ts"
+    "check": "tsx scripts/check-examples.ts && tsx scripts/check-data.ts && tsx scripts/check-apidoc.ts"
   },
   "dependencies": {
     "@animate-ui/react": "2.3.0",

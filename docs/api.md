@@ -97,12 +97,13 @@ type Response = {
 { "error": { "code": "not_found", "message": "人类可读说明（中文）", "details": null } }
 ```
 
-`details` 仅 `validation_failed` 时为 `{ "fields": { "<字段名>": "<原因>" } }`，其余为 `null`。前端按 `code` 分支，不要解析 `message`。
+`details` 仅 `validation_failed` 时为 `{ "fields": { "<字段名>": "<原因>" } }`、`api_doc_invalid` 时为 `{ "errors": ["<位置>: <原因>"] }`，其余为 `null`。前端按 `code` 分支，不要解析 `message`。
 
 | HTTP | code | 场景 |
 |---|---|---|
 | 400 | `invalid_json` | body 不是合法 JSON |
 | 400 | `validation_failed` | 字段校验失败（见 details） |
+| 400 | `api_doc_invalid` | 接口文档（kind=api）内容不符合 §7.5（见 details.errors） |
 | 400 | `nickname_required` | 匿名提交缺昵称 |
 | 401 | `unauthenticated` | 需要登录 / PAT 无效、过期、吊销 |
 | 401 | `invalid_credentials` | 登录邮箱或密码错 |
@@ -122,7 +123,7 @@ type Response = {
 | 409 | `last_owner` | 操作会让组织没有 owner |
 | 409 | `not_org_member` | 加入项目/群组的用户不是组织成员 |
 | 409 | `responses_closed` | 页面不接受提交（停止收集，或已过截止时间 `closes_at`；后者 message 为「已截止」） |
-| 409 | `read_only_page` | 向只读类页面（report/knowledge/flowchart/architecture）提交 |
+| 409 | `read_only_page` | 向只读类页面（report/knowledge/flowchart/architecture/api_doc）提交 |
 | 409 | `share_link_exhausted` | 临时链接提交次数用完 |
 | 409 | `not_allowed` | PAT 调用提交等不允许的动作 |
 | 409 | `already_submitted` | 登录用户（非临时链接）已提交过该页面的当前版本 |
@@ -377,11 +378,12 @@ type Pat = {
 
 | category | page_type | 能否提交 | agent 是否等回复 |
 |---|---|---|---|
-| `read` 只读 | `report` 报告、`knowledge` 知识库、`flowchart` 流程图、`architecture` 架构图 | 否（服务端拒绝 + DB CHECK） | 不等，发完把 url 给用户 |
+| `read` 只读 | `report` 报告、`knowledge` 知识库、`flowchart` 流程图、`architecture` 架构图、`api_doc` 接口文档 | 否（服务端拒绝 + DB CHECK） | 不等，发完把 url 给用户 |
 | `collect` 收集回复 | `vote` 投票/表单/问卷；`general` 通用（旧页面与不传 page_type 时的默认值，行为与改动前一致） | 是（`accept_responses`） | `get_responses` 长轮询 |
 | `collab` 协作任务 | `requirement`、`task`、`task_tree` | — | 尚未开放：创建时 400 |
 
 流程图/架构图用 OpenUI 组件 `Diagram(code, caption?)` 写 Mermaid（前端懒加载、自托管）。
+`api_doc` 必须用 `kind="api"`（反之亦然，否则 400 `validation_failed`，DB CHECK 兜底），content 为 §7.5 的接口文档 JSON。
 
 ### 7.1 管理
 
@@ -408,10 +410,10 @@ type Pat = {
 ```json
 { "project_id": "uuid",
   "title": "1..200",
-  "kind": "openui | html",
+  "kind": "openui | html | api",
   "page_type": "可选，PageType，默认 general",
   "model": "可选，生成内容的 AI 模型名称，如 Claude Opus 5.5",
-  "content": "openui: OpenUI Lang 原文 ≤512KiB；html: 完整 HTML ≤5MiB",
+  "content": "openui: OpenUI Lang 原文 ≤512KiB；html: 完整 HTML ≤5MiB；api: §7.5 接口文档 JSON 文本 ≤512KiB",
   "visibility": "public | org | project | groups",
   "group_ids": ["uuid"],
   "accept_responses": true,
@@ -420,6 +422,7 @@ type Pat = {
   "summary": "可选，卡片摘要，trim 后 1..300 字符",
   "highlights": [{ "label": "转化率", "value": "12.5%" }] }
 ```
+`kind="api"`：服务端解析并校验 §7.5 结构，入库规范化后的 JSON（`GET /api/pages/{id}` 返回的 `content` 是规范化结果）；不通过 → 400 `api_doc_invalid`，`message` 为逐条错误，`details.errors: string[]`（每条 `位置: 原因`，最多 50 条）。`highlights` 第一项由服务端固定为 `{ "label": "接口", "value": "N 个" }`（N = 接口数，覆盖同名项，其余最多 3 项沿用请求）；更新内容或 highlights 时重算。
 `visibility="groups"` 时 `group_ids` 必须非空且都属于同一组织（否则 400 `validation_failed`）；其它 visibility 时必须为空或省略。默认：`accept_responses=true`、`results_visible_to="managers"`；`visibility` 必填。服务端**不解析** OpenUI（校验在 MCP 本地做；渲染错误由前端显示）。
 `page_type`：非法值 400 `validation_failed`；只读类省略 `accept_responses` 时写 false，显式 true → 400 `validation_failed`（字段 `accept_responses`）；协作类 → 400「该类型尚未开放」。
 `model`：去首尾空白后 1..100 字符且不含控制字符，否则 400 `validation_failed`（字段 `model`）；省略或空白时 `generated_by` 为 null。存入 `generated_by`，页面查看页与项目页列表显示「由 {generated_by} 生成」。
@@ -454,6 +457,7 @@ type PageView = {
           project: { id: string; name: string }; org: { id: string; name: string } };
   content:                                               // 所查看版本的内容；version/title 为该版本的快照（page.* 为当前页面）
     | { kind: "openui"; spec: string; version: number; title: string }
+    | { kind: "api"; spec: string; version: number; title: string }          // spec = §7.5 规范化 JSON
     | { kind: "html"; frame_url: string; frame_origin: string; version: number; title: string };   // frame_url 10 分钟内有效
   viewer: { type: "user"; user_id: string; display_name: string } | { type: "anonymous" };
   can_submit: boolean;
@@ -515,6 +519,42 @@ type Activity = {
 
 - `GET /openui/library.schema.json` → `kanbanLibrary.toJSONSchema()`（`web/src/openui-lib`），带 `ETag`
 - `GET /openui/prompt.md` → `text/markdown`，内容见 design §8.2，带 `ETag`
+
+### 7.5 接口文档结构（kind=api）
+
+服务端 `server/src/apidoc.rs` 校验与规范化（MCP 本地预检共用同一文件）；前端 `web/src/apidoc.ts` 按此结构渲染并生成代码样例（agent 不写代码样例）。标 `?` 的可省略。
+```ts
+type ApiDoc = {
+  title: string;                       // 1..200
+  description?: string;                // ≤20000，Markdown（前端不渲染原始 HTML）
+  version?: string;                    // ≤50
+  servers: { name: string; url: string }[];   // 1..10；name 1..50 不重复；url http(s)://，≤500，不带 ? #，去掉末尾 /
+  auth?: { type: "header" | "query" | "bearer";
+           name?: string;              // header/query 必填，无空白，≤100；bearer 忽略（固定 Authorization: Bearer）
+           value?: string;             // 示例值，用占位符如 {{API_KEY}}，≤500
+           description?: string };     // ≤2000
+  groups: { name: string; description?: string; endpoints: Endpoint[] }[];   // 1..50 组，接口总数 1..300
+};
+type Endpoint = {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS";  // 大小写不敏感，存大写
+  path: string;                        // 以 / 开头，无空白、不带 ? #，≤500；每个 {name} 必须有 in=path 参数，反之亦然
+  title: string;                       // 1..200
+  description?: string;                // ≤10000，Markdown
+  auth?: boolean;                      // 缺省 true；false = 不带全局鉴权
+  deprecated?: boolean;
+  params?: { name: string; in: "path" | "query" | "header"; type?: string /* 缺省 string */; required?: boolean /* path 恒为 true */;
+             description?: string; example?: string | number | boolean; enum?: (string | number | boolean)[] }[];   // ≤50，同位置不重名（header 不分大小写）
+  body?: { content_type?: string /* 缺省 application/json */; fields?: Field[]; example?: any };   // GET/HEAD 不能有
+  responses?: { status: string /* "200" | "4XX" | "default"，可写数字 */; description?: string; fields?: Field[]; example?: any }[];   // ≤20
+  errors?: { code: string /* 可写数字 */; description?: string; http_status?: number }[];   // ≤200
+};
+type Field = { name: string; type?: string; required?: boolean; description?: string; example?: any;
+               enum?: (string | number | boolean)[]; fields?: Field[] };   // 子字段用于 object / array<object>；最多 6 层，一个请求体/响应 ≤500 个字段
+```
+- 字符串去首尾空白；名称、类型、URL 等单行字段不能含控制字符；未知字段拒绝（防拼写错误）。`type` 是自由文本（≤50），前端按前缀识别 string / integer / number / boolean / object / array<…>。
+- 示例：参数 `example` 只能是标量（≤2000 字节）；`body.example` / `responses[].example` ≤64 KiB，字段 `example` ≤8 KiB，原样保留（键顺序不变）。`enum` ≤100 项、每项标量 ≤200 字节。
+- 规范化后整体 ≤512 KiB。
+- 前端代码样例：URL = 所选环境 `servers[i].url` + path（path 参数以示例值代入并 URL 编码）+ query（必填或有示例的参数，URL 编码）；鉴权与 header 参数进请求头；有 body 时按 `body.example`（没有则由字段的 example → enum[0] → 类型占位生成）发送，JSON 以外的 `application/x-www-form-urlencoded` 编码成表单，其余原样发送文本。
 
 ## 8. 提交与结果
 
@@ -739,8 +779,8 @@ type AuditEntry = {
 - 调 `POST /api/projects/{id}/groups`；出参 `{ server, group: {id,name,project_id,role,member_count}, project, next_step }`；权限不足的提示同 create_project。
 
 ### get_ui_guide
-- 入参：`{ kind?: "openui" | "html", server?: string }`（kind 缺省两者都给；server 缺省取默认或第一个，不询问）
-- 出参：纯文本（不是 JSON）：design §8.2 的内容。OpenUI 部分取自 `GET /openui/prompt.md`。末尾固定附「卡片信息」规则（summary / closes_at / highlights 的用法）。
+- 入参：`{ kind?: "openui" | "html" | "api", server?: string }`（kind 缺省全给；`api` 只给「接口文档」一节且不访问服务器；server 缺省取默认或第一个，不询问）
+- 出参：纯文本（不是 JSON）：design §8.2 的内容。OpenUI 部分取自 `GET /openui/prompt.md`。缺省时附「接口文档」一节（何时用 api_doc、三种内容来源、结构与上限）。末尾固定附「卡片信息」规则（summary / closes_at / highlights 的用法）。
 
 ### list_projects
 - 入参：`{ server?: string }`
@@ -753,12 +793,14 @@ type AuditEntry = {
     org?: string,               // 组织 slug / UUID / 名称
     project?: string,           // 项目 UUID、"org_slug/project_slug"、slug 或名称；唯一候选时可省略
     title: string,
-    page_type: "report" | "knowledge" | "flowchart" | "architecture" | "vote",   // 必填；协作类未开放
+    page_type: "report" | "knowledge" | "flowchart" | "architecture" | "api_doc" | "vote",   // 必填；协作类未开放
     model: string,              // 必填：调用方 AI 自己的模型名称，如 "Claude Opus 5.5"、"GPT-5"，按实际身份填写，不要编造；透传为 POST 的 model
-    kind?: "openui" | "html",   // 默认 "openui"
+    kind?: "openui" | "html" | "api",   // 默认 "openui"；page_type=api_doc 时自动为 "api"（传别的值报错）
     spec?: string,              // kind=openui 时：OpenUI Lang 原文
     html?: string,              // kind=html 时
-    file_path?: string,         // 替代 spec/html：从本地文件读取（按 kind 解释）
+    api?: object,               // api_doc：§7.5 结构化 JSON（顶层带 openapi/swagger 字段时按 OpenAPI 转换）
+    openapi?: string,           // api_doc：OpenAPI 3.x / Swagger 2.0 的 JSON 文本；YAML → openapi_unsupported（提示先转 JSON）
+    file_path?: string,         // 替代 spec/html/api/openapi：从本地文件读取（按 kind 解释；api_doc 自动识别 OpenAPI 或结构化 JSON）
     visibility?: Visibility,    // 默认 "project"；给了 groups（含 profile 默认 groups）时默认 "groups"
     groups?: string[],          // 群组 UUID 或群组名（大小写不敏感，先本项目群组再组织级群组）；给了就发到这些群组，此时 visibility 只能是 groups 或不填；
                                 // groups 与 visibility 都不给时按 §14.0「自动选群组」
@@ -771,11 +813,12 @@ type AuditEntry = {
   原样透传给 `POST /api/pages`，由服务端校验。工具描述与 get_ui_guide 引导：所有页面给一句话 summary；收集类（vote）设 closes_at；报告类给 2–4 个 highlights。
   `spec`/`html`/`file_path` 恰好一个，且与 kind 匹配。目标按 §14.0 解析；群组名经 `GET /api/orgs/{org_id}/groups` 解析（大小写不敏感，找不到报错）。
 - 选型（写在工具描述与 INSTRUCTIONS 里）：用户明确指定类型时照用；否则只给人看、不需要回复 → `report` / `knowledge` / `flowchart` / `architecture`（流程图、架构图用 `Diagram` 写 Mermaid），需要对方选择或填写 → `vote`；拿不准时需要回复选 vote，不需要选 report。
+- 接口文档（page_type=api_doc）：`api` / `openapi` / `file_path` 恰好一个（spec/html → `invalid_argument`；非 api_doc 给 api/openapi 同样报错）。OpenAPI 在 MCP 本地转换成 §7.5 结构：info → 标题/简介/版本；servers（变量取默认值，相对地址补占位 `https://api.example.com` 并告警；Swagger 用 schemes+host+basePath）；全局 security 用到的第一种鉴权（apiKey header/query/cookie、http bearer/basic、oauth2/openIdConnect → bearer；值为占位符）；按第一个 tag 分组（顶层 tags 顺序，未打 tag 的归「其他」）；参数（path 级 + operation 级，本文档内 `$ref`，cookie 参数忽略并告警，path 里未声明的参数自动补）；requestBody / Swagger body、formData（优先 JSON 媒体类型，schema 的 properties/allOf/items 展开成字段，oneOf/anyOf 取第一种，循环引用截断，最多 6 层）；responses；operation 扩展 `x-error-codes: [{code, description|message, http_status|status}]` → 错误码表。转换提示放进出参 `warnings`。随后用与服务端相同的校验（§7.5），失败返回 `isError`，text 为 `api_doc_invalid:` + 逐条 `位置: 原因`，不调服务端。
 - 本地校验（kind=openui）：design §8.3；失败返回 `isError`，text 为 `openui_invalid:` + 错误列表（每条 `行:列 code message`，取自 parser `meta.errors` 与 unresolved 名称）。只读类 spec 含 `@ToAssistant` 或 `Form(` → `page_type_mismatch:`，不调服务端。
 - 出参：`{ server, id, url, version, visibility, page_type, category, warnings: string[], next_step, auto_group?, tell_user? }`（`POST /api/pages`；后两项仅自动选中唯一活跃群组时出现）；`next_step` 提示下一步（只读类：「把 url 发给用户即可，无需等待」；收集类：用 get_responses 等待）；或 §14.0 的「需要选择」
 
 ### update_page
-- 入参：`{ server?: string, page_id: string, title?, model?, spec?, html?, file_path?, visibility?, groups?, accept_responses?, results_visible_to?, closes_at?, summary?, highlights? }`；至少一个可选字段。`closes_at` / `summary` 传空字符串发送 null（清除），`highlights` 传 `[]` 清除。`model` 同 publish_page（改内容时传自己的模型名称），给了就覆盖页面的 `generated_by`。内容类入参须与页面 kind 一致（先 `GET /api/pages/{id}` 取 kind），openui 同样本地校验。
+- 入参：`{ server?: string, page_id: string, title?, model?, spec?, html?, api?, openapi?, file_path?, visibility?, groups?, accept_responses?, results_visible_to?, closes_at?, summary?, highlights? }`；至少一个可选字段。`closes_at` / `summary` 传空字符串发送 null（清除），`highlights` 传 `[]` 清除。`model` 同 publish_page（改内容时传自己的模型名称），给了就覆盖页面的 `generated_by`。内容类入参须与页面 kind 一致（先 `GET /api/pages/{id}` 取 kind；api 页面用 api / openapi / file_path），openui 与接口文档同样本地校验。
 - 出参：同 publish_page（`PATCH /api/pages/{id}`）。改内容时同样按页面 page_type 做只读 lint。
 
 ### create_share_link

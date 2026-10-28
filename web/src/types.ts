@@ -4,8 +4,8 @@ export type UserFull = { id: string; email: string; display_name: string; email_
 export type OrgRole = "owner" | "admin" | "member";
 export type ProjectRole = "admin" | "editor" | "viewer";
 export type Visibility = "public" | "org" | "project" | "groups";
-export type PageKind = "openui" | "html";
-export type PageType = "general" | "report" | "knowledge" | "flowchart" | "architecture" | "vote" | "requirement" | "task" | "task_tree";
+export type PageKind = "openui" | "html" | "api";
+export type PageType = "general" | "report" | "knowledge" | "flowchart" | "architecture" | "api_doc" | "vote" | "requirement" | "task" | "task_tree";
 export type PageCategory = "read" | "collect" | "collab";
 export type Scope = "publish" | "read_responses" | "manage";
 
@@ -108,7 +108,8 @@ export type PageView = {
     closes_at?: string | null; summary?: string | null; highlights?: Highlight[] | null;
   };
   /** 所查看版本的内容（version/title 为该版本快照；旧后端无这两个字段时按当前版本处理） */
-  content: ({ kind: "openui"; spec: string } | { kind: "html"; frame_url: string; frame_origin: string }) & { version?: number; title?: string };
+  /** api：spec 为接口文档规范化 JSON（api.md §7.5） */
+  content: ({ kind: "openui"; spec: string } | { kind: "api"; spec: string } | { kind: "html"; frame_url: string; frame_origin: string }) & { version?: number; title?: string };
   viewer: { type: "user"; user_id: string; display_name: string } | { type: "anonymous" };
   can_submit: boolean;
   submit_block_reason: null | "read_only" | "responses_closed" | "closed" | "share_link_exhausted" | "already_submitted";

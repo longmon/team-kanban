@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use super::{brief, list, require_any};
 use crate::{
-    AppState, audit,
+    AppState, apidoc, audit,
     auth::Caller,
     authz::{
         ANY_SCOPE, PUBLISH, PageAccess, ProjectRole, Target, issue_grant, page_access, page_category, require_page_manage, require_project,
@@ -283,10 +283,10 @@ pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQue
 // ---------------------------------------------------------------- 校验
 
 fn check_kind(kind: &str) -> AppResult<()> {
-    if matches!(kind, "openui" | "html") { Ok(()) } else { Err(AppError::field("kind", "取值必须是 openui/html")) }
+    if matches!(kind, "openui" | "html" | "api") { Ok(()) } else { Err(AppError::field("kind", "取值必须是 openui/html/api")) }
 }
 
-const PAGE_TYPES: [&str; 9] = ["general", "report", "knowledge", "flowchart", "architecture", "vote", "requirement", "task", "task_tree"];
+const PAGE_TYPES: [&str; 10] = ["general", "report", "knowledge", "flowchart", "architecture", "api_doc", "vote", "requirement", "task", "task_tree"];
 
 fn check_page_type(t: &str) -> AppResult<()> {
     if PAGE_TYPES.contains(&t) { Ok(()) } else { Err(AppError::field("page_type", &format!("取值必须是 {}", PAGE_TYPES.join("/")))) }
@@ -350,12 +350,36 @@ fn read_only_accept() -> AppError {
     AppError::field("accept_responses", "只读类型页面不能开启提交")
 }
 
-fn check_content(kind: &str, content: &str) -> AppResult<()> {
+/// 校验内容；kind=api 时返回规范化后的 JSON 与接口数（入库的是规范化结果）
+fn check_content(kind: &str, content: &str) -> AppResult<Option<apidoc::Checked>> {
     let max = if kind == "html" { 5 * 1024 * 1024 } else { 512 * 1024 };
     if content.is_empty() || content.len() > max {
         return Err(AppError::field("content", &format!("不能为空且不超过 {} KiB", max / 1024)));
     }
+    if kind != "api" {
+        return Ok(None);
+    }
+    apidoc::validate(content).map(Some).map_err(|errs| {
+        let mut e = AppError::new(StatusCode::BAD_REQUEST, "api_doc_invalid", format!("接口文档校验失败：\n{}", errs.join("\n")));
+        e.details = Some(json!({ "errors": errs }));
+        e
+    })
+}
+
+/// kind 与 page_type：api ⇔ api_doc
+fn check_kind_type(kind: &str, page_type: &str) -> AppResult<()> {
+    if (kind == "api") != (page_type == "api_doc") {
+        return Err(AppError::field("kind", "page_type=api_doc 必须用 kind=api，kind=api 只用于 api_doc"));
+    }
     Ok(())
+}
+
+/// 接口文档卡片的关键数字：第一项固定为「接口 N 个」，其余沿用给定的（去掉同名项，总数 ≤4）
+fn api_highlights(endpoints: usize, given: Option<Value>) -> Option<Value> {
+    let mut out = vec![json!({ "label": "接口", "value": format!("{endpoints} 个") })];
+    let rest = given.and_then(|v| v.as_array().cloned()).unwrap_or_default();
+    out.extend(rest.into_iter().filter(|h| h["label"] != "接口").take(3));
+    Some(Value::Array(out))
 }
 
 fn check_visibility(v: &str) -> AppResult<()> {
@@ -438,10 +462,11 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     check_kind(&r.kind)?;
     let page_type = r.page_type.as_deref().unwrap_or("general");
     check_page_type(page_type)?;
+    check_kind_type(&r.kind, page_type)?;
     let model = check_model(r.model.as_deref())?;
     let closes_at = check_closes_at(r.closes_at.as_deref())?;
     let summary = check_summary(r.summary.as_deref())?;
-    let highlights = check_highlights(r.highlights.as_ref())?;
+    let mut highlights = check_highlights(r.highlights.as_ref())?;
     let read_only = match page_category(page_type) {
         "collab" => return Err(AppError::field("page_type", "该类型尚未开放")),
         c => c == "read",
@@ -449,7 +474,13 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     if read_only && r.accept_responses == Some(true) {
         return Err(read_only_accept());
     }
-    check_content(&r.kind, &r.content)?;
+    let content = match check_content(&r.kind, &r.content)? {
+        Some(a) => {
+            highlights = api_highlights(a.endpoints, highlights);
+            a.json
+        }
+        None => r.content,
+    };
     check_visibility(&r.visibility)?;
     let results = r.results_visible_to.unwrap_or_else(|| "managers".into());
     check_results(&results)?;
@@ -466,7 +497,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     .bind(ctx.project_id())
     .bind(&title)
     .bind(&r.kind)
-    .bind(&r.content)
+    .bind(&content)
     .bind(&r.visibility)
     .bind(r.accept_responses.unwrap_or(!read_only))
     .bind(&results)
@@ -545,7 +576,7 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     ])?;
     let closes_at = r.closes_at.as_ref().map(|v| check_closes_at(v.as_deref())).transpose()?;
     let summary = r.summary.as_ref().map(|v| check_summary(v.as_deref())).transpose()?;
-    let highlights = r.highlights.as_ref().map(|v| check_highlights(v.as_ref())).transpose()?;
+    let mut highlights = r.highlights.as_ref().map(|v| check_highlights(v.as_ref())).transpose()?;
     let title = r.title.as_deref().map(|t| text_field("title", t, 1, 200)).transpose()?;
     if let Some(v) = &r.visibility {
         check_visibility(v)?;
@@ -554,8 +585,8 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         check_results(v)?;
     }
     let mut tx = st.db.begin().await?;
-    let (kind, page_type, old_content, old_vis, old_accept): (String, String, String, String, bool) = sqlx::query_as(
-        "SELECT kind, page_type, content, visibility, accept_responses FROM pages WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
+    let (kind, page_type, old_content, old_vis, old_accept, old_highlights): (String, String, String, String, bool, Option<Value>) = sqlx::query_as(
+        "SELECT kind, page_type, content, visibility, accept_responses, highlights FROM pages WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(ctx.org_id())
     .bind(ctx.page_id())
@@ -571,13 +602,27 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
         (None, true) => old_groups.clone(),
         (ids, _) => check_groups(&mut tx, ctx.org_id(), ctx.project_id(), &new_vis, ids.as_deref()).await?,
     };
+    let mut api_count = None;
     let content = match &r.content {
         Some(cnt) => {
-            check_content(&kind, cnt)?;
-            (cnt != &old_content).then_some(cnt)
+            let cnt = match check_content(&kind, cnt)? {
+                Some(a) => {
+                    api_count = Some(a.endpoints);
+                    a.json
+                }
+                None => cnt.clone(),
+            };
+            (cnt != old_content).then_some(cnt)
         }
         None => None,
     };
+    // 接口文档：内容或关键数字变了都重算「接口 N 个」
+    if kind == "api" && (content.is_some() || highlights.is_some()) {
+        let n = api_count
+            .or_else(|| serde_json::from_str::<apidoc::ApiDoc>(&old_content).ok().map(|d| d.endpoint_count()))
+            .unwrap_or(0);
+        highlights = Some(api_highlights(n, highlights.unwrap_or(old_highlights)));
+    }
     sqlx::query(
         "UPDATE pages SET title = COALESCE($3, title), content = COALESCE($4, content),
                 version = version + CASE WHEN $4::text IS NULL THEN 0 ELSE 1 END,
@@ -590,7 +635,7 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     .bind(ctx.org_id())
     .bind(ctx.page_id())
     .bind(&title)
-    .bind(content)
+    .bind(&content)
     .bind(&new_vis)
     .bind(r.accept_responses)
     .bind(&r.results_visible_to)
@@ -721,7 +766,7 @@ async fn page_view(st: &AppState, a: &PageAccess, version: Option<i32>) -> J {
     };
     let content = match spec {
         None => json!({ "kind": "html", "frame_url": frame_url(st, p.id, v), "frame_origin": st.cfg.frame_origin(), "version": v, "title": title }),
-        Some(spec) => json!({ "kind": "openui", "spec": spec, "version": v, "title": title }),
+        Some(spec) => json!({ "kind": p.kind, "spec": spec, "version": v, "title": title }),
     };
     let viewer = match a.user_id() {
         Some(uid) => {

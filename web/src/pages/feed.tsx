@@ -90,8 +90,8 @@ export function useHomeStats(orgId: string | undefined) {
 // ---------- 分类 ----------
 /** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本 */
 const isTodo = (p: Page, now = Date.now()) => p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now);
-type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book";
-const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"]];
+type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book" | "api";
+const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"], ["api", "接口文档"]];
 const kindOf = (p: Page): Kind => {
   const t = toneOf(p.page_type, p.category);
   return t === "flow" || t === "arch" ? "diagram" : t;

@@ -27,6 +27,7 @@ import type { Tally } from "../data";
 import type { Group, Page, Paged, PageView, Response } from "../types";
 
 const OpenUIView = lazy(() => import("./openui-view"));
+const ApiDocView = lazy(() => import("./apidoc-view"));
 
 
 export type Source = { kind: "page"; id: string } | { kind: "share"; token: string };
@@ -208,7 +209,8 @@ function Viewer({ src }: { src: Source }) {
         </nav>
         <SearchButton label="搜索" className="w-[260px]" />
       </div>
-      <div className="mt-[18px] grid items-start gap-7 min-[1100px]:grid-cols-[minmax(0,1fr)_340px] min-[1500px]:grid-cols-[minmax(0,1fr)_392px]">
+      {/* 接口文档自带目录与代码栏，占满宽度，右栏下沉到底部 */}
+      <div className={cn("mt-[18px] grid items-start gap-7", view.content.kind !== "api" && "min-[1100px]:grid-cols-[minmax(0,1fr)_340px] min-[1500px]:grid-cols-[minmax(0,1fr)_392px]")}>
         <div className="flex min-w-0 flex-col gap-4">
           <section className="band flex items-start gap-4">
             <ToneIcon tone={tone} className="size-12 rounded-[14px] bg-tone-f text-tone [&_svg]:size-6 max-sm:hidden" />
@@ -560,7 +562,9 @@ function Submitter({ view, src, onSubmitted, historical, locked, resp, tally, cl
           <span className="text-xs text-muted-foreground">未登录提交时，页面管理者会看到这个名字</span>
         </div>
       )}
-      {view.content.kind === "openui" ? (
+      {view.content.kind === "api" ? (
+        <Suspense fallback={<ContentSkeleton />}><ApiDocView spec={view.content.spec} pageTitle={(historical && view.content.title) || view.page.title} /></Suspense>
+      ) : view.content.kind === "openui" ? (
         <Suspense fallback={<ContentSkeleton />}>
           {view.page.page_type === "knowledge"
             ? <KnowledgeLayout><OpenUIView spec={view.content.spec} submit={submit} readOnly /></KnowledgeLayout>

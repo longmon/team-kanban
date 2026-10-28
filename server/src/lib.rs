@@ -1,3 +1,4 @@
+pub mod apidoc;
 pub mod audit;
 pub mod auth;
 pub mod authz;

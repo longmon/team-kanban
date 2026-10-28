@@ -14,7 +14,7 @@ rmcp = { version = "3.6", default-features = false, features = ["server", "macro
 rquickjs = "0.14"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 tokio = { version = "1", features = ["macros", "rt", "io-std"] }
 schemars = "1"
 toml = { version = "1", default-features = false, features = ["std", "parse", "display", "serde"] }

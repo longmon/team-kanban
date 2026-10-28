@@ -106,6 +106,7 @@ Dockerfile docker-compose.yml Caddyfile.example
 **pages** — `id`、`org_id`、`project_id`（FK `(org_id, project_id)`）、`title(1..200)`、`kind ∈ {openui, html}`（创建后不可改）、`content text`（openui ≤ 512 KiB，html ≤ 5 MiB，CHECK 兜底）、`version int`（content 变更 +1）、`visibility ∈ {public, org, project, groups}`、`accept_responses bool`、`results_visible_to ∈ {managers, viewers}`、`response_seq bigint`（最后分配的序号 = 提交总数）、`created_by`、`created_via_pat uuid?`、时间戳、`deleted_at?`。索引 `(project_id, id DESC) WHERE deleted_at IS NULL`。
 
 **页面类型**（0002）— `pages.page_type text NOT NULL DEFAULT 'general'`，CHECK 取值 ∈ {general, report, knowledge, flowchart, architecture, vote, requirement, task, task_tree}；与 `kind` 正交，创建后不可改。大类不入库，由代码里的纯函数 `page_category(page_type)` 推导：read = report/knowledge/flowchart/architecture（只读，CHECK `pages_read_only_check` 强制 `accept_responses = false`）；collect = vote/general；collab = requirement/task/task_tree（CHECK `pages_collab_kind_check` 要求 `kind='openui'`，尚未开放，创建时应用层 400）。旧页面全部为 general，行为不变；旧客户端不传 page_type 时也是 general。
+**接口文档**（0008）— 新增 `page_type='api_doc'`（read 类）与 `kind='api'`（content 存规范化 JSON，≤512 KiB），CHECK `pages_api_doc_kind_check` 要求两者同时出现；`page_versions.kind` 同步放宽。结构与校验见 api.md §7.5（`server/src/apidoc.rs`，MCP 以 `#[path]` 共用）。
 迁移只做 `ADD COLUMN … DEFAULT 常量`（PG11+ 只改元数据，不重写表）+ 三个 CHECK（校验扫一遍 pages 主表，大字段在 TOAST 不读），文件内 `SET LOCAL lock_timeout = '5s'`，拿不到锁即失败退出、不长时间阻塞。0002 上线后回退到旧镜像会因 sqlx 报版本缺失而起不来，确需回退时先停 app 再执行：
 ```sql
 BEGIN;
@@ -488,6 +489,7 @@ Strict-Transport-Security 由 Caddy 加
 - 只读类：不显示昵称栏、「已停止接受提交」提示与「查看结果」按钮；OpenUI 里会触发提交的按钮（`@ToAssistant` 或缺省动作）不渲染，Form 字段禁用；html 页 `relay:init` 带 `can_submit:false`。
 - `Diagram(code, caption?)`：`diagram.tsx` 只放 schema，`diagram-impl.tsx` 用 `import("mermaid")` 懒加载（npm 精确版本，Vite 打包自托管，满足 `script-src 'self'`）；`securityLevel:'strict'`、`htmlLabels:false`、`startOnLoad:false`；陶土 token 映射到 themeVariables，切换暗色时重新渲染；语法错误就地显示错误与源码；带「放大查看」对话框。
 - knowledge：从正文 Markdown 的 h2/h3 生成目录，xl 起左侧 240px sticky。
+- api_doc（`pages/apidoc-view.tsx`，单独 chunk）：≥1100 左侧 232px sticky 接口目录（分组、method 色块、搜索过滤），窄屏收进折叠块；每个接口一张卡，≥1400 左右两栏（说明 / 参数表 / 请求体 / 响应 / 错误码 | 代码样例、请求体示例、响应示例，右栏 sticky）；环境切换、语言切换（localStorage `tk.apidoc.lang`）。代码由 `src/apidoc.ts` 的纯函数按结构生成（curl / PHP / JS / TS / Go / Rust / Python / Java），字符串经各语言转义；description 用 react-markdown（不渲染原始 HTML），其余按纯文本；不发请求。
 - 项目页列表：筛选 chips「全部 / 只读 / 收集 / 各类型」，展开成 `?page_type=`；每行显示类型图标与中文名；只读类不显示提交数、结果按钮和提交开关。
 
 ## 9. 有意的简化与天花板

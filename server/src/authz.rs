@@ -297,7 +297,7 @@ pub async fn require_group(db: &PgPool, c: &Caller, group_id: Uuid, min: OrgRole
 /// 页面类型的行为大类（不入库，由 page_type 推导）：read 只读 / collect 收集回复 / collab 协作任务
 pub fn page_category(page_type: &str) -> &'static str {
     match page_type {
-        "report" | "knowledge" | "flowchart" | "architecture" => "read",
+        "report" | "knowledge" | "flowchart" | "architecture" | "api_doc" => "read",
         "requirement" | "task" | "task_tree" => "collab",
         _ => "collect",
     }

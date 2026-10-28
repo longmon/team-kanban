@@ -899,3 +899,58 @@ async fn auto_group_and_create_tools() {
     assert!(e && t.starts_with("forbidden:") && t.contains("设置→访问令牌"), "{t}");
     c.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn api_doc_publish_validate_and_update() {
+    let (url, st) = start_mock().await;
+    let c = client(&url, TOKEN).await;
+    let (_, guide) = call(&c, "get_ui_guide", json!({ "kind": "api" })).await;
+    assert!(guide.contains("api_doc") && guide.contains("openapi") && guide.contains("summary"), "{guide}");
+    let base = json!({ "page_type": "api_doc", "model": "Claude Opus 5.5", "project": PROJECT, "title": "支付接口" });
+    let with = |extra: Value| {
+        let mut b = base.clone();
+        b.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        b
+    };
+    // OpenAPI JSON 文本 → 转换 + 本地校验 → kind=api 发布；转换提示进 warnings
+    let spec = json!({ "openapi": "3.0.0", "info": { "title": "支付" }, "servers": [{ "url": "/v1" }],
+        "paths": { "/orders/{id}": { "get": { "summary": "查单", "responses": { "200": { "description": "ok" } } } } } });
+    let r = ok_json(call(&c, "publish_page", with(json!({ "openapi": spec.to_string() }))).await);
+    assert_eq!((r["page_type"].clone(), r["category"].clone()), (json!("api_doc"), json!("read")));
+    assert!(r["warnings"][0].as_str().unwrap().contains("相对路径"), "{r}");
+    let id = r["id"].as_str().unwrap().to_string();
+    {
+        let m = st.0.lock().unwrap();
+        assert_eq!((m.writes[0]["kind"].clone(), m.writes[0]["page_type"].clone()), (json!("api"), json!("api_doc")));
+        let doc: Value = serde_json::from_str(m.writes[0]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(doc["groups"][0]["endpoints"][0]["params"][0]["name"], "id");
+    }
+    // 失败都不发请求：YAML、结构错误（逐条）、内容参数与类型不配套
+    let (e, t) = call(&c, "publish_page", with(json!({ "openapi": "openapi: 3.0.0" }))).await;
+    assert!(e && t.starts_with("openapi_unsupported:"), "{t}");
+    let bad = json!({ "title": "x", "servers": [{ "name": "a", "url": "ftp://x" }], "groups": [{ "name": "g", "endpoints": [{ "method": "FETCH", "path": "/a", "title": "t" }] }] });
+    let (e, t) = call(&c, "publish_page", with(json!({ "api": bad }))).await;
+    assert!(e && t.starts_with("api_doc_invalid:\n") && t.contains("servers[0].url") && t.contains("endpoints[0].method"), "{t}");
+    let (e, t) = call(&c, "publish_page", with(json!({ "spec": "root = Stack([])" }))).await;
+    assert!(e && t.starts_with("invalid_argument:"), "{t}");
+    let (e, t) = call(&c, "publish_page", json!({ "page_type": "report", "model": "m", "project": PROJECT, "title": "t", "api": bad })).await;
+    assert!(e && t.starts_with("invalid_argument:"), "{t}");
+    assert_eq!(st.0.lock().unwrap().writes.len(), 1);
+    // file_path：结构化 JSON 自动识别；update 按页面 kind 走同一套校验
+    let good = json!({ "title": "x", "servers": [{ "name": "测试", "url": "https://t.example.com" }],
+        "groups": [{ "name": "g", "endpoints": [{ "method": "get", "path": "/a", "title": "t" }, { "method": "post", "path": "/b", "title": "u" }] }] });
+    let dir = std::env::temp_dir().join(format!("tk-apidoc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("api.json");
+    std::fs::write(&f, good.to_string()).unwrap();
+    ok_json(call(&c, "update_page", json!({ "page_id": id, "file_path": f.to_str().unwrap(), "model": "Claude Opus 5.5" })).await);
+    {
+        let m = st.0.lock().unwrap();
+        let doc: Value = serde_json::from_str(m.writes[1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(doc["groups"][0]["endpoints"][1]["method"], "POST");
+    }
+    let (e, t) = call(&c, "update_page", json!({ "page_id": id, "spec": "root = Stack([])" })).await;
+    assert!(e && t.starts_with("invalid_argument:"), "{t}");
+    std::fs::remove_dir_all(&dir).ok();
+    c.cancel().await.unwrap();
+}

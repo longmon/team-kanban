@@ -66,6 +66,21 @@ await addPage("流程图", "openui", String.raw`root = Stack([d])
 d = Diagram("flowchart LR\n  A[提交需求] --> B{评审}\n  B -->|通过| C[开发]\n  B -->|驳回| A\n  subgraph 上线\n    C --> D[发布]\n  end", "需求流程")`, { page_type: "flowchart" });
 await addPage("知识库", "openui", String.raw`root = Stack([md])
 md = MarkDownRenderer("## 安装\n\n下载二进制。\n\n### Linux\n\n解压即可。\n\n## 配置\n\n运行 tkanban add。\n\n## 常见问题\n\n见下文。")`, { page_type: "knowledge" });
+// 接口文档（kind=api，结构化 JSON；示例值含单引号与中文，验证代码转义）
+await addPage("支付接口文档", "api", JSON.stringify({
+  title: "支付网关 API", description: "**下单**与查单接口", version: "1.0",
+  servers: [{ name: "测试", url: "https://sandbox.pay.example.com/v1" }, { name: "生产", url: "https://api.pay.example.com/v1" }],
+  auth: { type: "header", name: "X-Api-Key", value: "{{API_KEY}}" },
+  groups: [
+    { name: "订单", endpoints: [
+      { method: "POST", path: "/orders", title: "创建订单",
+        body: { content_type: "application/json", fields: [{ name: "amount", type: "integer", required: true, example: 100 }, { name: "subject", type: "string", example: "会员 'VIP'" }] },
+        responses: [{ status: "200", example: { order_id: "o_1" } }], errors: [{ code: "INVALID_AMOUNT", description: "金额不合法" }] },
+      { method: "GET", path: "/orders/{order_id}", title: "查询订单", params: [{ name: "order_id", in: "path", example: "o 1" }] },
+    ] },
+    { name: "退款", endpoints: [{ method: "POST", path: "/refunds", title: "申请退款", body: { fields: [{ name: "order_id", type: "string", required: true }] } }] },
+  ],
+}), { page_type: "api_doc", model: "Claude Opus 5.5", summary: "支付下单、查单、退款接口" });
 // 截止：API 不允许设过去的时间，建一个 3 秒后截止的投票页，用到时轮询 view 直到 submit_block_reason=closed（后端无该字段时跳过）
 let CLOSING = null;
 try {
@@ -460,6 +475,52 @@ await step("knowledge-toc", async () => {
   await page.screenshot({ path: `${OUT}/knowledge.png`, fullPage: true });
   await page.setViewportSize({ width: 1200, height: 900 });
 });
+await step("api-doc", async () => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => localStorage.removeItem("tk.apidoc.lang"));
+  await page.goto(BASE + "/pages/" + IDS["支付接口文档"]);
+  const card = page.locator("[data-endpoint='POST /orders']");
+  await card.waitFor();
+  // 目录：分组 + method 色块，搜索过滤
+  const nav = page.getByRole("navigation", { name: "接口目录" });
+  await nav.getByPlaceholder(/搜索/).fill("退款");
+  if ((await nav.locator("a").count()) !== 1) throw new Error("search filter");
+  await nav.getByPlaceholder(/搜索/).fill("");
+  // 切语言：代码随之变化，并记住选择
+  await card.getByRole("tab", { name: "Python" }).click();
+  const code = card.getByTestId("code");
+  if (!(await code.textContent()).includes("requests.post(")) throw new Error("python code");
+  if ((await page.evaluate(() => localStorage.getItem("tk.apidoc.lang"))) !== "python") throw new Error("lang not stored");
+  // 复制代码：剪贴板 = 代码原文
+  await card.getByRole("button", { name: "复制代码" }).click();
+  await toast("已复制 Python 代码");
+  if ((await page.evaluate(() => navigator.clipboard.readText())) !== (await code.textContent())) throw new Error("clipboard code");
+  // 切环境：Base URL 与代码里的地址随之变化；复制完整 URL
+  await page.getByRole("radio", { name: "生产" }).click();
+  if ((await page.getByTestId("base-url").textContent()) !== "https://api.pay.example.com/v1") throw new Error("base url");
+  if (!(await code.textContent()).includes(`"https://api.pay.example.com/v1/orders"`)) throw new Error("code url after env switch");
+  const q = page.locator("[data-endpoint='GET /orders/{order_id}']");
+  await q.getByRole("button", { name: "复制完整 URL" }).click();
+  if ((await page.evaluate(() => navigator.clipboard.readText())) !== "https://api.pay.example.com/v1/orders/o%201") throw new Error("copy url");
+  // 复制参数名
+  await card.getByRole("button", { name: "复制参数名 amount" }).click();
+  if ((await page.evaluate(() => navigator.clipboard.readText())) !== "amount") throw new Error("copy param");
+  await page.reload();
+  await page.locator("[data-endpoint='POST /orders']").getByRole("tab", { name: "Python", selected: true }).waitFor();
+  if (await page.getByRole("button", { name: "提交" }).count()) throw new Error("api doc shows submit");
+  await page.screenshot({ path: `${OUT}/api-doc.png`, fullPage: true });
+  // 窄屏：目录收进折叠块，无横向滚动
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByText("接口目录").first().waitFor();
+  if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error("api doc horizontal overflow at 390px");
+  await page.screenshot({ path: `${OUT}/api-doc-390.png`, fullPage: true });
+  await page.setViewportSize({ width: 1200, height: 900 });
+  // 卡片：类型名与接口数
+  await page.goto(BASE + "/o/demo/p/demo");
+  const tile = page.locator(".tile", { hasText: "支付接口文档" });
+  await tile.getByText("接口文档", { exact: true }).waitFor();
+  await tile.getByText("3 个", { exact: true }).waitFor();
+});
 await step("list-filter-chips", async () => {
   await page.goto(BASE + "/o/demo/p/demo");
   await page.locator(".tile-title", { hasText: "示例：vote.openui" }).waitFor();
@@ -477,7 +538,7 @@ await step("list-filter-chips", async () => {
   await page.waitForURL(/\?view=todo$/);
   await page.locator(".tile-title", { hasText: "评审组可见" }).waitFor();
   // 文档类的格子淡出后才从 DOM 移除
-  await page.waitForFunction(() => ![...document.querySelectorAll(".tile-title")].some((e) => ["只读报告", "流程图", "知识库"].includes(e.textContent)));
+  await page.waitForFunction(() => ![...document.querySelectorAll(".tile-title")].some((e) => ["只读报告", "流程图", "知识库", "支付接口文档"].includes(e.textContent)));
   t = await titles();
   if (t.some((x) => ["只读报告", "流程图", "知识库"].includes(x))) throw new Error("等我处理: " + t);
   // 右栏「等我处理」面板里的待办卡带主按钮「去投票 / 去填写」
