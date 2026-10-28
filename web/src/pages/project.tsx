@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, put, qs } from "../api";
 import { Link, navigate } from "../router";
 import {
-  AuthCard, CheckField, Empty, ErrorBox, Field, fmtTime, loadMyProjects, Loading, MoreButton, NativeSelect, Page as Shell,
+  AuthCard, CheckField, Empty, ErrorBox, Field, fmtTime, loadMyProjects, Loading, MoreButton, NativeSelect, Notice, Page as Shell,
   PageHeader, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
   useSession, useTab,
 } from "../ui";
@@ -92,14 +92,21 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
   );
 }
 
-/** 页面设置（详情页「管理」）：标题、可见性、提交开关、结果可见范围、删除。改成「公开」与删除都要在对话框里显式确认 */
+/** 页面设置（详情页「管理」）：标题、可见性、提交开关、结果可见范围、关闭/重新打开、删除。改成「公开」、关闭与删除都要在对话框里显式确认；已关闭时设置只读 */
 export function PageMetaEditor({ page, groups, onSaved, onDeleted }: { page: Page; groups: Group[]; onSaved: () => void; onDeleted: () => void }) {
   const [f, setF] = useState({
     title: page.title, visibility: page.visibility, group_ids: page.group_ids,
     accept_responses: page.accept_responses, results_visible_to: page.results_visible_to,
   });
-  const [ask, setAsk] = useState<null | "public" | "delete">(null);
+  const [ask, setAsk] = useState<null | "public" | "delete" | "close">(null);
   const a = useAction();
+  const closed = !!page.closed_at;
+  const setClosed = (close: boolean) =>
+    a.run(async () => {
+      await post(`/pages/${page.id}/${close ? "close" : "reopen"}`);
+      toast.ok(close ? "已关闭" : "已重新打开");
+      onSaved();
+    });
   const doSave = () =>
     a.run(async () => {
       await patch(`/pages/${page.id}`, { ...f, group_ids: f.visibility === "groups" ? f.group_ids : [] });
@@ -117,6 +124,7 @@ export function PageMetaEditor({ page, groups, onSaved, onDeleted }: { page: Pag
     setF({ ...f, group_ids: f.group_ids.includes(id) ? f.group_ids.filter((g) => g !== id) : [...f.group_ids, id] });
   return (
     <form onSubmit={save} className="form">
+      {closed && <Notice tone="warning">页面已关闭：只有发布者和项目管理员能看到，任何人都不能提交。重新打开后才能修改设置。</Notice>}
       <Field label="标题"><Input required maxLength={200} value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} /></Field>
       <Field label="可见性">
         <NativeSelect<Visibility> aria-label="可见性" value={f.visibility} onChange={(v) => setF({ ...f, visibility: v })}
@@ -139,22 +147,27 @@ export function PageMetaEditor({ page, groups, onSaved, onDeleted }: { page: Pag
       </Field>
       <ErrorBox error={a.error} />
       <div className="form-actions">
-        <Button type="submit" loading={a.busy} disabled={a.busy || (f.visibility === "groups" && f.group_ids.length === 0)}>保存</Button>
+        <Button type="submit" loading={a.busy} disabled={a.busy || closed || (f.visibility === "groups" && f.group_ids.length === 0)}>保存</Button>
+        {page.can_close && (closed
+          ? <Button type="button" variant="outline" disabled={a.busy} onClick={() => setClosed(false)}>重新打开</Button>
+          : <Button type="button" variant="outline" disabled={a.busy} onClick={() => setAsk("close")}>关闭页面</Button>)}
         <Button type="button" variant="ghost-destructive" disabled={a.busy} onClick={() => setAsk("delete")}>删除页面</Button>
       </div>
       <AlertDialog open={ask !== null} onOpenChange={(o) => !o && setAsk(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{ask === "delete" ? `删除页面「${page.title}」？` : "改为公开？"}</AlertDialogTitle>
+            <AlertDialogTitle>{ask === "delete" ? `删除页面「${page.title}」？` : ask === "close" ? `关闭页面「${page.title}」？` : "改为公开？"}</AlertDialogTitle>
             <AlertDialogDescription>
-              {ask === "delete" ? "删除后页面和临时链接都无法访问，已收集的提交一并不可见。" : "公开后，任何拿到链接的人（包括未登录的人）都能查看这个页面。"}
+              {ask === "delete" ? "删除后页面和临时链接都无法访问，已收集的提交一并不可见。"
+                : ask === "close" ? "关闭后只有发布者和项目管理员能看到页面和结果；其他成员、群组、临时链接和公开访问都看不到，任何人都不能再提交。随时可以重新打开。"
+                : "公开后，任何拿到链接的人（包括未登录的人）都能查看这个页面。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction variant={ask === "delete" ? "destructive" : "default"}
-              onClick={() => (ask === "delete" ? a.run(async () => (await del(`/pages/${page.id}`), onDeleted())) : doSave())}>
-              {ask === "delete" ? "删除" : "确认公开"}
+              onClick={() => (ask === "delete" ? a.run(async () => (await del(`/pages/${page.id}`), onDeleted())) : ask === "close" ? setClosed(true) : doSave())}>
+              {ask === "delete" ? "删除" : ask === "close" ? "确认关闭" : "确认公开"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

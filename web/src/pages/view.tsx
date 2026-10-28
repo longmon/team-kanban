@@ -34,6 +34,7 @@ const ApiDocView = lazy(() => import("./apidoc-view"));
 export type Source = { kind: "page"; id: string } | { kind: "share"; token: string };
 
 export const BLOCK_MSG: Record<string, string> = {
+  page_closed: "页面已关闭，不接受提交",
   read_only: "只读页面，不接受提交",
   responses_closed: "页面已停止接受提交",
   closed: "已截止，不再接受提交",
@@ -157,8 +158,9 @@ function Viewer({ src }: { src: Source }) {
     return () => void (live = false);
   }, [checkPrev, view?.page.id, cv, anonLike]); // eslint-disable-line react-hooks/exhaustive-deps
   const resultsRef = useRef<HTMLElement>(null);
-  // 任务树：只有 /pages/:id（非临时链接）能操作
-  const tasks = useTaskTree(view, src.kind === "page" && !historical);
+  // 任务树：只有 /pages/:id（非临时链接）能操作；已关闭页面只读
+  const tasks = useTaskTree(view, src.kind === "page" && !historical && !view?.page.closed_at);
+  const reopen = useAction();
 
   if (error) {
     const code = error instanceof ApiError ? error.code : "";
@@ -188,7 +190,7 @@ function Viewer({ src }: { src: Source }) {
     ?? (anonLike ? responseStore.get(pageId, cv) : null);
   const locked: Locked | null = collect && resp ? { values: valuesOf(resp.data), version: cv } : null;
   // 票卡上的结果：已提交 / 截止 / 历史版本，且结果对我可见、流已连上
-  const tally = showResults && stream.status !== "connecting" && (locked || closed || historical || !view.page.accept_responses) ? tallyCv : null;
+  const tally = showResults && stream.status !== "connecting" && (locked || closed || historical || !view.page.accept_responses || view.page.closed_at) ? tallyCv : null;
   const versions = view.versions ?? [];
   const mineDesc = resp ? describe(valuesOf(resp.data), labels) : null;
   const reasons = showResults ? rowsCv.map((r) => ({ r, d: describe(valuesOf(r.data ?? {}), labels) })).filter((x) => x.d.texts.length) : [];
@@ -239,6 +241,18 @@ function Viewer({ src }: { src: Source }) {
               )}
             </div>
           </section>
+          {view.page.closed_at && (
+            <div role="status" aria-label="页面已关闭" className="flex flex-wrap items-center justify-between gap-3 rounded-[12px] bg-secondary px-4 py-2.5 text-sm text-muted-foreground">
+              <span className="inline-flex min-w-0 items-center gap-2"><Lock className="size-[18px] shrink-0" />
+                <span><b className="font-semibold text-foreground">已关闭</b>（{fmtRel(view.page.closed_at, new Date(now))}）：只有发布者和项目管理员能看到这个页面和结果，其他人无法查看或提交。</span>
+              </span>
+              {view.can_close && src.kind === "page" && (
+                <Button size="sm" variant="outline" loading={reopen.busy} disabled={reopen.busy}
+                  onClick={() => reopen.run(async () => (await post(`/pages/${pageId}/reopen`), patchCachedPage(pageId), toast.ok("已重新打开"), load()))}>重新打开</Button>
+              )}
+              <ErrorBox error={reopen.error} />
+            </div>
+          )}
           {locked && (
             <div role="status" className="locknote flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[12px] bg-mint-soft px-3.5 py-[11px] text-[13px] text-mint-ink">
               <Lock className="size-[18px] shrink-0" />
@@ -471,7 +485,8 @@ function ManagePanel({ view, onSaved }: { view: PageView; onSaved: () => void })
         <h2 className="text-base font-bold">页面设置</h2>
         <ErrorBox error={page.error} />
         {page.data ? (
-          <PageMetaEditor key={page.data.updated_at} page={{ ...page.data, title: view.page.title, accept_responses: view.page.accept_responses, results_visible_to: view.page.results_visible_to }}
+          <PageMetaEditor key={`${page.data.updated_at}:${view.page.closed_at}`} page={{ ...page.data, title: view.page.title, accept_responses: view.page.accept_responses, results_visible_to: view.page.results_visible_to,
+            closed_at: view.page.closed_at ?? null, can_close: view.can_close }}
             groups={groups.data?.items ?? []}
             onSaved={() => (patchCachedPage(id), onSaved())}
             onDeleted={() => (toast.ok("已删除"), navigate("/", true))} />

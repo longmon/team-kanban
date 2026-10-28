@@ -41,6 +41,10 @@ export type Page = {
   eligible_count?: number | null;
   /** 任务树页面的统计（其它类型为 null；旧后端无） */
   task_stats?: TaskStats | null;
+  /** 已关闭时间（非空 = 已关闭，只有发布者与项目管理员能看到；旧后端无） */
+  closed_at?: string | null;
+  /** 能否关闭/重新打开（发布者或项目管理员；旧后端无） */
+  can_close?: boolean;
 };
 export type TaskStats = { total: number; done: number; in_review: number; my_todo: number; my_review: number };
 export type TaskStatus = "todo" | "in_progress" | "in_review" | "done";
@@ -73,7 +77,7 @@ export type Highlight = { label: string; value: string };
 export type Participation = { eligible_count: number | null; respondent_count: number; pending: UserBrief[] | null };
 /** GET /api/activity */
 export type Activity = {
-  type: "published" | "updated" | "submitted" | "task"; at: string; version: number;
+  type: "published" | "updated" | "submitted" | "task" | "closed"; at: string; version: number;
   /** type=task：任务状态变化（started/submitted/approved/rejected） */
   task?: { action: string; title: string };
   page: { id: string; title: string; page_type: PageType; project: { id: string; name: string } };
@@ -137,15 +141,19 @@ export type PageView = {
     accept_responses: boolean; results_visible_to: "managers" | "viewers"; updated_at: string;
     project: { id: string; name: string }; org: { id: string; name: string };
     closes_at?: string | null; summary?: string | null; highlights?: Highlight[] | null;
+    /** 已关闭时间（非空 = 已关闭；只有发布者与项目管理员能看到这种页面） */
+    closed_at?: string | null;
   };
   /** 所查看版本的内容（version/title 为该版本快照；旧后端无这两个字段时按当前版本处理） */
   /** api：spec 为接口文档规范化 JSON（api.md §7.5） */
   content: ({ kind: "openui"; spec: string } | { kind: "api"; spec: string } | { kind: "html"; frame_url: string; frame_origin: string }) & { version?: number; title?: string };
   viewer: { type: "user"; user_id: string; display_name: string } | { type: "anonymous" };
   can_submit: boolean;
-  submit_block_reason: null | "read_only" | "responses_closed" | "closed" | "share_link_exhausted" | "already_submitted";
+  submit_block_reason: null | "page_closed" | "read_only" | "responses_closed" | "closed" | "share_link_exhausted" | "already_submitted";
   can_view_results: boolean;
   can_manage: boolean;
+  /** 能否关闭/重新打开（旧后端无） */
+  can_close?: boolean;
   my_submitted?: boolean;
   /** 登录用户对所查看版本的提交；匿名、临时链接为 null */
   my_response?: MyResponse | null;

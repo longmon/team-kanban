@@ -67,18 +67,22 @@ async fn spa(uri: Uri, h: HeaderMap) -> Response {
 struct HQuery {
     exp: Option<i64>,
     sig: Option<String>,
+    /// c=1：签发给已关闭页面管理者的地址（签名里带 |c）
+    c: Option<String>,
 }
 
-/// 只验 HMAC 签名与 exp，不看 cookie（design §6.5）
+/// 只验 HMAC 签名与 exp，不看 cookie（design §6.5）。已关闭页面只认 c=1 的签名（只签发给能看已关闭页面的人）
 async fn html_page(State(st): State<AppState>, Path((page_id, version)): Path<(String, String)>, Query(q): Query<HQuery>) -> Response {
     let (Ok(page_id), Ok(version), Some(exp), Some(sig)) = (Uuid::parse_str(&page_id), version.parse::<i32>(), q.exp, q.sig) else {
         return not_found();
     };
-    if exp <= Utc::now().timestamp() || !hmac_verify(&st.cfg.secret_key, &format!("h|{page_id}|{version}|{exp}"), &sig) {
+    let closed_ok = q.c.as_deref() == Some("1");
+    let c = if closed_ok { "|c" } else { "" };
+    if exp <= Utc::now().timestamp() || !hmac_verify(&st.cfg.secret_key, &format!("h|{page_id}|{version}|{exp}{c}"), &sig) {
         return not_found();
     }
     let content: Option<Option<String>> = match sqlx::query_scalar(
-        "SELECT CASE WHEN p.version = $2 THEN p.content
+        "SELECT CASE WHEN p.closed_at IS NOT NULL AND NOT $3 THEN NULL WHEN p.version = $2 THEN p.content
                      ELSE (SELECT v.content FROM page_versions v WHERE v.page_id = p.id AND v.version = $2) END
            FROM pages p
            JOIN projects pr ON pr.org_id = p.org_id AND pr.id = p.project_id AND pr.deleted_at IS NULL
@@ -87,6 +91,7 @@ async fn html_page(State(st): State<AppState>, Path((page_id, version)): Path<(S
     )
     .bind(page_id)
     .bind(version)
+    .bind(closed_ok)
     .fetch_optional(&st.db)
     .await
     {

@@ -11,6 +11,8 @@ pub enum Event {
     Page,
     /// 页面被删除
     Deleted,
+    /// 页面被关闭
+    Closed,
 }
 
 #[derive(Default)]

@@ -90,14 +90,16 @@ export function useHomeStats(orgId: string | undefined) {
 // ---------- 分类 ----------
 /** 任务树页面里等我处理的项数：待我评审 + 分配给我的待办/进行中 */
 const taskTodo = (p: Page) => (p.task_stats ? p.task_stats.my_review + p.task_stats.my_todo : 0);
-/** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本；任务树里有待我评审或分配给我的未完成任务 */
+/** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本；任务树里有待我评审或分配给我的未完成任务。已关闭页面不算 */
 const isTodo = (p: Page, now = Date.now()) =>
-  (p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now)) || taskTodo(p) > 0;
+  !p.closed_at && ((p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now)) || taskTodo(p) > 0);
 /** 左导航「等我处理」计数：收集类每页算 1，任务树按项数算 */
-const todoWeight = (p: Page, now = Date.now()) => (p.task_stats ? taskTodo(p) : isTodo(p, now) ? 1 : 0);
-type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book" | "api" | "task";
-const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"], ["api", "接口文档"], ["task", "任务"]];
+const todoWeight = (p: Page, now = Date.now()) => (p.closed_at ? 0 : p.task_stats ? taskTodo(p) : isTodo(p, now) ? 1 : 0);
+type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book" | "api" | "task" | "closed";
+const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"], ["api", "接口文档"], ["task", "任务"], ["closed", "已关闭"]];
+/** 已关闭页面只出现在「已关闭」分段（只有发布者与项目管理员能看到这类页面） */
 const kindOf = (p: Page): Kind => {
+  if (p.closed_at) return "closed";
   const t = toneOf(p.page_type, p.category);
   return t === "flow" || t === "arch" ? "diagram" : t;
 };
@@ -136,9 +138,12 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
   const todos = items.filter((p) => isTodo(p, now)).sort((a, b) => due(a) - due(b));
   const base = items.filter((p) => (view === "todo" ? isTodo(p, now) : view === "mine" ? p.created_by.id === me?.user.id : true))
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const counts = { all: base.length } as Record<Kind, number>;
-  for (const p of base) counts[kindOf(p)] = (counts[kindOf(p)] ?? 0) + 1;
-  const shown = kind === "all" ? base : base.filter((p) => kindOf(p) === kind);
+  const counts = { all: 0 } as Record<Kind, number>;
+  for (const p of base) {
+    counts[kindOf(p)] = (counts[kindOf(p)] ?? 0) + 1;
+    if (!p.closed_at) counts.all++;
+  }
+  const shown = kind === "all" ? base.filter((p) => !p.closed_at) : base.filter((p) => kindOf(p) === kind);
   const groups = GROUPS.map((g) => [g, shown.filter((p) => (dayBucket(p.updated_at, new Date(now)) === "昨天" ? "本周" : dayBucket(p.updated_at, new Date(now))) === g)] as const)
     .filter(([, ps]) => ps.length);
   // 收集类卡片的迷你结果条要额外请求，只给最前面 6 张
@@ -174,7 +179,7 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
           <SearchButton />
         </div>
         <div role="group" aria-label="筛选" className="flex max-w-full gap-0.5 overflow-x-auto rounded-[11px] bg-muted p-[3px] [scrollbar-width:none] sm:inline-flex">
-          {KINDS.map(([v, label]) => (
+          {KINDS.filter(([v]) => v !== "closed" || counts.closed || kind === "closed").map(([v, label]) => (
             <button key={v} type="button" aria-pressed={kind === v} onClick={() => setKind(v)}
               className={cn(
                 "relative inline-flex shrink-0 items-center gap-1.5 rounded-[8px] px-[13px] py-[5px] text-[13px] font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/80",
@@ -251,7 +256,8 @@ function Card({ p, todo, project, now, lazy }: { p: Page; todo: boolean; project
   const collect = p.category === "collect";
   const v = tone === "vote" ? "投" : "填";
   const ts = p.task_stats;
-  const chip = ts ? (ts.my_review ? <Chip className="bg-coral-soft text-coral-ink">待你评审 {ts.my_review} 项</Chip>
+  const chip = p.closed_at ? <Chip className="bg-secondary text-muted-foreground">已关闭</Chip>
+    : ts ? (ts.my_review ? <Chip className="bg-coral-soft text-coral-ink">待你评审 {ts.my_review} 项</Chip>
       : ts.my_todo ? <Chip className="bg-coral-soft text-coral-ink">你有 {ts.my_todo} 项待办</Chip>
       : ts.total && ts.done === ts.total ? <Chip className="bg-mint-soft text-mint-ink">已全部完成</Chip> : null)
     : todo ? <Chip className="bg-coral-soft text-coral-ink">等你{tone === "vote" ? "投票" : "填写"}</Chip>
@@ -538,7 +544,7 @@ function Ring({ p, now, urgent, n }: { p: Page; now: number; urgent: boolean; n:
 }
 
 // ---------- 实时动态 ----------
-const ACT_VERB: Record<Activity["type"], string> = { published: "发布了", updated: "更新了", submitted: "提交了", task: "更新了任务" };
+const ACT_VERB: Record<Activity["type"], string> = { published: "发布了", updated: "更新了", submitted: "提交了", task: "更新了任务", closed: "关闭了" };
 const TASK_VERB: Record<string, string> = { started: "开始处理", submitted: "提交评审", approved: "评审通过了", rejected: "驳回了" };
 
 function useActivity(projectId?: string) {
@@ -625,10 +631,10 @@ export function cachedPage(id: string): Page | undefined {
   }
 }
 
-/** 同项目的其他页面（详情页「相关页面」）：只从格子墙缓存里取，最近更新的前 3 个；没缓存时为空 */
+/** 同项目的其他页面（详情页「相关页面」）：只从格子墙缓存里取，最近更新的前 3 个，不含已关闭的；没缓存时为空 */
 export function relatedPages(projectId: string, exclude: string): Page[] {
   const seen = new Map<string, Page>();
-  for (const v of cache.values()) for (const p of v.items) if (p.project_id === projectId && p.id !== exclude) seen.set(p.id, p);
+  for (const v of cache.values()) for (const p of v.items) if (p.project_id === projectId && p.id !== exclude && !p.closed_at) seen.set(p.id, p);
   return [...seen.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 3);
 }
 

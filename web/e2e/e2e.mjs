@@ -97,6 +97,10 @@ try {
   if (p.closes_at) CLOSING = IDS["即将截止的投票"] = p.id;
 } catch (e) { console.log("skip closes_at seed:", e.message.split("\n")[0]); }
 
+// 关闭页面：组织可见的投票 + 临时链接（关闭后成员与链接都看不到，重新打开恢复）
+await addPage("关闭测试投票", "openui", vote, { page_type: "vote", visibility: "org" });
+const CLOSE_SHARE = await share("关闭测试投票", { label: "关闭测试" });
+
 // ---------- 浏览器 ----------
 const browser = await chromium.launch({ executablePath: exe });
 const ctx = await browser.newContext({ viewport: { width: 1200, height: 900 } });
@@ -678,6 +682,52 @@ await step("perm-anon-login-hint", async () => {
   try {
     await p.goto(BASE + "/pages/" + IDS["仅项目可见"]);
     await p.getByText("页面不存在，或需要登录后才能查看。").waitFor();
+  } finally { await c2.close(); }
+});
+await step("page-close-reopen", async () => {
+  // 管理员在「管理」里关闭（二次确认）→ 成员看不到、临时链接失效 → 首页「已关闭」分段可找到 → 横幅「重新打开」→ 成员可见可投
+  const id = IDS["关闭测试投票"];
+  await page.goto(BASE + "/pages/" + id);
+  await rail().getByRole("button", { name: "管理" }).click();
+  await page.getByRole("dialog", { name: "管理页面" }).getByRole("button", { name: "关闭页面" }).click();
+  await page.getByRole("alertdialog").getByText("关闭页面「关闭测试投票」？").waitFor();
+  await page.getByRole("button", { name: "确认关闭" }).click();
+  await toast("已关闭");
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "管理页面" }).waitFor({ state: "detached" });
+  await page.getByRole("status", { name: "页面已关闭" }).waitFor();
+  const c2 = await browser.newContext();
+  const p = await c2.newPage();
+  watch(p);
+  try {
+    await p.goto(BASE + CLOSE_SHARE);
+    await p.getByText("页面不存在，或需要登录后才能查看。").waitFor();
+    await login(p, "member@example.com");
+    await p.goto(BASE + "/pages/" + id);
+    await p.getByText("页面不存在，或你没有查看权限。").waitFor();
+    // 管理员：首页「已关闭」分段里有它，「全部」里没有
+    await page.goto(BASE + "/");
+    const seg = page.getByRole("group", { name: "筛选" });
+    await seg.getByRole("button", { name: /^全部/ }).waitFor();
+    if (await page.locator(".tile-title", { hasText: "关闭测试投票" }).count()) throw new Error("closed page shown under 全部");
+    await seg.getByRole("button", { name: /^已关闭/ }).click();
+    await page.locator("article", { hasText: "关闭测试投票" }).getByText("已关闭").waitFor();
+    await page.locator(".tile-title", { hasText: "关闭测试投票" }).click();
+    await page.getByRole("status", { name: "页面已关闭" }).getByRole("button", { name: "重新打开" }).click();
+    await toast("已重新打开");
+    await page.getByRole("status", { name: "页面已关闭" }).waitFor({ state: "detached" });
+    // 成员可见可投；临时链接恢复
+    await p.goto(BASE + "/pages/" + id);
+    await p.getByText("技术选型投票").waitFor();
+    await ticket(p, "A. Kafka").click();
+    await p.getByRole("button", { name: "提交" }).click();
+    await p.locator(".toast", { hasText: "已提交（#1）" }).first().waitFor({ timeout: 5000 });
+    const c3 = await browser.newContext();
+    const a = await c3.newPage();
+    try {
+      await a.goto(BASE + CLOSE_SHARE);
+      await a.getByText("技术选型投票").waitFor();
+    } finally { await c3.close(); }
   } finally { await c2.close(); }
 });
 await step("admin-create-account-force-change", async () => {

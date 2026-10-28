@@ -22,7 +22,7 @@ use super::pages::grant_header;
 use crate::{
     AppState,
     auth::Caller,
-    authz::{READ_RESPONSES, Target, page_access, require_page_manage},
+    authz::{READ_RESPONSES, Target, page_access, page_closed, require_page_manage},
     error::{AppError, AppResult, JsonBody, P, Q},
     notify::Event,
     ratelimit::MIN,
@@ -87,6 +87,9 @@ pub struct SubmitReq {
 }
 
 fn block_error(reason: &'static str) -> AppError {
+    if reason == "page_closed" {
+        return page_closed();
+    }
     if reason == "read_only" {
         return AppError::conflict("read_only_page", "只读页面不接受提交");
     }
@@ -119,7 +122,7 @@ async fn submit(st: &AppState, c: &Caller, target: Target<'_>, r: SubmitReq) -> 
     let mut tx = st.db.begin().await?;
     let (seq, version): (i64, i32) = sqlx::query_as(
         "UPDATE pages SET response_seq = response_seq + 1
-          WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND accept_responses AND (closes_at IS NULL OR closes_at > now())
+          WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND closed_at IS NULL AND accept_responses AND (closes_at IS NULL OR closes_at > now())
           RETURNING response_seq, version",
     )
     .bind(a.org_id())
@@ -223,7 +226,8 @@ pub async fn poll(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q): Q
     let wait = q.wait.unwrap_or(0).min(25);
     let (org_id, page_id) = (ctx.org_id(), ctx.page_id());
     let mut rows = fetch_after(&st.db, org_id, page_id, since, limit + 1).await?;
-    if rows.is_empty() && wait > 0 {
+    // 已关闭页面不再接收提交：不等待，直接返回 status=closed
+    if rows.is_empty() && wait > 0 && ctx.page().closed_at.is_none() {
         // 先订阅再查一次，防止订阅前后丢通知
         let mut rx = st.notify.subscribe(page_id);
         rows = fetch_after(&st.db, org_id, page_id, since, limit + 1).await?;
@@ -231,7 +235,7 @@ pub async fn poll(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q): Q
         let deadline = tokio::time::Instant::now() + Duration::from_secs(wait);
         while rows.is_empty() {
             match tokio::time::timeout_at(deadline, rx.recv()).await {
-                Err(_) | Ok(Err(RecvError::Closed)) | Ok(Ok(Event::Deleted)) => break,
+                Err(_) | Ok(Err(RecvError::Closed)) | Ok(Ok(Event::Deleted | Event::Closed)) => break,
                 Ok(Ok(Event::Page)) => continue,
                 // Response 或 Lagged（可能漏掉了 Response）→ 查库
                 Ok(_) => rows = fetch_after(&st.db, org_id, page_id, since, limit + 1).await?,
@@ -240,9 +244,12 @@ pub async fn poll(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q): Q
     }
     let has_more = rows.len() as i64 > limit;
     rows.truncate(limit as usize);
-    let total: i64 = sqlx::query_scalar("SELECT response_seq FROM pages WHERE org_id = $1 AND id = $2").bind(org_id).bind(page_id).fetch_one(&st.db).await?;
+    let (total, closed_at): (i64, Option<DateTime<Utc>>) =
+        sqlx::query_as("SELECT response_seq, closed_at FROM pages WHERE org_id = $1 AND id = $2").bind(org_id).bind(page_id).fetch_one(&st.db).await?;
     Ok(Json(json!({
         "page_id": page_id,
+        "status": if closed_at.is_some() { "closed" } else { "open" },
+        "closed_at": closed_at.as_ref().map(ts),
         "responses": rows.iter().map(RespRow::json).collect::<Vec<_>>(),
         "next_since": rows.last().map_or(since, |r| r.seq),
         "has_more": has_more,

@@ -15,7 +15,7 @@ use crate::{
     AppState, apidoc, audit,
     auth::Caller,
     authz::{
-        ANY_SCOPE, PUBLISH, PageAccess, ProjectRole, Target, issue_grant, page_access, page_category, require_page_manage, require_project,
+        ANY_SCOPE, PUBLISH, PageAccess, ProjectRole, Target, issue_grant, page_access, page_category, page_closed, require_page_manage, require_project,
         require_share_link_manage, require_user, role_expr, share_by_token,
     },
     error::{AppError, AppResult, JsonBody, P, Q},
@@ -48,6 +48,8 @@ struct PageListRow {
     role: Option<String>,
     my_submitted: bool,
     closes_at: Option<DateTime<Utc>>,
+    closed_at: Option<DateTime<Utc>>,
+    is_creator: bool,
     summary: Option<String>,
     highlights: Option<Value>,
     respondent_count: i64,
@@ -60,6 +62,7 @@ fn page_select() -> String {
     format!(
         "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.generated_by, p.version, p.visibility, p.accept_responses, p.results_visible_to,
                 p.response_seq, p.created_by, u.display_name AS creator_name, p.created_at, p.updated_at, p.closes_at, p.summary, p.highlights,
+                p.closed_at, p.created_by = $1 AS is_creator,
                 COALESCE((SELECT array_agg(pg.group_id ORDER BY pg.group_id) FROM page_groups pg
                            WHERE pg.org_id = p.org_id AND pg.page_id = p.id), '{{}}') AS group_ids,
                 {} AS role,
@@ -102,8 +105,10 @@ fn counts_sql(x: &str) -> String {
     )
 }
 
-/// list_pages / activity 共用的可见性条件（作用于 page_select 的输出列）
-const VISIBLE: &str = "(role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group)))";
+/// list_pages / activity 共用的可见性条件（作用于 page_select 的输出列）。
+/// 已关闭页面只给项目 admin 与仍是 editor 的发布者（与 authz::PageRow::can_manage_closed 一致）
+const VISIBLE: &str = "((role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group)))
+    AND (closed_at IS NULL OR role = 'admin' OR (is_creator AND role = 'editor')))";
 
 impl PageListRow {
     fn json(&self, public_url: &str) -> Value {
@@ -118,8 +123,9 @@ impl PageListRow {
             "created_by": brief(self.created_by, &self.creator_name),
             "created_at": ts(&self.created_at), "updated_at": ts(&self.updated_at),
             "can_manage": matches!(self.role.as_deref(), Some("admin" | "editor")),
+            "can_close": self.role.as_deref() == Some("admin") || (self.is_creator && self.role.as_deref() == Some("editor")),
             "my_submitted": self.my_submitted,
-            "closes_at": ts_opt(&self.closes_at), "summary": self.summary, "highlights": self.highlights,
+            "closes_at": ts_opt(&self.closes_at), "closed_at": ts_opt(&self.closed_at), "summary": self.summary, "highlights": self.highlights,
             "respondent_count": self.respondent_count, "eligible_count": self.eligible_count,
             "task_stats": self.task_stats,
         })
@@ -219,7 +225,7 @@ struct ActivityRow {
 /// 动态流每个组织每类事件最多检查的最近事件数
 const ACTIVITY_SCAN: i64 = 1000;
 
-/// 最近动态：调用者能看到的页面（与 list_pages 同一可见性 SQL）上的发布/改版/提交事件，按时间倒序
+/// 最近动态：调用者能看到的页面（与 list_pages 同一可见性 SQL）上的发布/改版/提交/任务/关闭事件，按时间倒序
 pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQuery>) -> J {
     let uid = require_user(&c, ANY_SCOPE)?;
     let pat = c.p.pat();
@@ -263,14 +269,21 @@ pub async fn activity(State(st): State<AppState>, c: Caller, Q(q): Q<ActivityQue
                        WHERE ev.org_id = mm.org_id AND ev.action IN ('started', 'submitted', 'approved', 'rejected')
                        ORDER BY ev.created_at DESC LIMIT {ACTIVITY_SCAN}) te {}
                WHERE {VISIBLE}
-               ORDER BY te.created_at DESC LIMIT $5)) e
+               ORDER BY te.created_at DESC LIMIT $5)
+             UNION ALL
+             (SELECT 'closed', pc.at, 0, pc.page_id, pc.actor, NULL, {page_cols}, NULL, NULL
+                FROM (SELECT id AS page_id, closed_by AS actor, closed_at AS at FROM pages
+                       WHERE org_id = mm.org_id AND closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT {ACTIVITY_SCAN}) pc {}
+               WHERE {VISIBLE}
+               ORDER BY pc.at DESC LIMIT $5)) e
            JOIN projects pr ON pr.id = e.project_id
            LEFT JOIN users u ON u.id = e.actor_id
           WHERE mm.user_id = $1 AND ($2::uuid IS NULL OR mm.org_id = $2)
           ORDER BY e.at DESC LIMIT $5",
         vis("v"),
         vis("r"),
-        vis("te")
+        vis("te"),
+        vis("pc")
     );
     let rows: Vec<ActivityRow> = sqlx::query_as(&sql)
         .bind(uid)
@@ -616,6 +629,9 @@ pub struct UpdateReq {
 
 pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<UpdateReq>) -> J {
     let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
+    if ctx.page().closed_at.is_some() {
+        return Err(page_closed());
+    }
     if r.page_type.is_some() {
         return Err(AppError::field("page_type", "创建后不可修改"));
     }
@@ -797,14 +813,52 @@ pub async fn delete_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) 
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// POST /pages/{id}/close、/reopen：发布者（仍是项目 editor）或项目管理员。幂等：状态没变时不写审计
+async fn set_closed(st: &AppState, c: &Caller, id: Uuid, close: bool) -> J {
+    let ctx = require_page_manage(&st.db, c, id, PUBLISH).await?;
+    if !ctx.page().can_manage_closed(Some(ctx.user_id())) {
+        return Err(AppError::forbidden());
+    }
+    let mut tx = st.db.begin().await?;
+    let sql = if close {
+        "UPDATE pages SET closed_at = now(), closed_by = $3 WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND closed_at IS NULL"
+    } else {
+        "UPDATE pages SET closed_at = NULL, closed_by = NULL WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND closed_at IS NOT NULL"
+    };
+    let mut q = sqlx::query(sql).bind(ctx.org_id()).bind(ctx.page_id());
+    if close {
+        q = q.bind(ctx.user_id());
+    }
+    let n = q.execute(&mut *tx).await?.rows_affected();
+    if n > 0 {
+        let action = if close { "page.close" } else { "page.reopen" };
+        audit::log(&mut tx, Some(ctx.org_id()), &c.actor(), action, "page", Some(ctx.page_id()), json!({})).await?;
+    }
+    tx.commit().await?;
+    if n > 0 {
+        st.notify.send(ctx.page_id(), if close { Event::Closed } else { Event::Page });
+    }
+    Ok(Json(page_by_id(st, ctx.org_id(), ctx.page_id(), ctx.user_id()).await?))
+}
+
+pub async fn close_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
+    set_closed(&st, &c, id, true).await
+}
+
+pub async fn reopen_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
+    set_closed(&st, &c, id, false).await
+}
+
 // ---------------------------------------------------------------- 查看
 
 pub const FRAME_TTL: i64 = 600;
 
-pub fn frame_url(st: &AppState, page_id: Uuid, version: i32) -> String {
+/// closed：页面已关闭（调用者能看即是管理者）时签发带 c=1 的地址，/h 对已关闭页面只认这种签名
+pub fn frame_url(st: &AppState, page_id: Uuid, version: i32, closed: bool) -> String {
     let exp = Utc::now().timestamp() + FRAME_TTL;
-    let sig = hmac_sign(&st.cfg.secret_key, &format!("h|{page_id}|{version}|{exp}"));
-    format!("{}/h/{page_id}/{version}?exp={exp}&sig={sig}", st.cfg.frame_origin())
+    let (c, tail) = if closed { ("|c", "&c=1") } else { ("", "") };
+    let sig = hmac_sign(&st.cfg.secret_key, &format!("h|{page_id}|{version}|{exp}{c}"));
+    format!("{}/h/{page_id}/{version}?exp={exp}&sig={sig}{tail}", st.cfg.frame_origin())
 }
 
 #[derive(FromRow)]
@@ -838,7 +892,7 @@ async fn page_view(st: &AppState, c: &Caller, a: &PageAccess, version: Option<i3
         row.ok_or_else(AppError::not_found)?
     };
     let content = match spec {
-        None => json!({ "kind": "html", "frame_url": frame_url(st, p.id, v), "frame_origin": st.cfg.frame_origin(), "version": v, "title": title }),
+        None => json!({ "kind": "html", "frame_url": frame_url(st, p.id, v, p.closed_at.is_some()), "frame_origin": st.cfg.frame_origin(), "version": v, "title": title }),
         Some(spec) => json!({ "kind": p.kind, "spec": spec, "version": v, "title": title }),
     };
     let viewer = match a.user_id() {
@@ -919,7 +973,7 @@ async fn page_view(st: &AppState, c: &Caller, a: &PageAccess, version: Option<i3
             "id": p.id, "title": p.title, "kind": p.kind, "version": p.version,
             "page_type": p.page_type, "category": page_category(&p.page_type), "generated_by": p.generated_by,
             "accept_responses": p.accept_responses, "results_visible_to": p.results_visible_to, "updated_at": ts(&p.updated_at),
-            "closes_at": ts_opt(&p.closes_at), "summary": p.summary, "highlights": p.highlights,
+            "closes_at": ts_opt(&p.closes_at), "closed_at": ts_opt(&p.closed_at), "summary": p.summary, "highlights": p.highlights,
             "project": { "id": p.project_id, "name": p.project_name }, "org": { "id": p.org_id, "name": p.org_name },
         },
         "content": content,
@@ -928,6 +982,7 @@ async fn page_view(st: &AppState, c: &Caller, a: &PageAccess, version: Option<i3
         "submit_block_reason": block_reason,
         "can_view_results": a.can_view_results(),
         "can_manage": a.can_manage(),
+        "can_close": p.can_manage_closed(a.user_id()),
         "my_submitted": my_submitted,
         "my_response": my_response,
         "versions": versions,
@@ -1049,6 +1104,9 @@ pub struct CreateLinkReq {
 
 pub async fn create_share_link(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<CreateLinkReq>) -> AppResult<(StatusCode, Json<Value>)> {
     let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
+    if ctx.page().closed_at.is_some() {
+        return Err(page_closed());
+    }
     if !(300..=7_776_000).contains(&r.expires_in) {
         return Err(AppError::field("expires_in", "范围 300..7776000 秒"));
     }

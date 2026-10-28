@@ -300,6 +300,11 @@ user = principal.user_id 或 None
 role = user ? project_role(user, page.project_id) : NULL
 can_manage = role ∈ {admin, editor}
 
+# --- 已关闭（closed_at 非空，api.md §7.7）---
+if via_share and page.closed_at   -> 404 not_found                 # share_by_token 直接按不存在处理
+if page.closed_at and !(role == admin or (page.created_by == user and can_manage))
+                                  -> 404 not_found                 # 只有项目 admin 与仍是 editor 的发布者能看
+
 # --- 查看判定 ---
 if via_share:
     can_view = true                              # 临时链接绕过 visibility，仅限此页面
@@ -314,7 +319,8 @@ if !can_view -> 404 not_found                    # 未登录访问非 public 页
 
 # --- 提交判定（查看通过之后）---
 block_reason = NULL
-if category(page.page_type) == 'read'      -> block_reason = 'read_only'     # 只读类，提交返回 409 read_only_page
+if page.closed_at                          -> block_reason = 'page_closed'   # 已关闭，提交返回 409 page_closed
+elif category(page.page_type) == 'read'    -> block_reason = 'read_only'     # 只读类，提交返回 409 read_only_page
 elif principal.via == Pat                  -> block_reason = 'not_allowed'   # PAT 不能提交
 elif !page.accept_responses                -> 'responses_closed'
 elif page.closes_at <= now()               -> 'closed'                      # 截止；提交返回 409 responses_closed（「已截止」）
@@ -393,7 +399,7 @@ project_member.add  project_member.role_change  project_member.remove
 project_group.grant  project_group.revoke
 group.create  group.update  group.delete  group_member.add  group_member.remove
 invite.create  invite.revoke  invite.accept
-page.publish  page.update(meta 含变更字段，visibility/groups 变更时记录旧→新)  page.delete
+page.publish  page.update(meta 含变更字段，visibility/groups 变更时记录旧→新)  page.delete  page.close  page.reopen
 share_link.create  share_link.revoke
 pat.create  pat.revoke
 ```

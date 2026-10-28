@@ -321,6 +321,9 @@ pub struct PageRow {
     pub closes_at: Option<DateTime<Utc>>,
     pub summary: Option<String>,
     pub highlights: Option<serde_json::Value>,
+    pub created_by: Uuid,
+    /// 非空 = 已关闭：只有 can_manage_closed 的人能看，任何人不能提交
+    pub closed_at: Option<DateTime<Utc>>,
     pub project_name: String,
     pub org_name: String,
     pub org_role: Option<String>,
@@ -335,8 +338,15 @@ impl PageRow {
     fn is_manager(&self) -> bool {
         self.project_role() >= Some(ProjectRole::Editor)
     }
-    /// 不经临时链接时能否查看（design §5.3）
+    /// 能否关闭/重新打开、能否查看已关闭页面：项目 admin（含组织 owner/admin），或仍是项目 editor 的发布者
+    pub fn can_manage_closed(&self, user: Option<Uuid>) -> bool {
+        self.project_role() == Some(ProjectRole::Admin) || (user == Some(self.created_by) && self.is_manager())
+    }
+    /// 不经临时链接时能否查看（design §5.3）。已关闭页面只有 can_manage_closed 的人能看
     fn can_view(&self, user: Option<Uuid>) -> bool {
+        if self.closed_at.is_some() {
+            return self.can_manage_closed(user);
+        }
         self.is_manager()
             || match self.visibility.as_str() {
                 "public" => true,
@@ -351,7 +361,7 @@ impl PageRow {
 async fn load_page(db: &PgPool, page_id: Uuid, user: Option<Uuid>) -> AppResult<Option<PageRow>> {
     let sql = format!(
         "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.generated_by, p.version, p.visibility, p.accept_responses,
-                p.results_visible_to, p.response_seq, p.updated_at, p.closes_at, p.summary, p.highlights, pr.name AS project_name, o.name AS org_name,
+                p.results_visible_to, p.response_seq, p.updated_at, p.closes_at, p.summary, p.highlights, p.created_by, p.closed_at, pr.name AS project_name, o.name AS org_name,
                 m.role AS org_role, {} AS role,
                 EXISTS (SELECT 1 FROM page_groups pg
                           JOIN group_members gm ON gm.org_id = pg.org_id AND gm.group_id = pg.group_id
@@ -423,11 +433,17 @@ pub struct ShareRow {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
-/// 按 token 定位临时链接，检查吊销/过期（不检查密码）
+/// 页面已关闭（409）：提交、任务写入、改页面、新建临时链接共用
+pub fn page_closed() -> AppError {
+    AppError::conflict("page_closed", "页面已关闭，重新打开后才能继续")
+}
+
+/// 按 token 定位临时链接，检查吊销/过期（不检查密码）。页面已关闭时一律 404（关闭期间链接不可用，不删除；重新打开后按链接自身有效期恢复）
 pub async fn share_by_token(db: &PgPool, token: &str) -> AppResult<ShareRow> {
     let link: ShareRow = sqlx::query_as(
-        "SELECT id, org_id, page_id, label, expires_at, max_uses, use_count, password_hash, revoked_at
-           FROM share_links WHERE token_hash = $1",
+        "SELECT s.id, s.org_id, s.page_id, s.label, s.expires_at, s.max_uses, s.use_count, s.password_hash, s.revoked_at
+           FROM share_links s WHERE s.token_hash = $1
+            AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.org_id = s.org_id AND p.id = s.page_id AND p.closed_at IS NOT NULL)",
     )
     .bind(sha256(token))
     .fetch_optional(db)
@@ -535,7 +551,9 @@ pub async fn page_access(db: &PgPool, cfg: &Config, c: &Caller, target: Target<'
         return Err(AppError::not_found());
     }
     // 协作类（任务树）同样不接受提交：任务通过专门的接口改状态
-    let block_reason = if page_category(&page.page_type) != "collect" {
+    let block_reason = if page.closed_at.is_some() {
+        Some("page_closed")
+    } else if page_category(&page.page_type) != "collect" {
         Some("read_only")
     } else if c.p.is_pat() {
         Some("not_allowed")

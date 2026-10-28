@@ -14,7 +14,7 @@ use super::brief;
 use crate::{
     AppState,
     auth::Caller,
-    authz::{ANY_SCOPE, PUBLISH, PageAccess, Target, check_allow, page_access},
+    authz::{ANY_SCOPE, PUBLISH, PageAccess, Target, check_allow, page_access, page_closed},
     error::{AppError, AppResult, JsonBody, P, Q},
     util::{new_id, text_field, ts, ts_opt},
 };
@@ -442,6 +442,8 @@ pub struct Who {
     /// 项目管理员或页面发布者：可改任意节点、加根节点
     pub manage: bool,
     pub reviewer: bool,
+    /// 页面已关闭：任务一律不能改（勾选、评审、加节点）
+    pub closed: bool,
 }
 
 pub async fn who(st: &AppState, c: &Caller, a: &PageAccess) -> AppResult<Who> {
@@ -465,6 +467,7 @@ pub async fn who(st: &AppState, c: &Caller, a: &PageAccess) -> AppResult<Who> {
         pat_id: c.p.pat().map(|x| x.id),
         manage: user.is_some() && (publisher || p.role.as_deref() == Some("admin")),
         reviewer,
+        closed: p.closed_at.is_some(),
     })
 }
 
@@ -496,10 +499,10 @@ struct TaskRow {
 
 impl TaskRow {
     fn can_edit(&self, w: &Who) -> bool {
-        w.manage || (w.user_id.is_some() && self.assignee_user_id == w.user_id)
+        !w.closed && (w.manage || (w.user_id.is_some() && self.assignee_user_id == w.user_id))
     }
     fn can_review(&self, w: &Who) -> bool {
-        w.reviewer && self.status == "in_review" && self.submitted_by != w.user_id
+        !w.closed && w.reviewer && self.status == "in_review" && self.submitted_by != w.user_id
     }
     fn json(&self, w: &Who) -> Value {
         let assignee = (self.assignee_user_id.is_some() || self.assignee_label.is_some()).then(|| {
@@ -722,6 +725,9 @@ pub struct AddReq {
 /// POST /pages/{id}/tasks：加节点。根节点需管理权（项目 admin/发布者），子节点需能编辑父节点
 pub async fn add_task(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<AddReq>) -> AppResult<(StatusCode, Json<Value>)> {
     let w = page_ctx(&st, &c, id, PUBLISH).await?;
+    if w.closed {
+        return Err(page_closed());
+    }
     let uid = w.user_id.ok_or_else(AppError::forbidden)?;
     let title = text_field("title", &r.title, 1, 200)?;
     let description = check_desc(r.description.as_deref())?;
@@ -839,6 +845,9 @@ struct Locked {
 /// PATCH /tasks/{id}：改字段、改状态（含提交评审）、上下移动。负责人 / 项目管理员 / 页面发布者
 pub async fn update_task(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<UpdateReq>) -> J {
     let w = task_ctx(&st, &c, id, PUBLISH).await?;
+    if w.closed {
+        return Err(page_closed());
+    }
     let uid = w.user_id.ok_or_else(AppError::forbidden)?;
     super::require_any(&[
         r.title.is_some(),
@@ -1000,6 +1009,9 @@ pub struct ReviewReq {
 /// POST /tasks/{id}/review：评审人通过 → done；驳回 → in_progress（必须写理由）。不能评审自己提交的任务
 pub async fn review_task(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<ReviewReq>) -> J {
     let w = task_ctx(&st, &c, id, PUBLISH).await?;
+    if w.closed {
+        return Err(page_closed());
+    }
     let uid = w.user_id.ok_or_else(AppError::forbidden)?;
     let note = r.note.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|n| text_field("note", n, 1, 2000)).transpose()?;
     let (to, action) = match r.decision.as_str() {
