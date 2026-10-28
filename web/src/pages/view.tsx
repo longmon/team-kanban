@@ -1,6 +1,8 @@
 // 页面查看与提交：/pages/:id 与 /s/:token（api.md §7.2、§8.1、§9、§10）
-// 方向 B：类型浅底题头色带（面包屑、大标题、元信息胶囊、锁定提示卡）+ 主区（内容、你的回答、大家的理由、结果明细折叠区）+ 右栏（实时进度、版本、页面信息、分享/复制链接/管理）
+// 方向 A：面包屑 + 搜索框；题头（类型图标、大标题、元信息）、薄荷色锁定提示条 + 主区（内容、你的回答、大家的理由卡片、结果明细折叠区、同项目相关页面）
+// + 右栏（实时结果、版本、还没参与的人、页面信息、分享链接 / 复制链接 / 管理）；< 1100 右栏下沉
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { motion } from "motion/react";
 import { Clock, History, Link2, Lock, Settings2, Share2, ShieldAlert, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -15,7 +17,8 @@ import {
   useAction, useActiveProject, useLoad, useNow, useOwnOrg, useSession, VIS_LABEL,
 } from "../ui";
 import { picked, specLabels, splitLetter, tallyValues, type SpecLabels } from "../data";
-import { cachedPage, patchCachedPage } from "./feed";
+import { cachedPage, patchCachedPage, relatedPages } from "./feed";
+import { SearchButton } from "../shell";
 import { ShareLinkForm } from "./links";
 import { PageMetaEditor } from "./project";
 import { ResultsView, useResponseStream } from "./results";
@@ -190,50 +193,55 @@ function Viewer({ src }: { src: Source }) {
     if (!resultsOpen) setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "start" }), 50);
   };
   const metas: ReactNode[] = [
-    cached && <span key="by">{cached.created_by.display_name} 发布</span>,
-    view.page.generated_by && <span key="gen"><Sparkles className="size-3.5" />{view.page.generated_by} 生成</span>,
-    versions.length > 1 ? null : view.page.version > 1 && <span key="ver">第 {view.page.version} 版</span>,
-    collect && view.page.closes_at && <span key="due"><Clock className="size-3.5" />{closed ? "已截止" : `${fmtDue(view.page.closes_at, new Date(now))} 截止`}</span>,
-    <span key="up">更新于 {fmtRel(view.page.updated_at, new Date(now))}</span>,
+    <span key="type">{PAGE_TYPE_LABEL[view.page.page_type]}</span>,
+    cached && <span key="by"><Initial name={cached.created_by.display_name} className="size-5 text-[10px] ring-0" />{cached.created_by.display_name} 发布</span>,
+    view.page.generated_by && <span key="gen"><Sparkles className="size-[15px]" />{view.page.generated_by} 生成</span>,
+    versions.length > 1 ? null : <span key="ver"><History className="size-[15px]" />{view.page.version > 1 ? `第 ${view.page.version} 版，` : ""}{fmtRel(view.page.updated_at, new Date(now))} 更新</span>,
+    collect && view.page.closes_at && <span key="due" className={closed ? undefined : "text-coral-ink"}><Clock className="size-[15px]" />{closed ? "已截止" : `${fmtDue(view.page.closes_at, new Date(now))} 截止`}</span>,
   ].filter(Boolean);
+  const related = relatedPages(view.page.project.id, pageId);
   return (
-    <article data-tone={tone} className="flex flex-col gap-5.5">
-      <section className="band flex flex-wrap items-end gap-x-6 gap-y-4 rounded-[28px] bg-tone-f px-7.5 py-6.5 max-sm:rounded-[24px] max-sm:px-5 max-sm:py-5">
-        <div className="min-w-0 flex-[1_1_420px]">
-          <nav aria-label="路径" className="mb-2.5 flex flex-wrap items-center gap-1.5 text-[13px] text-muted-foreground [&_a]:underline-offset-4 [&_a]:transition-colors [&_a:hover]:text-foreground [&_a:hover]:underline">
-            <ToneIcon tone={tone} className="size-[26px] rounded-[8px] [&_svg]:size-3.5" />
-            <span className="flex flex-wrap gap-1.5 [&>*+*]:before:mr-1.5 [&>*+*]:before:content-['/']"><Crumbs view={view} /><span>{PAGE_TYPE_LABEL[view.page.page_type]}</span></span>
-          </nav>
-          <h1 data-vt={pageId} className="mb-3 w-fit text-[38px] leading-[1.15] font-semibold tracking-[-0.02em] [overflow-wrap:anywhere] max-sm:text-[28px]">{(historical && view.content.title) || view.page.title}</h1>
-          <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground [&>span]:inline-flex [&>span]:items-center [&>span]:gap-1.5 [&>span]:rounded-full [&>span]:bg-card/70 [&>span]:px-3 [&>span]:py-1">
-            {metas}
-            {versions.length > 1 && (
-              <NativeSelect aria-label="版本" size="sm" className="h-7 w-auto gap-1 rounded-full border-0 bg-card/70 px-3 text-[13px] dark:bg-card/70" value={String(cv)}
-                onChange={(v) => setQuery("version", Number(v) === view.page.version ? null : v)}
-                options={versions.map((x) => [String(x.version), `第 ${x.version} 版${x.version === view.page.version ? "（当前）" : ""}`])} />
-            )}
-          </div>
-          {view.share_link && (
-            <p className="mt-2.5 text-[13px] text-muted-foreground">
-              通过临时链接「{view.share_link.label || "未命名"}」访问，有效至 {fmtTime(view.share_link.expires_at)}
-              {view.share_link.remaining_uses !== null && `，剩余 ${view.share_link.remaining_uses} 次提交`}
-            </p>
+    <article data-tone={tone} className="flex flex-col">
+      <div className="flex min-w-0 items-center gap-4">
+        <nav aria-label="路径" className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-[13px] text-faint [&_a]:underline-offset-4 [&_a]:transition-colors [&_a:hover]:text-foreground [&_a:hover]:underline [&>*+*]:before:mr-2 [&>*+*]:before:content-['/'] [&>a:nth-child(2)]:font-medium [&>a:nth-child(2)]:text-muted-foreground">
+          <Crumbs view={view} /><span className="min-w-0 truncate">{(historical && view.content.title) || view.page.title}</span>
+        </nav>
+        <SearchButton label="搜索" className="w-[260px]" />
+      </div>
+      <div className="mt-[18px] grid items-start gap-7 min-[1100px]:grid-cols-[minmax(0,1fr)_340px] min-[1500px]:grid-cols-[minmax(0,1fr)_392px]">
+        <div className="flex min-w-0 flex-col gap-4">
+          <section className="band flex items-start gap-4">
+            <ToneIcon tone={tone} className="size-12 rounded-[14px] bg-tone-f text-tone [&_svg]:size-6 max-sm:hidden" />
+            <div className="min-w-0 flex-1">
+              <h1 data-vt={pageId} className="mb-1.5 w-fit text-[28px] leading-[1.25] font-semibold tracking-[-0.01em] [overflow-wrap:anywhere] max-sm:text-[24px]">{(historical && view.content.title) || view.page.title}</h1>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] text-muted-foreground [&>span]:inline-flex [&>span]:items-center [&>span]:gap-[5px]">
+                {metas}
+                {versions.length > 1 && (
+                  <NativeSelect aria-label="版本" size="sm" className="h-7 w-auto gap-1 rounded-[8px] px-2.5 text-[13px]" value={String(cv)}
+                    onChange={(v) => setQuery("version", Number(v) === view.page.version ? null : v)}
+                    options={versions.map((x) => [String(x.version), `第 ${x.version} 版${x.version === view.page.version ? "（当前）" : ""}`])} />
+                )}
+              </div>
+              {view.share_link && (
+                <p className="mt-2 text-[13px] text-muted-foreground">
+                  通过临时链接「{view.share_link.label || "未命名"}」访问，有效至 {fmtTime(view.share_link.expires_at)}
+                  {view.share_link.remaining_uses !== null && `，剩余 ${view.share_link.remaining_uses} 次提交`}
+                </p>
+              )}
+            </div>
+          </section>
+          {locked && (
+            <div role="status" className="locknote flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[12px] bg-mint-soft px-3.5 py-[11px] text-[13px] text-mint-ink">
+              <Lock className="size-[18px] shrink-0" />
+              <span className="min-w-0 flex-1">
+                你在第 {cv} 版{mineDesc?.choice ? <>{vote ? "投给了" : "选择了"} <b className="font-semibold">{mineDesc.choice[0]}. {mineDesc.choice[1]}</b>，</> : "已提交，"}
+                {historical ? "历史版本只读。" : `答案已锁定。发布新版本后可以重新${vote ? "投" : "提交"}。`}
+              </span>
+              {resp && <span className="shrink-0 tabular-nums">{fmtRel(resp.created_at, new Date(now))} 提交</span>}
+            </div>
           )}
-        </div>
-        {locked && (
-          <div role="status" className="locknote ml-auto flex max-w-[380px] items-center gap-3 rounded-[20px] bg-card px-4.5 py-3.5 text-[13px] text-muted-foreground max-sm:max-w-none max-sm:flex-1">
-            <span className="grid size-[38px] shrink-0 place-items-center rounded-[12px] bg-primary-soft text-primary"><Lock className="size-4.5" /></span>
-            <span>
-              <b className="block font-semibold text-foreground">{mineDesc?.choice ? `你已${vote ? "投给" : "选择"} ${mineDesc.choice[0]}. ${mineDesc.choice[1]}` : `你已提交第 ${cv} 版`}</b>
-              {historical ? `第 ${cv} 版的答案，历史版本只读。` : `第 ${cv} 版的答案已锁定，发布新版本后可重新${vote ? "投" : "提交"}。`}
-            </span>
-          </div>
-        )}
-      </section>
-      <div className="flex items-start gap-7 max-[1100px]:flex-col max-[1100px]:items-stretch">
-        <div className="flex min-w-0 flex-1 flex-col gap-4">
           {historical && (
-            <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-[18px] bg-highlight px-4 py-2.5 text-sm text-highlight-foreground">
+            <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-[12px] bg-highlight px-4 py-2.5 text-sm text-highlight-foreground">
               <span>你在看第 {cv} 版，当前是第 {view.page.version} 版。历史版本只读。</span>
               <Button size="sm" variant="outline" onClick={() => setQuery("version", null)}>回到最新版</Button>
             </div>
@@ -241,36 +249,37 @@ function Viewer({ src }: { src: Source }) {
           {resubmit && !resp && <Notice tone="info">页面已更新到第 {cv} 版，可以重新提交。</Notice>}
           {mine && !view.can_view_results && <Notice tone="success">已提交，结果仅页面管理者可见。</Notice>}
           <Submitter key={cv} view={view} src={src} onSubmitted={onSubmitted} historical={historical} locked={locked} resp={resp} tally={tally} closed={closed} />
-          {collect && (mineDesc || reasons.length > 0) && (
-            <div className="grid gap-3.5 lg:grid-cols-2">
-              {resp && mineDesc && (
-                <Box title="你的回答" note={fmtTime(resp.created_at)}>
-                  <div className="flex items-center gap-3 rounded-[16px] bg-primary-soft px-3.5 py-3">
-                    {mineDesc.choice && <span className="grid size-[38px] shrink-0 place-items-center rounded-[12px] bg-primary text-[18px] font-semibold text-primary-foreground">{mineDesc.choice[0]}</span>}
-                    <div className="min-w-0">
-                      <b className="font-semibold">{mineDesc.choice?.[1] ?? `第 ${cv} 版已提交`}</b>
-                      {mineDesc.texts.map((t, i) => <p key={i} className="text-[13px] [overflow-wrap:anywhere] text-muted-foreground">{t}</p>)}
+          {collect && resp && mineDesc && (
+            <Box title="你的回答" note={fmtRel(resp.created_at, new Date(now))}>
+              <div className="flex items-center gap-3 rounded-r-[10px] border-l-[3px] border-primary bg-background px-3.5 py-2.5">
+                {mineDesc.choice && <span className="grid size-10 shrink-0 place-items-center rounded-[11px] bg-primary text-[16px] font-bold text-primary-foreground">{mineDesc.choice[0]}</span>}
+                <div className="min-w-0">
+                  <b className="font-semibold">{mineDesc.choice?.[1] ?? `第 ${cv} 版已提交`}</b>
+                  {mineDesc.texts.map((t, i) => <p key={i} className="text-[13px] [overflow-wrap:anywhere] text-muted-foreground">{t}</p>)}
+                </div>
+              </div>
+              {!historical && <p className="mt-2.5 text-[13px] text-faint">想改答案？页面发布第 {cv + 1} 版后这里会重新打开，旧答案会保留在第 {cv} 版里。</p>}
+            </Box>
+          )}
+          {collect && reasons.length > 0 && (
+            <section aria-label={vote ? "大家的理由" : "大家的回答"}>
+              <h2 className="mb-2.5 text-[13px] font-medium tracking-normal text-faint">{vote ? "大家的理由" : "大家的回答"}<span className="ml-1.5 tabular-nums">{reasons.length}</span></h2>
+              <ul className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+                {reasons.slice(-6).reverse().map(({ r, d }) => (
+                  <li key={r.seq} className="rounded-[14px] border bg-card px-3.5 py-3 text-[13px] text-muted-foreground">
+                    <div className="mb-1.5 flex items-center gap-2 font-medium text-foreground">
+                      <Initial name={who(r)} className="size-[22px] text-[11px] ring-0" />
+                      <span className="min-w-0 truncate">{who(r)}</span>
+                      {d.choice && <em className="ml-auto shrink-0 text-[12px] font-normal text-faint not-italic">{vote ? "投" : "选"} {d.choice[0]}</em>}
                     </div>
-                  </div>
-                  {!historical && <p className="mt-2.5 text-[13px] text-muted-foreground">想改答案？页面发布第 {cv + 1} 版后这里会重新打开，旧答案会保留在第 {cv} 版里。</p>}
-                </Box>
-              )}
-              {reasons.length > 0 && (
-                <Box title={vote ? "大家的理由" : "大家的回答"} note={`${reasons.length} 条`}>
-                  <ul className="divide-y">
-                    {reasons.slice(-6).reverse().map(({ r, d }) => (
-                      <li key={r.seq} className="flex gap-2.5 py-2 text-[13px] text-muted-foreground first:pt-0">
-                        <Initial name={who(r)} className="size-6 text-[11px]" />
-                        <span className="min-w-0 [overflow-wrap:anywhere]"><b className="mr-1 font-semibold text-foreground">{who(r)}{d.choice && ` ${vote ? "投" : "选"} ${d.choice[0]}`}</b>{d.texts.join("；")}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </Box>
-              )}
-            </div>
+                    <p className="[overflow-wrap:anywhere]">{d.texts.join("；")}</p>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
           {showResults && resultsOpen && (
-            <section ref={resultsRef} aria-label="结果" className="page-enter scroll-mt-24 rounded-[24px] border p-5">
+            <section ref={resultsRef} aria-label="结果" className="page-enter scroll-mt-24 rounded-[16px] border bg-card p-5">
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-[16px] font-semibold">全部结果</h2>
                 <Link to={`/pages/${pageId}/results`} className="link text-[13px]">在单独页面打开</Link>
@@ -279,28 +288,44 @@ function Viewer({ src }: { src: Source }) {
                 spec={view.content.kind === "openui" ? view.content.spec : undefined} />
             </section>
           )}
+          {related.length > 0 && (
+            <section aria-label="同项目的相关页面" className="mt-2">
+              <h2 className="mb-2.5 text-[13px] font-medium tracking-normal text-faint">同项目的相关页面</h2>
+              <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+                {related.map((p) => (
+                  <Link key={p.id} to={`/pages/${p.id}`} className="flex min-w-0 items-center gap-2.5 rounded-[14px] border bg-card px-3.5 py-3 outline-none transition-colors hover:border-input focus-visible:ring-[3px] focus-visible:ring-ring/80">
+                    <ToneIcon tone={toneOf(p.page_type, p.category)} className="size-[34px] bg-tone-f text-tone [&_svg]:size-[18px]" />
+                    <span className="min-w-0">
+                      <b className="block truncate font-semibold">{p.title}</b>
+                      <small className="block truncate text-[12px] text-faint">{p.generated_by ? `${p.generated_by} 生成` : `${p.created_by.display_name} 发布`}{p.version > 1 ? `，第 ${p.version} 版` : `，${fmtRel(p.updated_at, new Date(now))}`}</small>
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
-        <aside aria-label="页面信息" className="flex w-[340px] shrink-0 flex-col gap-3.5 max-[1100px]:w-full">
-          {collect && <Progress view={view} rows={rowsCv} showResults={showResults} vote={vote} now={now} />}
+        <aside aria-label="页面信息" className="flex min-w-0 flex-col gap-3.5">
+          {collect && <Progress view={view} rows={rowsCv} showResults={showResults} vote={vote} now={now} tally={tally} labels={labels} mine={resp ? valuesOf(resp.data) : null} />}
           {versions.length > 0 && (
             <Box title={<><History className="size-4" />版本</>}>
-              <div className="flex flex-col gap-0.5">
+              <div className="flex flex-col gap-1.5">
                 {versions.map((x) => (
                   <button key={x.version} type="button" aria-current={x.version === cv || undefined}
                     onClick={() => setQuery("version", x.version === view.page.version ? null : String(x.version))}
-                    className={cn("flex items-start gap-3 rounded-[14px] px-2.5 py-2 text-left text-[13px] text-muted-foreground outline-none transition-colors hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/80", x.version === cv && "bg-muted")}>
-                    <span className={cn("grid size-[30px] shrink-0 place-items-center rounded-[10px] font-semibold tabular-nums", x.version === cv ? "bg-foreground text-background" : "bg-muted text-foreground")}>{x.version}</span>
-                    <span className="min-w-0">
-                      <b className="block font-semibold text-foreground">{x.version === view.page.version ? "当前版本" : `第 ${x.version} 版`}{x.version === cv && resp ? "，你已提交" : ""}</b>
-                      {fmtRel(x.created_at, new Date(now))}{x.version === cv ? "，正在查看" : ""}
-                    </span>
+                    className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] text-muted-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/80 aria-[current]:bg-primary-soft aria-[current]:text-foreground">
+                    <b className="shrink-0 font-semibold text-foreground">第 {x.version} 版</b>
+                    <span className="min-w-0 truncate">{fmtRel(x.created_at, new Date(now))}</span>
+                    <em className="ml-auto shrink-0 text-[12px] text-faint not-italic">{x.version === view.page.version ? "当前版本" : "只读"}{x.version === cv && resp ? "，你已提交" : ""}</em>
                   </button>
                 ))}
               </div>
             </Box>
           )}
+          {collect && <Pending view={view} rows={rowsCv} showResults={showResults} vote={vote} />}
           <Box title="页面信息">
-            <dl className="grid grid-cols-[72px_1fr] gap-x-2.5 gap-y-1.5 text-[13px] [&_dd]:min-w-0 [&_dt]:text-muted-foreground">
+            <dl className="grid grid-cols-[72px_1fr] gap-x-2.5 gap-y-[7px] text-[13px] [&_dd]:min-w-0 [&_dt]:text-faint">
+              <dt>项目</dt><dd className="truncate">{view.page.project.name}</dd>
               {cached && <><dt>可见范围</dt><dd>{VIS_LABEL[cached.visibility]}</dd></>}
               {collect && <><dt>结果可见</dt><dd>{view.page.results_visible_to === "viewers" ? "所有能查看的人" : "仅页面管理者"}</dd></>}
               {collect && <><dt>截止</dt><dd>{view.page.closes_at ? fmtDue(view.page.closes_at, new Date(now)) : view.page.accept_responses ? "不截止" : "已停止收集"}</dd></>}
@@ -311,18 +336,18 @@ function Viewer({ src }: { src: Source }) {
           {showResults && (
             <Button variant="secondary" onClick={toggleResults} aria-expanded={resultsOpen}>{resultsOpen ? "收起结果" : `查看全部结果${count !== null ? ` ${count}` : ""}`}</Button>
           )}
-          <div className="flex gap-2">
-            <Button className="h-10 flex-1" onClick={() => (navigator.share ? navigator.share({ title: view.page.title, url: location.href }).catch(() => {}) : copyText(location.href, "已复制链接"))}>
-              <Share2 />分享
+          <div className="flex gap-2 [&>button]:h-[34px] [&>button]:rounded-[10px]">
+            <Button variant="outline" className="flex-1" onClick={() => (navigator.share ? navigator.share({ title: view.page.title, url: location.href }).catch(() => {}) : copyText(location.href, "已复制链接"))}>
+              <Share2 />分享链接
             </Button>
-            <Button variant="secondary" className="h-10" onClick={() => copyText(location.href, "已复制链接")}><Link2 />复制链接</Button>
-            {manage && <Button variant="secondary" className="h-10" onClick={() => setManageOpen(true)}><Settings2 />管理</Button>}
+            <Button variant="outline" className="flex-1" onClick={() => copyText(location.href, "已复制链接")}><Link2 />复制链接</Button>
+            {manage && <Button variant="outline" onClick={() => setManageOpen(true)}><Settings2 />管理</Button>}
           </div>
         </aside>
       </div>
       {manage && (
         <Dialog open={manageOpen} onOpenChange={setManageOpen}>
-          <DialogContent className="max-h-[88vh] overflow-y-auto rounded-[24px] p-6 sm:max-w-2xl sm:p-7">
+          <DialogContent className="max-h-[88vh] overflow-y-auto rounded-[18px] p-6 sm:max-w-2xl sm:p-7">
             <DialogHeader>
               <DialogTitle>管理页面</DialogTitle>
               <DialogDescription>页面设置与临时链接</DialogDescription>
@@ -338,47 +363,81 @@ function Viewer({ src }: { src: Source }) {
 /** 白底 1px 描边的右栏/主区小卡 */
 function Box({ title, note, children }: { title: ReactNode; note?: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-[22px] border px-4.5 py-4">
-      <h3 className="mb-2.5 flex items-center gap-2 text-[14px] font-semibold">{title}{note && <small className="ml-auto text-[12px] font-normal text-muted-foreground">{note}</small>}</h3>
+    <section className="rounded-[16px] border bg-card px-[18px] py-4">
+      <h3 className="mb-3 flex items-center gap-2 text-[14px] font-semibold">{title}{note && <small className="ml-auto text-[12px] font-normal text-faint">{note}</small>}</h3>
       {children}
     </section>
   );
 }
 
-/** 实时进度圆环：参与人数 / 可提交人数；pending 显示「等未投」头像。旧后端没有 participation 时按结果流里的去重提交者计数，拿不到就不显示 */
-function Progress({ view, rows, showResults, vote, now }: { view: PageView; rows: Response[]; showResults: boolean; vote: boolean; now: number }) {
+/** 已参与人数：participation 与结果流（页面加载后新到的提交，含我刚交的）取较大；旧后端没有 participation 时按流里去重提交者计数，拿不到返回 null */
+function useParticipants(view: PageView, rows: Response[], showResults: boolean) {
   const part = view.participation;
-  // 页面加载后新到的提交（含我刚交的）只在结果流里：计数取两者较大，未投名单去掉已在流里出现的人
   const seen = showResults ? new Set(rows.map((r) => (r.respondent.type === "user" ? r.respondent.user_id : `anon:${r.seq}`))) : null;
   const n = part ? Math.max(part.respondent_count, seen?.size ?? 0) : seen ? seen.size : null;
+  return { n, total: part?.eligible_count ?? null, pending: part?.pending?.filter((u) => !seen?.has(u.id)) ?? [] };
+}
+
+/** 实时结果：已参与 / 可提交人数与进度条；结果对我可见且已提交（或截止、历史版本）时显示第一个选项字段的结果条（我的选择高亮）与提交者头像 */
+function Progress({ view, rows, showResults, vote, now, tally, labels, mine }: {
+  view: PageView; rows: Response[]; showResults: boolean; vote: boolean; now: number; tally: Tally | null; labels: SpecLabels | null; mine: Record<string, unknown> | null;
+}) {
+  const { n, total } = useParticipants(view, rows, showResults);
   if (n === null) return null;
-  const pending = part?.pending?.filter((u) => !seen?.has(u.id)) ?? [];
-  const total = part?.eligible_count ?? null;
-  const pct = total ? Math.min(1, n / total) : 1;
-  const C = 2 * Math.PI * 38;
-  const last = rows.at(-1);
   const v = vote ? "投" : "交";
+  const last = rows.at(-1);
+  const field = labels && Object.keys(labels.options).find((f) => tally?.[f]);
+  const t = field ? tally![field] : null;
+  const opts = field ? Object.entries(labels!.options[field]) : [];
+  const my = field && mine ? picked(mine[field]) : [];
+  const names = [...new Set(rows.map(who))];
   return (
-    <Box title={<><i aria-hidden="true" className="size-2 rounded-full bg-live ring-4 ring-live-ring" />实时进度</>}
-      note={last ? (now - new Date(last.created_at).getTime() < 5 * 60000 ? `刚刚有人${vote ? "投票" : "提交"}` : `最近一次 ${fmtRel(last.created_at, new Date(now))}`) : undefined}>
-      <div className="flex items-center gap-4">
-        <div className="relative size-24 shrink-0" role="img" aria-label={total ? `已${v} ${n} 人，共 ${total} 人` : `已${v} ${n} 人`}>
-          <svg viewBox="0 0 96 96" className="size-24 -rotate-90">
-            <circle cx="48" cy="48" r="38" fill="none" strokeWidth="12" className="stroke-muted" />
-            <circle cx="48" cy="48" r="38" fill="none" strokeWidth="12" strokeLinecap="round" className="stroke-primary transition-[stroke-dashoffset] duration-500 ease-rise"
-              strokeDasharray={C} strokeDashoffset={C * (1 - pct)} />
-          </svg>
-          <b className="absolute inset-0 grid place-items-center text-[22px] font-semibold tabular-nums">{total ? `${n}/${total}` : n}</b>
-        </div>
-        <div className="min-w-0 text-[13px] text-muted-foreground">
-          {total ? `已${v} ${n} 人，还差 ${Math.max(0, total - n)} 人` : `已有 ${n} 人参与`}
-          {pending.length > 0 && (
-            <div className="mt-2 flex items-center">
-              <span className="flex -space-x-1.5">{pending.slice(0, 5).map((u) => <Initial key={u.id} name={u.display_name} muted className="size-6 text-[10px]" />)}</span>
-              <span className="ml-1.5 text-[12px]">{pending.length > 5 ? `等 ${pending.length} 人` : "等"}未{v}</span>
+    <Box title={<><i aria-hidden="true" className="size-2 rounded-full bg-live ring-4 ring-live-ring" />实时结果</>}
+      note={last ? (now - new Date(last.created_at).getTime() < 5 * 60000 ? `刚刚有人${vote ? "投票" : "提交"}` : `最近一次 ${fmtRel(last.created_at, new Date(now))}`) : `每次${vote ? "投票" : "提交"}即时刷新`}>
+      <div className="flex items-baseline justify-between text-[13px]" role="img" aria-label={total ? `已${v} ${n} 人，共 ${total} 人` : `已${v} ${n} 人`}>
+        <span><b className="font-mono text-[20px] font-semibold tabular-nums">{n}</b>{total ? <span className="tabular-nums"> / {total}</span> : ""} 人已{v}</span>
+        {total ? <span className="text-faint">还差 {Math.max(0, total - n)} 人</span> : null}
+      </div>
+      <div className="mt-1.5 mb-3.5 h-2 overflow-hidden rounded-[4px] bg-muted">
+        <i className="block h-full rounded-[4px] bg-mint transition-[width] duration-500 ease-rise" style={{ width: `${total ? Math.min(1, n / total) * 100 : n ? 100 : 0}%` }} />
+      </div>
+      {t && opts.map(([val, label], i) => {
+        const c = t.counts[val] ?? 0;
+        const pct = t.total ? Math.round((c / t.total) * 100) : 0;
+        const me = my.includes(val);
+        const [letter, name] = splitLetter(label, i);
+        return (
+          <div key={val} className="mb-3">
+            <div className="mb-[5px] flex justify-between gap-2 text-[13px]">
+              <span className={cn("min-w-0 truncate", me && "font-semibold text-primary")}>{letter}. {name}{me && "（你）"}</span>
+              <b className="shrink-0 font-semibold tabular-nums">{c} {vote ? "票" : "人"}，{pct}%</b>
             </div>
-          )}
+            <span className="block h-2.5 overflow-hidden rounded-[5px] bg-muted">
+              <motion.i className={cn("block h-full rounded-[5px]", me ? "bg-primary" : "bg-primary/40")} initial={REDUCED ? false : { width: 0 }} animate={{ width: `${pct}%` }}
+                transition={{ type: "spring", stiffness: 260, damping: 18 }} />
+            </span>
+          </div>
+        );
+      })}
+      {names.length > 0 && (
+        <div className="mt-1 flex items-center">
+          <span className="flex -space-x-[7px]">{names.slice(0, 5).map((nm) => <Initial key={nm} name={nm} className="size-[26px] text-[11px]" />)}</span>
+          <span className="ml-2 text-[12px] text-faint">{names.length > 5 ? `等 ${names.length} 人` : `${names.length} 人`}</span>
         </div>
+      )}
+    </Box>
+  );
+}
+
+/** 还没参与的人（participation.pending，只对管理者返回） */
+function Pending({ view, rows, showResults, vote }: { view: PageView; rows: Response[]; showResults: boolean; vote: boolean }) {
+  const { pending } = useParticipants(view, rows, showResults);
+  if (!pending.length) return null;
+  return (
+    <Box title={`还没${vote ? "投" : "交"}的 ${pending.length} 人`} note={view.can_manage ? "你是管理者" : undefined}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {pending.slice(0, 12).map((u) => <Initial key={u.id} name={u.display_name} muted className="size-7 text-[11px] ring-0" />)}
+        {pending.length > 12 && <span className="ml-1 text-[12px] text-faint">等 {pending.length} 人</span>}
       </div>
     </Box>
   );
@@ -649,9 +708,10 @@ function ContentSkeleton() {
 
 function ViewerSkeleton() {
   return (
-    <div className="flex w-full flex-col gap-5.5">
-      <Skeleton className="h-[170px] rounded-[28px]" />
-      <div className="flex gap-7"><div className="flex-1"><ContentSkeleton /></div><Skeleton className="h-64 w-[340px] rounded-[22px] max-[1100px]:hidden" /></div>
+    <div className="flex w-full flex-col gap-5">
+      <Skeleton className="h-5 w-64" />
+      <Skeleton className="h-[72px] max-w-xl rounded-[14px]" />
+      <div className="flex gap-7"><div className="flex-1"><ContentSkeleton /></div><Skeleton className="h-64 w-[340px] rounded-[16px] max-[1100px]:hidden" /></div>
     </div>
   );
 }

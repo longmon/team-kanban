@@ -403,7 +403,7 @@ await step("generated-by-meta", async () => {
   await page.getByText("需求流程").waitFor();
   if (await page.locator(".band").getByText(/ 生成$/).count()) throw new Error("page without model shows generated_by");
   await page.goto(BASE + "/o/demo/p/demo");
-  await page.locator(".tile").getByText("Claude Opus 5.5 生成", { exact: true }).first().waitFor();
+  await page.locator(".tile").getByText("Claude Opus 5.5", { exact: true }).first().waitFor(); // 卡片底部只写模型名（带星标图标）
 });
 await step("mermaid-diagram", async () => {
   await page.goto(BASE + "/pages/" + IDS["流程图"]);
@@ -431,22 +431,25 @@ await step("list-filter-chips", async () => {
   await page.locator(".tile-title", { hasText: "示例：vote.openui" }).waitFor();
   const filters = page.getByRole("group", { name: "筛选" });
   const titles = async () => (await page.locator(".tile-title").allTextContents()).sort();
-  await filters.getByRole("button", { name: "文档", exact: true }).click();
-  // 切换时旧格子淡出（layout 重排），等格子真正变成 3 个再断言
-  await page.waitForFunction(() => document.querySelectorAll(".tile-title").length === 3);
+  // 类型分段（按钮文字带计数，如「报告 1」）
+  await filters.getByRole("button", { name: /^报告/ }).click();
+  // 切换时旧格子淡出（layout 重排），等格子真正变成 1 个再断言
+  await page.waitForFunction(() => document.querySelectorAll(".tile-title").length === 1);
   let t = await titles();
-  if (JSON.stringify(t) !== JSON.stringify(["只读报告", "流程图", "知识库"].sort())) throw new Error("文档: " + t);
-  if ((await filters.getByRole("button", { pressed: true }).textContent()) !== "文档") throw new Error("pressed chip");
-  await filters.getByRole("button", { name: /^等我参与/ }).click();
+  if (JSON.stringify(t) !== JSON.stringify(["只读报告"])) throw new Error("报告: " + t);
+  if (!(await filters.getByRole("button", { pressed: true }).textContent()).startsWith("报告")) throw new Error("pressed chip");
+  // 左侧导航「等我处理」= 首页 ?view=todo：只剩收集类、我还没交的
+  await page.getByRole("navigation", { name: "导航" }).getByRole("link", { name: /^等我处理/ }).click();
+  await page.waitForURL(/\?view=todo$/);
   await page.locator(".tile-title", { hasText: "评审组可见" }).waitFor();
   // 文档类的格子淡出后才从 DOM 移除
   await page.waitForFunction(() => ![...document.querySelectorAll(".tile-title")].some((e) => ["只读报告", "流程图", "知识库"].includes(e.textContent)));
   t = await titles();
-  if (t.some((x) => ["只读报告", "流程图", "知识库"].includes(x))) throw new Error("等我参与: " + t);
-  // 等我处理的格子是 2×2 饱和底色，带主按钮「去投票 / 去填写」
+  if (t.some((x) => ["只读报告", "流程图", "知识库"].includes(x))) throw new Error("等我处理: " + t);
+  // 右栏「等我处理」面板里的待办卡带主按钮「去投票 / 去填写」
   await page.locator("article[data-todo]").getByRole("link", { name: /^去(投票|填写)$/ }).first().waitFor();
   await page.screenshot({ path: `${OUT}/project-filter.png`, fullPage: true });
-  await filters.getByRole("button", { name: "全部", exact: true }).click();
+  await filters.getByRole("button", { name: /^全部/ }).click();
 });
 await step("tab-in-url", async () => {
   await page.goto(BASE + "/o/demo/p/demo");
@@ -491,12 +494,12 @@ await step("todo-count-after-submit", async () => {
     .catch(async () => { throw new Error(`todo ${before} → ${await chip.textContent().catch(() => "无")}`); });
 });
 await step("activity-rail", async () => {
-  // 首页右侧「正在发生」：显示发布与提交事件（旧后端没有 /api/activity 时整栏不显示，跳过）
+  // 首页右侧「实时动态」：显示发布与提交事件（旧后端没有 /api/activity 时整栏不显示，跳过）
   await page.goto(BASE + "/");
   await page.locator(".tile").first().waitFor();
   const r = await page.evaluate(async () => (await fetch("/api/activity?limit=30")).status);
   if (r === 404) return console.log("     skip: /api/activity 未实现");
-  const aside = page.getByRole("complementary", { name: "正在发生" });
+  const aside = page.getByRole("complementary", { name: "实时动态" });
   await aside.locator("li", { hasText: "发布了" }).first().waitFor();
   await aside.locator("li", { hasText: "评审组可见" }).first().waitFor(); // 刚才的提交
   await page.screenshot({ path: `${OUT}/home-activity.png` });
@@ -595,7 +598,7 @@ await step("reduced-motion", async () => {
     await settled("project");
     const ind = p.locator("[data-slot=tabs-indicator]").first();
     if ((await ind.evaluate((e) => getComputedStyle(e).transitionDuration)).split(",").some((d) => d.trim() !== "0s")) throw new Error("indicator transition not zeroed");
-    await p.getByRole("group", { name: "筛选" }).getByRole("button", { name: "文档", exact: true }).click();
+    await p.getByRole("group", { name: "筛选" }).getByRole("button", { name: /^报告/ }).click();
     await p.locator(".tile-title", { hasText: "只读报告" }).click(); // 格子 → 页面（减少动态时不走 View Transition）
     await p.getByText("技术选型投票").waitFor();
     await settled("vote");

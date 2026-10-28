@@ -1,16 +1,18 @@
-// 格子墙（方向 B 糖纸格）：首页（我能看的全部页面）与项目页（只看该项目）共用。
-// 宽屏 bento 网格：等我处理的格子 2×2 饱和底色，有摘要的报告 2×1，其余 1×1，dense 填充；右侧 316px「正在发生」栏（< 1280 移到格子下方）。
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+// 工作台（方向 A 长春花工作台）：首页（我能看的全部页面）与项目页（只看该项目）共用。
+// 中间：问候语 + 搜索框、类型分段（全部 / 投票 / 报告 / 流程与架构 / 表单 / 知识库，带计数）、按「今天 / 本周 / 更早」分组的卡片网格（带内容预览与状态徽章）；
+// 右栏：实色「等我处理」面板（按截止排序、倒计时圈、去投票 / 去填写，处理完移出）+「实时动态」。< 1280 时待办面板移到卡片上方、动态移到下方。
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
-import { Check, Clock, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { ApiError, get, qs } from "../api";
 import { cn } from "@/lib/utils";
-import { Link } from "../router";
+import { Link, useQuery } from "../router";
 import { picked, specLabels, type SpecLabels } from "../data";
 import {
-  ErrorBox, fmtDue, fmtLeft, fmtRel, Initial, isClosed, PAGE_TYPE_LABEL, REDUCED, toneOf, ToneIcon, useCurrentOrgId, useMyProjects, useNow, useSession, type Tone,
+  dayBucket, ErrorBox, fmtDue, fmtLeft, fmtRel, Initial, isClosed, PAGE_TYPE_LABEL, REDUCED, toneOf, ToneIcon, useCurrentOrgId, useMyProjects, useNow, useSession, type Tone,
 } from "../ui";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SearchButton } from "../shell";
 import { AgentOnboarding } from "./settings";
 import type { Activity, Page, PageView, Paged, Response } from "../types";
 
@@ -62,23 +64,42 @@ function useFeed(path: string) {
   return { ...state, loading, loaded, error, more: () => state.cursor && load(state.cursor) };
 }
 
-/** 顶栏项目胶囊的页面数：首页列表已全部加载（没有下一页）时按项目计数，否则不显示 */
-export function useProjectCounts(orgId: string | undefined) {
+
+/** 左侧导航的计数（等我处理、我发布的、各项目页面数）：读首页列表缓存，缓存没有时（刷新、提交后被清掉）自己拉一次第一页。
+ *  项目页面数与「我发布的」只在首页列表已全部加载（没有下一页）时显示；等我处理按已加载的部分计 */
+let homeLoading = false;
+export function useHomeStats(orgId: string | undefined) {
   useSyncExternalStore((l) => (cacheListeners.add(l), () => void cacheListeners.delete(l)), () => cacheVer);
+  const { me } = useSession();
+  const now = useNow();
   const c = cache.get(HOME);
-  if (!c || c.cursor || !orgId) return { all: null as number | null, by: {} as Record<string, number> };
+  useEffect(() => {
+    if (c || homeLoading || !me) return;
+    homeLoading = true;
+    get<Paged<Page>>(HOME).then((r) => !cache.has(HOME) && setCache(HOME, { items: r.items, cursor: r.next_cursor }), () => {}).finally(() => (homeLoading = false));
+  }, [c, me]);
+  if (!c) return { todo: null as number | null, mine: null as number | null, by: {} as Record<string, number>, full: false };
+  // 与工作台一致：只有一个组织时不按组织过滤
+  const items = orgId && (me?.orgs.length ?? 0) > 1 ? c.items.filter((p) => p.org_id === orgId) : c.items;
+  const full = !c.cursor;
   const by: Record<string, number> = {};
-  let all = 0;
-  for (const p of c.items) if (p.org_id === orgId) (by[p.project_id] = (by[p.project_id] ?? 0) + 1), all++;
-  return { all, by };
+  if (full) for (const p of items) by[p.project_id] = (by[p.project_id] ?? 0) + 1;
+  return { todo: items.filter((p) => isTodo(p, now)).length, mine: full ? items.filter((p) => p.created_by.id === me?.user.id).length : null, by, full };
 }
 
 // ---------- 分类 ----------
 /** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本 */
 const isTodo = (p: Page, now = Date.now()) => p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now);
-type Filter = "all" | "todo" | "docs" | "mine";
-const FILTERS: [Filter, string][] = [["all", "全部"], ["todo", "等我参与"], ["docs", "文档"], ["mine", "我发布的"]];
+type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book";
+const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"]];
+const kindOf = (p: Page): Kind => {
+  const t = toneOf(p.page_type, p.category);
+  return t === "flow" || t === "arch" ? "diagram" : t;
+};
 const verb = (p: Page) => (toneOf(p.page_type, p.category) === "vote" ? "投" : "交");
+const unit = (p: Page) => (toneOf(p.page_type, p.category) === "vote" ? "票" : "份");
+const greet = (h: number) => (h < 6 ? "夜深了" : h < 11 ? "早上好" : h < 13 ? "中午好" : h < 18 ? "下午好" : "晚上好");
+const GROUPS = ["今天", "本周", "更早"] as const;
 
 // 首页错落入场只在本次会话首次加载时播一次（之后切筛选、翻页、返回都不再播）
 let played = false;
@@ -89,7 +110,10 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
   const path = projectId ? `/pages${qs({ project_id: projectId, limit: 30 })}` : HOME;
   const feed = useFeed(path);
   const projects = useMyProjects();
-  const [filter, setFilter] = useState<Filter>("all");
+  const [kind, setKind] = useState<Kind>("all");
+  // 左侧导航「等我处理 / 我发布的」：首页 ?view=todo|mine
+  const qv = useQuery("view");
+  const view = projectId ? null : qv === "todo" || qv === "mine" ? qv : null;
   const stagger = useRef(!played && !REDUCED && !projectId);
   useEffect(() => {
     if (feed.items.length) {
@@ -99,15 +123,21 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
     }
   }, [feed.items.length]);
 
-  // 多组织时首页只显示当前组织（顶栏组织切换）；单组织不过滤
+  // 多组织时首页只显示当前组织（左侧组织切换）；单组织不过滤
   const orgs = me?.orgs ?? [];
   const lastOrg = useCurrentOrgId();
   const orgId = projectId || orgs.length < 2 ? undefined : (orgs.find((o) => o.id === lastOrg) ?? orgs[0]).id;
   const items = orgId ? feed.items.filter((p) => p.org_id === orgId) : feed.items;
   const todos = items.filter((p) => isTodo(p, now)).sort((a, b) => due(a) - due(b));
-  const rest = items.filter((p) => !isTodo(p, now)).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const shown = [...todos, ...rest].filter((p) =>
-    filter === "todo" ? isTodo(p, now) : filter === "docs" ? p.category === "read" : filter === "mine" ? p.created_by.id === me?.user.id : true);
+  const base = items.filter((p) => (view === "todo" ? isTodo(p, now) : view === "mine" ? p.created_by.id === me?.user.id : true))
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const counts = { all: base.length } as Record<Kind, number>;
+  for (const p of base) counts[kindOf(p)] = (counts[kindOf(p)] ?? 0) + 1;
+  const shown = kind === "all" ? base : base.filter((p) => kindOf(p) === kind);
+  const groups = GROUPS.map((g) => [g, shown.filter((p) => (dayBucket(p.updated_at, new Date(now)) === "昨天" ? "本周" : dayBucket(p.updated_at, new Date(now))) === g)] as const)
+    .filter(([, ps]) => ps.length);
+  // 收集类卡片的迷你结果条要额外请求，只给最前面 6 张
+  const lazyIds = new Set(shown.filter((p) => p.category === "collect").slice(0, 6).map((p) => p.id));
 
   // 滚到底加载下一页：哨兵进入视口（提前 400px）且还有下一页时加载；列表变化后重新观察（筛选后列表很短时会继续加载）
   const sentinel = useRef<HTMLDivElement>(null);
@@ -123,65 +153,73 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
   const proj = (id: string) => projects.data?.find((x) => x.id === id)?.name;
   const name = me?.user.display_name ?? "";
   if (feed.loaded && !feed.items.length && !feed.error) return <>{empty ?? <AgentOnboarding />}</>;
+  const week = items.filter((p) => ["今天", "昨天", "本周"].includes(dayBucket(p.created_at, new Date(now)))).length;
+  const heading = title ?? (view === "todo" ? "等我处理" : view === "mine" ? "我发布的" : `${greet(new Date(now).getHours())}，${name}`);
+  const sub = view === "todo" ? `${todos.length} 件事等你处理，按最近更新排列`
+    : view === "mine" ? `你发布的 ${base.length} 个页面`
+    : `${projectId ? `${items.length} 个页面` : `本周新增 ${week} 个页面`}，${todos.length ? `有 ${todos.length} 件事等你处理` : "暂时没有要你处理的事"}`;
   return (
-    <div className="flex flex-col gap-7 xl:flex-row">
-      <div className="@container min-w-0 flex-1">
-        <div className="mb-5 flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-          <div className="min-w-0">
-            <h1 className="text-[34px] leading-tight font-semibold [overflow-wrap:anywhere] max-sm:text-[26px]">
-              {title ?? (todos.length ? `${name}，有 ${todos.length} 件事等你` : `${name}，暂时没有要你处理的事`)}
-            </h1>
-            <p className="mt-1 text-[14px] text-muted-foreground">
-              {title && todos.length ? `有 ${todos.length} 件事等你，` : ""}
-              {todos.length ? `其余 ${rest.length} 个页面按最近更新排列` : `${rest.length} 个页面按最近更新排列`}
-            </p>
+    <div className="grid grid-cols-1 gap-x-7 gap-y-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:grid-rows-[auto_1fr] min-[1500px]:grid-cols-[minmax(0,1fr)_372px]">
+      <header className="order-1 min-w-0 xl:col-start-1 xl:row-start-1">
+        <div className="mb-5 flex items-center gap-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-[26px] leading-tight font-semibold tracking-[-0.01em] [overflow-wrap:anywhere] max-sm:text-[22px]">{heading}</h1>
+            <p className="mt-0.5 text-muted-foreground">{sub}</p>
           </div>
-          <div role="group" aria-label="筛选" className="flex flex-wrap gap-1 rounded-full bg-muted p-1">
-            {FILTERS.map(([v, label]) => (
-              <button key={v} type="button" aria-pressed={filter === v} onClick={() => setFilter(v)}
-                className={cn(
-                  "relative inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[13px] font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/80",
-                  filter === v ? "text-foreground" : "text-muted-foreground hover:text-foreground",
-                )}>
-                {filter === v && <motion.span layoutId={`seg-${projectId ?? "home"}`} className="absolute inset-0 rounded-full bg-card shadow-card" transition={{ type: "spring", bounce: 0.15, duration: 0.3 }} />}
-                <span className="relative">{label}</span>
-                {v === "todo" && todos.length > 0 && (
-                  <span data-testid="todo-count" className="relative rounded-full bg-primary px-1.5 text-[11px] leading-4 font-semibold text-primary-foreground tabular-nums">{todos.length}</span>
-                )}
-              </button>
-            ))}
-          </div>
+          <SearchButton />
         </div>
+        <div role="group" aria-label="筛选" className="flex max-w-full gap-0.5 overflow-x-auto rounded-[11px] bg-muted p-[3px] [scrollbar-width:none] sm:inline-flex">
+          {KINDS.map(([v, label]) => (
+            <button key={v} type="button" aria-pressed={kind === v} onClick={() => setKind(v)}
+              className={cn(
+                "relative inline-flex shrink-0 items-center gap-1.5 rounded-[8px] px-[13px] py-[5px] text-[13px] font-medium whitespace-nowrap transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/80",
+                kind === v ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+              )}>
+              {kind === v && <motion.span layoutId={`seg-${projectId ?? "home"}`} className="absolute inset-0 rounded-[8px] bg-card shadow-[0_1px_2px_rgb(22_26_51/0.08)]" transition={{ type: "spring", bounce: 0.15, duration: 0.3 }} />}
+              <span className="relative">{label}</span>
+              <span className="relative tabular-nums">{counts[v] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+      </header>
+      <div className="contents xl:col-start-2 xl:row-span-2 xl:row-start-1 xl:flex xl:min-w-0 xl:flex-col xl:gap-[18px]">
+        <TodoPanel todos={todos} now={now} proj={projectId ? undefined : proj} />
+        <ActivityFeed projectId={projectId} />
+      </div>
+      <div className="order-3 min-w-0 xl:col-start-1 xl:row-start-2">
         <ErrorBox error={feed.error} />
         {!feed.loaded && <WallSkeleton />}
         {feed.loaded && shown.length === 0 && (
-          <p className="rounded-[24px] bg-muted py-12 text-center text-sm text-muted-foreground">{filter === "todo" ? "没有等你参与的页面了。" : "没有符合条件的页面。"}</p>
+          <p className="rounded-[14px] border border-dashed py-12 text-center text-sm text-muted-foreground">{view === "todo" ? "没有等你处理的页面了。" : "没有符合条件的页面。"}</p>
         )}
         <LayoutGroup>
-          <div className="bento grid grid-flow-row-dense auto-rows-[184px] grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3.5">
-            <AnimatePresence initial={false} mode="popLayout">
-              {shown.map((p, i) => {
-                const todo = isTodo(p, now);
-                const wide = !todo && p.category === "read" && (!!p.summary || !!p.highlights?.length) && p.page_type === "report";
-                const enter = stagger.current
-                  ? { initial: { opacity: 0, y: 14, scale: 0.98 }, transition: { duration: 0.35, delay: Math.min(i, 10) * 0.04, ease: [0.22, 1, 0.36, 1] as const } }
-                  : { initial: REDUCED ? (false as const) : { opacity: 0, scale: 0.98 }, transition: { duration: 0.2 } };
-                return (
-                  <motion.div key={p.id} layout initial={enter.initial} animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.15 } }}
-                    transition={{ ...enter.transition, layout: { duration: 0.35, ease: [0.22, 1, 0.36, 1] } }}
-                    className={cn("min-w-0", todo && "row-span-2 @[540px]:col-span-2", wide && "@[540px]:col-span-2")}>
-                    <Tile p={p} todo={todo} project={projectId ? undefined : proj(p.project_id)} now={now} lazy={todo && todos.indexOf(p) < 4} />
-                  </motion.div>
-                );
-              })}
-            </AnimatePresence>
-          </div>
+          {groups.map(([g, ps]) => (
+            <section key={g} aria-label={g}>
+              <h2 className="mt-5 mb-2.5 text-[13px] font-medium tracking-normal text-faint">{g}</h2>
+              <div className="bento grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4">
+                <AnimatePresence initial={false} mode="popLayout">
+                  {ps.map((p) => {
+                    const i = shown.indexOf(p);
+                    const enter = stagger.current
+                      ? { initial: { opacity: 0, y: 14, scale: 0.98 }, transition: { duration: 0.35, delay: Math.min(i, 10) * 0.04, ease: [0.22, 1, 0.36, 1] as const } }
+                      : { initial: REDUCED ? (false as const) : { opacity: 0, scale: 0.98 }, transition: { duration: 0.2 } };
+                    return (
+                      <motion.div key={p.id} layout initial={enter.initial} animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.15 } }}
+                        transition={{ ...enter.transition, layout: { duration: 0.35, ease: [0.22, 1, 0.36, 1] } }}
+                        className="min-w-0">
+                        <Card p={p} todo={isTodo(p, now)} project={projectId ? undefined : proj(p.project_id)} now={now} lazy={lazyIds.has(p.id)} />
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              </div>
+            </section>
+          ))}
         </LayoutGroup>
         <div ref={sentinel} />
         {feed.loading && feed.items.length > 0 && <p className="py-3 text-center text-xs text-muted-foreground" role="status">加载中…</p>}
       </div>
-      <ActivityRail projectId={projectId} items={items} />
     </div>
   );
 }
@@ -190,109 +228,144 @@ const due = (p: Page) => (p.closes_at ? new Date(p.closes_at).getTime() : Infini
 
 function WallSkeleton() {
   return (
-    <div className="grid auto-rows-[184px] grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3.5" role="status" aria-label="加载中">
-      {Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className={cn("rounded-[24px]", i < 2 && "row-span-2")} />)}
+    <div className="mt-5 grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-4" role="status" aria-label="加载中">
+      {Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-[208px] rounded-[14px]" />)}
     </div>
   );
 }
 
-// ---------- 格子 ----------
-function Tile({ p, todo, project, now, lazy }: { p: Page; todo: boolean; project?: string; now: number; lazy: boolean }) {
+// ---------- 卡片 ----------
+function Chip({ children, className }: { children: ReactNode; className?: string }) {
+  return <span className={cn("ml-auto shrink-0 rounded-full px-[9px] py-px text-[12px] font-medium whitespace-nowrap", className)}>{children}</span>;
+}
+
+function Card({ p, todo, project, now, lazy }: { p: Page; todo: boolean; project?: string; now: number; lazy: boolean }) {
   const tone = toneOf(p.page_type, p.category);
   const closed = isClosed(p.closes_at, now);
   const n = p.respondent_count ?? p.response_count;
-  const head = (
-    <div className="flex min-w-0 items-center gap-2 text-[12px] font-medium text-muted-foreground">
-      <ToneIcon tone={tone} className={todo ? "bg-card" : "bg-tone-f"} />
-      <span className="min-w-0 truncate">{[project, !todo && p.page_type !== "general" && PAGE_TYPE_LABEL[p.page_type]].filter(Boolean).join("，") || PAGE_TYPE_LABEL[p.page_type]}</span>
-      <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {todo && p.closes_at && <Badge><Clock className="size-3.5" />{fmtDue(p.closes_at, new Date(now))} 截止</Badge>}
-        {!todo && p.my_submitted && <Badge tinted><Check className="size-3.5" strokeWidth={3} />已{verb(p)}</Badge>}
-        {!todo && p.category === "collect" && (closed || !p.accept_responses) && !p.my_submitted && <Badge tinted>已截止</Badge>}
-        {!todo && !(p.category === "collect" && (closed || !p.accept_responses || p.my_submitted)) && (
-          <span className="font-normal">{p.version > 1 ? `第 ${p.version} 版` : fmtRel(p.updated_at, new Date(now))}</span>
-        )}
-      </span>
-    </div>
-  );
-  const titleLink = (
-    <Link to={`/pages/${p.id}`} data-vt={p.id} viewTransition
-      className={cn("tile-title w-fit max-w-full font-semibold outline-none after:absolute after:inset-0 after:rounded-[24px] focus-visible:after:ring-[3px] focus-visible:after:ring-ring/80",
-        todo ? "line-clamp-2 text-[24px] leading-tight tracking-[-0.01em] max-sm:text-[20px]" : "line-clamp-2 text-[16px] leading-snug")}>
-      {p.title}
-    </Link>
-  );
-  const foot = p.generated_by
-    ? <><Sparkles className="size-3.5" />{p.generated_by} 生成</>
-    : <>{p.created_by.display_name} 发布</>;
+  const collect = p.category === "collect";
+  const v = tone === "vote" ? "投" : "填";
+  const chip = todo ? <Chip className="bg-coral-soft text-coral-ink">等你{tone === "vote" ? "投票" : "填写"}</Chip>
+    : p.my_submitted ? <Chip className="bg-mint-soft text-mint-ink">你已{v}</Chip>
+    : collect && (closed || !p.accept_responses) ? <Chip className="bg-secondary text-muted-foreground">已截止</Chip>
+    : p.version > 1 ? <Chip className="bg-secondary text-muted-foreground">第 {p.version} 版</Chip>
+    : null;
+  const right = collect
+    ? p.closes_at ? (closed ? `${fmtDue(p.closes_at, new Date(now))} 已截止` : `${n} ${unit(p)}，${fmtDue(p.closes_at, new Date(now))} 截止`) : `${n} ${unit(p)}`
+    : null;
   return (
-    <article data-tone={tone} data-todo={todo || undefined}
-      className={cn("tile relative flex h-full flex-col gap-2 overflow-hidden rounded-[24px]", todo ? "bg-tone-f px-6 py-5.5" : "bg-tone-l px-5 py-4.5")}>
-      {head}
-      {titleLink}
-      {todo ? <TodoBody p={p} now={now} lazy={lazy} /> : <Body p={p} n={n} tone={tone} />}
-      {!todo && <div className="mt-auto flex min-w-0 items-center gap-1.5 truncate text-[12px] text-muted-foreground">{foot}</div>}
+    <article data-tone={tone} className="tile relative flex h-full flex-col sm:min-h-[208px] gap-2.5 rounded-[14px] border bg-card p-4 transition-colors has-[a:hover]:border-input">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <ToneIcon tone={tone} className="size-[34px] bg-tone-f text-tone [&_svg]:size-[18px]" />
+        <div className="min-w-0 text-[12px] leading-snug text-faint">
+          <b className="block truncate font-medium text-muted-foreground">{project ?? PAGE_TYPE_LABEL[p.page_type]}</b>
+          <span className="block truncate">{p.created_by.display_name} {p.version > 1 ? "更新" : "发布"}，{fmtRel(p.updated_at, new Date(now))}</span>
+        </div>
+        {chip}
+      </div>
+      <h3 className="text-[15px] leading-[1.4] font-semibold tracking-normal">
+        <Link to={`/pages/${p.id}`} data-vt={p.id} viewTransition
+          className="tile-title line-clamp-2 w-fit max-w-full outline-none after:absolute after:inset-0 after:rounded-[14px] focus-visible:after:ring-[3px] focus-visible:after:ring-ring/80">
+          {p.title}
+        </Link>
+      </h3>
+      <Preview p={p} n={n} tone={tone} lazy={lazy} />
+      <div className="mt-auto flex min-w-0 items-center gap-2 text-[12px] text-faint">
+        <span className="inline-flex min-w-0 items-center gap-1 truncate">
+          {p.generated_by ? <span title={`由 ${p.generated_by} 生成`} className="inline-flex min-w-0 items-center gap-1"><Sparkles className="size-3.5 shrink-0" /><span className="truncate">{p.generated_by}</span></span> : collect ? (closed ? "已结束" : `${p.created_by.display_name} 发起`) : `${p.created_by.display_name} 发布`}
+        </span>
+        {right && <span className="ml-auto shrink-0 tabular-nums">{right}</span>}
+      </div>
     </article>
   );
 }
 
-function Badge({ children, tinted }: { children: ReactNode; tinted?: boolean }) {
-  return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[12px] font-semibold whitespace-nowrap text-tone-ink", tinted ? "bg-tone-f" : "bg-card")}>
-      {children}
-    </span>
-  );
-}
-
-/** 大号数字 + 说明 */
-function Count({ big, unit, size = "md" }: { big: ReactNode; unit: ReactNode; size?: "md" | "lg" }) {
-  return (
-    <div className="flex min-w-0 items-baseline gap-1.5 tabular-nums">
-      <b className={cn("leading-none font-semibold tracking-[-0.02em]", size === "lg" ? "text-[46px] max-sm:text-[38px]" : "text-[30px]")}>{big}</b>
-      <span className="min-w-0 truncate text-[14px] text-muted-foreground">{unit}</span>
-    </div>
-  );
-}
-
-function Body({ p, n, tone }: { p: Page; n: number; tone: Tone }) {
-  if (p.category === "collect")
-    return p.eligible_count
-      ? <Count big={`${n}/${p.eligible_count}`} unit={`人已${verb(p)}`} />
-      : <Count big={n} unit={tone === "vote" ? "人已投" : "份提交"} />;
+/** 卡片内容预览：投票结果条 / 参与进度、报告关键数字、流程与架构缩略、摘要或目录 */
+function Preview({ p, n, tone, lazy }: { p: Page; n: number; tone: Tone; lazy: boolean }) {
+  const [x, setX] = useState<Extra | null>(null);
+  useEffect(() => {
+    if (!lazy) return;
+    let live = true;
+    loadExtra(p).then((e) => live && setX(e));
+    return () => void (live = false);
+  }, [lazy, p]);
+  if (p.category === "collect") {
+    if (x?.tally) {
+      const max = Math.max(1, ...x.tally.map((t) => t[1]));
+      return (
+        <div className="grid gap-[5px]" aria-label="当前结果">
+          {x.tally.map(([label, c], i) => (
+            <div key={label} className="grid grid-cols-[72px_1fr_28px] items-center gap-2 text-[12px] text-muted-foreground">
+              <span className="truncate">{label}</span>
+              <span className="h-2 overflow-hidden rounded-[4px] bg-muted">
+                <span className={cn("bar-grow block h-full rounded-[4px]", i ? "bg-primary/40" : "bg-primary")} style={{ width: `${(c / max) * 100}%` }} />
+              </span>
+              <span className="tabular-nums">{c}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    const total = p.eligible_count ?? 0;
+    return (
+      <div className="grid gap-2 text-[12px] text-muted-foreground">
+        <div className="flex justify-between gap-2 tabular-nums">
+          <span>{total ? `${n} / ${total} 人已${verb(p)}` : `${n} ${unit(p) === "票" ? "人已投" : "份提交"}`}</span>
+          {x?.questions.length ? <span className="truncate">{x.questions.length} 个问题</span> : null}
+        </div>
+        {total > 0 && (
+          <span className="h-2 overflow-hidden rounded-[4px] bg-muted">
+            <span className="bar-grow block h-full rounded-[4px] bg-primary" style={{ width: `${Math.min(1, n / total) * 100}%` }} />
+          </span>
+        )}
+      </div>
+    );
+  }
   if (tone === "flow" || tone === "arch") return (
     <>
       <Wireframe tone={tone} />
-      {p.summary && <p className="line-clamp-1 text-[13px] text-muted-foreground">{p.summary}</p>}
+      {p.summary && <p className="line-clamp-1 text-[12px] text-muted-foreground">{p.summary}</p>}
     </>
   );
   if (p.highlights?.length)
     return (
-      <div className="flex flex-wrap gap-x-7 gap-y-1 tabular-nums">
+      <div className="grid grid-cols-3 gap-2">
         {p.highlights.slice(0, 3).map((h, i) => (
-          <div key={i} className="min-w-0"><b className="text-[26px] font-semibold tracking-[-0.02em]">{h.value}</b> <span className="text-[13px] text-muted-foreground">{h.label}</span></div>
+          <div key={i} className="min-w-0 rounded-[10px] bg-background px-2.5 py-2">
+            <b className="block truncate text-[20px] leading-tight font-semibold tabular-nums">{h.value}</b>
+            <small className="block truncate text-[11px] text-faint">{h.label}</small>
+          </div>
         ))}
       </div>
     );
-  if (p.summary) return <p className="line-clamp-3 text-[13px] text-muted-foreground">{p.summary}</p>;
+  if (p.summary) {
+    const lines = p.summary.split(/\n+/).map((s) => s.trim()).filter(Boolean);
+    return lines.length > 1
+      ? <div className="grid gap-1 text-[12px] text-muted-foreground">{lines.slice(0, 3).map((l, i) => <span key={i} className="truncate">{l}</span>)}</div>
+      : <p className="line-clamp-3 text-[13px] text-muted-foreground">{p.summary}</p>;
+  }
   return null;
 }
 
 /** 流程图/架构图的通用示意线框（不解析真实图） */
 function Wireframe({ tone }: { tone: "flow" | "arch" }) {
   const g = { fill: "var(--tone-f)", stroke: "var(--tone)", strokeWidth: 1.4 };
+  const line = { fill: "none", stroke: "var(--input)", strokeWidth: 1.4 };
   return tone === "flow" ? (
-    <svg viewBox="0 0 220 40" aria-hidden="true" className="h-10 w-full max-w-[260px]">
-      <g {...g}><rect x="2" y="12" width="40" height="16" rx="8" /><rect x="62" y="12" width="40" height="16" rx="4" /><rect x="122" y="2" width="40" height="16" rx="4" /><rect x="122" y="22" width="40" height="16" rx="4" /><rect x="180" y="12" width="38" height="16" rx="8" fill="var(--tone)" /></g>
-      <path d="M42 20h20M102 20h10V10h10M112 20v10h10M162 10h8v10h10M162 30h8V20" fill="none" stroke="var(--tone)" strokeOpacity=".45" strokeWidth="1.4" />
+    <svg viewBox="0 0 260 64" aria-hidden="true" className="h-16 w-full">
+      <g {...g}><rect x="4" y="22" width="44" height="20" rx="5" /><rect x="74" y="6" width="44" height="20" rx="5" /><rect x="74" y="38" width="44" height="20" rx="5" /><rect x="144" y="22" width="44" height="20" rx="5" /><rect x="212" y="22" width="44" height="20" rx="10" fill="var(--tone)" /></g>
+      <path {...line} d="M48 32h12v-16h14M60 32v16h14M118 16h12v16h14M118 48h12V32M188 32h24" />
     </svg>
   ) : (
-    <svg viewBox="0 0 220 40" aria-hidden="true" className="h-10 w-full max-w-[260px]">
-      <g {...g} strokeWidth={1.3}><rect x="60" y="1" width="100" height="11" rx="4" /><rect x="4" y="15" width="66" height="11" rx="4" /><rect x="77" y="15" width="66" height="11" rx="4" /><rect x="150" y="15" width="66" height="11" rx="4" /><rect x="4" y="29" width="212" height="10" rx="4" fill="var(--card)" /></g>
+    <svg viewBox="0 0 260 64" aria-hidden="true" className="h-16 w-full">
+      <g {...g} strokeWidth={1.3}><rect x="70" y="2" width="120" height="16" rx="4" /><rect x="10" y="26" width="72" height="16" rx="4" /><rect x="94" y="26" width="72" height="16" rx="4" /><rect x="178" y="26" width="72" height="16" rx="4" /></g>
+      <rect x="10" y="48" width="240" height="14" rx="4" fill="var(--background)" stroke="var(--input)" strokeWidth="1.3" />
+      <path {...line} strokeWidth={1.3} d="M130 18v8M46 18v8h168v-8M46 42v6M130 42v6M214 42v6" />
     </svg>
   );
 }
 
-// ---------- 待办格（2×2）：倒计时或进度大字、迷你结果条 / 问题标签与已交头像、主按钮 ----------
+// ---------- 卡片补充数据：结果条（第一个选项字段的计数）与问题数 ----------
 type Extra = { labels: SpecLabels | null; tally: [string, number][] | null; names: string[]; questions: string[] };
 const extraCache = new Map<string, Promise<Extra>>();
 
@@ -345,63 +418,6 @@ function tallyFirst(labels: SpecLabels, rows: Response[]): [string, number][] | 
   }
   return [...counts].sort((a, b) => b[1] - a[1]).slice(0, 3);
 }
-function TodoBody({ p, now, lazy }: { p: Page; now: number; lazy: boolean }) {
-  const [x, setX] = useState<Extra | null>(null);
-  useEffect(() => {
-    if (!lazy) return;
-    let live = true;
-    loadExtra(p).then((e) => live && setX(e));
-    return () => void (live = false);
-  }, [lazy, p]);
-  const tone = toneOf(p.page_type, p.category);
-  const isVote = tone === "vote";
-  const n = p.respondent_count ?? p.response_count;
-  const left = p.closes_at ? fmtLeft(p.closes_at, now) : null;
-  const max = x?.tally ? Math.max(1, ...x.tally.map((t) => t[1])) : 1;
-  return (
-    <>
-      {left ? (
-        <Count size="lg" big={<Roll text={left} />} unit={`后截止，已有 ${n} ${isVote ? "票" : "份"}`} />
-      ) : p.eligible_count ? (
-        <Count size="lg" big={`${n}/${p.eligible_count}`} unit={`人已${verb(p)}，还差你`} />
-      ) : (
-        <Count size="lg" big={n} unit={`${isVote ? "票" : "份"}已提交，还差你`} />
-      )}
-      {x?.tally ? (
-        <div className="mt-1 grid gap-1.5" aria-label="当前结果">
-          {x.tally.map(([label, c], i) => (
-            <div key={label} className="grid grid-cols-[minmax(0,6rem)_1fr_2rem] items-center gap-2 text-[13px]">
-              <span className="truncate">{label}</span>
-              <span className="h-2.5 overflow-hidden rounded-full bg-card/75">
-                <span className="bar-grow block h-full rounded-full bg-tone" style={{ width: `${(c / max) * 100}%`, opacity: i ? 0.55 : 1 }} />
-              </span>
-              <span className="text-right tabular-nums">{c}</span>
-            </div>
-          ))}
-        </div>
-      ) : x?.questions.length ? (
-        <div className="mt-1 flex flex-wrap gap-1.5">
-          {x.questions.map((q) => <span key={q} className="max-w-full truncate rounded-full bg-card/80 px-2.5 py-0.5 text-[12px] text-muted-foreground">{q}</span>)}
-        </div>
-      ) : null}
-      {x && x.names.length > 0 && !x.tally && (
-        <div className="flex -space-x-1.5">
-          {x.names.map((nm) => <Initial key={nm} name={nm} />)}
-          <span className="grid size-7 place-items-center rounded-full border-[1.5px] border-dashed border-tone bg-card text-[12px] text-muted-foreground">你</span>
-        </div>
-      )}
-      <div className="mt-auto flex min-w-0 items-center gap-3">
-        <Link to={`/pages/${p.id}`} className="relative z-10 inline-flex h-10 shrink-0 items-center rounded-full bg-primary px-5 text-[14px] font-semibold text-primary-foreground outline-none transition-[filter] hover:brightness-[1.06] focus-visible:ring-[3px] focus-visible:ring-ring/80">
-          {isVote ? "去投票" : "去填写"}
-        </Link>
-        <span className="min-w-0 truncate text-[13px] text-muted-foreground">
-          {p.created_by.display_name} 发起{p.generated_by ? `，${p.generated_by} 生成` : ""}
-        </span>
-      </div>
-    </>
-  );
-}
-
 /** 倒计时数字变化时轻微滚动（旧值上移淡出、新值自下滚入） */
 function Roll({ text }: { text: string }) {
   return (
@@ -414,7 +430,84 @@ function Roll({ text }: { text: string }) {
   );
 }
 
-// ---------- 正在发生 ----------
+
+// ---------- 等我处理面板 ----------
+function TodoPanel({ todos, now, proj }: { todos: Page[]; now: number; proj?: (id: string) => string | undefined }) {
+  return (
+    <section aria-label="等我处理" className={cn("order-2 rounded-[18px] bg-primary p-[18px] text-primary-foreground", !todos.length && "max-xl:hidden")}>
+      <h2 className="flex items-center gap-2 text-[16px] font-semibold tracking-normal">
+        等我处理<span className="rounded-full bg-card px-2 text-[12px] leading-5 text-primary tabular-nums">{todos.length}</span>
+      </h2>
+      <p className="text-[13px] opacity-85">{todos.length ? "按截止时间排序，处理完自动移出" : "都处理完了，暂时没有要你做的事"}</p>
+      <AnimatePresence initial={false}>
+        {todos.map((p) => (
+          <motion.div key={p.id} layout initial={REDUCED ? false : { opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0, x: 0 }}
+            exit={{ opacity: 0, x: 40, transition: { duration: 0.25 } }} transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}>
+            <TodoCard p={p} now={now} project={proj?.(p.project_id)} />
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </section>
+  );
+}
+
+function TodoCard({ p, now, project }: { p: Page; now: number; project?: string }) {
+  const tone = toneOf(p.page_type, p.category);
+  const n = p.respondent_count ?? p.response_count;
+  const end = p.closes_at ? new Date(p.closes_at).getTime() : null;
+  const left = p.closes_at ? fmtLeft(p.closes_at, now) : null;
+  const urgent = end !== null && end - now < 2 * 864e5;
+  const rest = p.eligible_count ? Math.max(0, p.eligible_count - n) : null;
+  const meta = [project, n ? `已有 ${n} ${unit(p)}` : `还没人${verb(p)}`, rest ? `还差 ${rest} 人` : null].filter(Boolean).join("，");
+  return (
+    <article data-todo data-tone={tone} className="relative mt-2.5 rounded-[13px] bg-card p-3.5 text-card-foreground">
+      <div className="flex items-start gap-3">
+        <Ring p={p} now={now} urgent={urgent} n={n} />
+        <div className="min-w-0">
+          <h3 className="text-[14px] leading-[1.4] font-semibold tracking-normal">
+            <Link to={`/pages/${p.id}`} className="line-clamp-2 outline-none hover:underline hover:underline-offset-4 focus-visible:ring-[3px] focus-visible:ring-ring/80">{p.title}</Link>
+          </h3>
+          <small className="block truncate text-[12px] text-faint">{meta}</small>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-2.5">
+        <span className={cn("min-w-0 text-[12px]", urgent ? "font-medium text-coral-ink" : "text-muted-foreground")}>
+          {p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left && urgent ? `，还剩 ${left}` : ""}` : "不限截止时间"}
+        </span>
+        <Link to={`/pages/${p.id}`} className="inline-flex h-[34px] shrink-0 items-center rounded-[10px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground outline-none transition-[filter] hover:brightness-[1.08] focus-visible:ring-[3px] focus-visible:ring-ring/80">
+          {tone === "vote" ? "去投票" : "去填写"}
+        </Link>
+      </div>
+    </article>
+  );
+}
+
+/** 倒计时圈：有截止时按剩余时间占比（发布到截止）走，中间等宽大数字（天 / 时 / 分）；没有截止时按参与比例，中间是已交人数 */
+function Ring({ p, now, urgent, n }: { p: Page; now: number; urgent: boolean; n: number }) {
+  const C = 2 * Math.PI * 19;
+  let frac = 0, label: string;
+  if (p.closes_at) {
+    const end = new Date(p.closes_at).getTime(), start = new Date(p.created_at).getTime();
+    frac = Math.max(0, Math.min(1, (end - now) / Math.max(1, end - start)));
+    const m = Math.max(0, Math.floor((end - now) / 60000));
+    label = m >= 1440 ? `${Math.floor(m / 1440)}天` : m >= 60 ? `${Math.floor(m / 60)}时` : `${Math.max(1, m)}分`;
+  } else {
+    frac = p.eligible_count ? Math.min(1, n / p.eligible_count) : 0;
+    label = p.eligible_count ? `${n}/${p.eligible_count}` : String(n);
+  }
+  return (
+    <span className="relative size-[46px] shrink-0" aria-hidden="true">
+      <svg width="46" height="46" className="-rotate-90">
+        <circle cx="23" cy="23" r="19" fill="none" strokeWidth="5" className="stroke-primary-soft" />
+        <circle cx="23" cy="23" r="19" fill="none" strokeWidth="5" strokeLinecap="round" className={cn("transition-[stroke-dashoffset] duration-500", urgent ? "stroke-coral" : "stroke-primary")}
+          strokeDasharray={C} strokeDashoffset={C * (1 - frac)} />
+      </svg>
+      <b className="absolute inset-0 grid place-items-center font-mono text-[11px] leading-none font-semibold tabular-nums"><Roll text={label} /></b>
+    </span>
+  );
+}
+
+// ---------- 实时动态 ----------
 const ACT_VERB: Record<Activity["type"], string> = { published: "发布了", updated: "更新了", submitted: "提交了" };
 
 function useActivity(projectId?: string) {
@@ -449,68 +542,43 @@ function ago(iso: string, now: number) {
   return fmtRel(iso, new Date(now));
 }
 
-function ActivityRail({ projectId, items: pages }: { projectId?: string; items: Page[] }) {
+
+/** 实时动态：发布、更新、提交事件，30 秒轮询，新事件从顶部滑入 */
+function ActivityFeed({ projectId }: { projectId?: string }) {
   const { items, off } = useActivity(projectId);
   const now = useNow();
-  const stats = useMemo(() => weekStats(pages, now), [pages, now]);
   if (off) return null;
   return (
-    <aside aria-label="正在发生" className="w-full shrink-0 xl:w-[316px]">
-      <h2 className="mb-3.5 flex items-center gap-2 text-[16px] font-semibold">
-        <i aria-hidden="true" className="size-2 rounded-full bg-live ring-4 ring-live-ring" />正在发生
+    <aside aria-label="实时动态" className="order-4 min-w-0 rounded-[16px] border bg-card px-[18px] py-4 xl:flex-1">
+      <h2 className="mb-2.5 flex items-center gap-2 text-[15px] font-semibold tracking-normal">
+        <i aria-hidden="true" className="size-2 rounded-full bg-live ring-4 ring-live-ring" />实时动态
       </h2>
       {items === null ? (
         <div className="grid gap-3" role="status" aria-label="加载中">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-9" />)}</div>
       ) : items.length === 0 ? (
         <p className="text-[13px] text-muted-foreground">还没有动态。</p>
       ) : (
-        <ol className="activity relative pl-[22px] before:absolute before:top-1.5 before:bottom-1.5 before:left-1.5 before:w-0.5 before:rounded-full before:bg-border max-xl:grid max-xl:grid-cols-[repeat(auto-fill,minmax(260px,1fr))] max-xl:gap-x-6">
+        <ol className="activity">
           <AnimatePresence initial={false}>
-            {items.slice(0, 12).map((a) => {
-              const tone = toneOf(a.page.page_type, a.type === "submitted" ? "collect" : undefined);
-              return (
-                <motion.li key={`${a.type}:${a.page.id}:${a.at}`} layout initial={{ opacity: 0, y: -14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                  transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                  data-tone={tone} className="relative mb-4 text-[13px] text-muted-foreground">
-                  <i aria-hidden="true" className="absolute top-[5px] -left-[21px] size-3 rounded-full border-[3px] border-background bg-tone" />
+            {items.slice(0, 12).map((a) => (
+              <motion.li key={`${a.type}:${a.page.id}:${a.at}`} layout initial={{ opacity: 0, y: -14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                className="flex gap-2.5 border-t py-[9px] text-[13px] text-muted-foreground first:border-t-0">
+                <Initial name={a.actor?.name ?? "?"} className="ring-0" />
+                <div className="min-w-0 [overflow-wrap:anywhere]">
                   <b className="font-semibold text-foreground">{a.actor?.name ?? "有人"}</b>{" "}
                   {a.type === "updated" ? "把 " : `${a.type === "submitted" && a.page.page_type === "vote" ? "投了" : ACT_VERB[a.type]} `}
                   <Link to={`/pages/${a.page.id}`} className="text-foreground underline-offset-4 hover:underline">{a.page.title}</Link>
                   {a.type === "updated" && ` 更新到第 ${a.version} 版`}
-                  <time dateTime={a.at} className="block text-[12px]">{ago(a.at, now)}</time>
-                </motion.li>
-              );
-            })}
+                  <time dateTime={a.at} className="block text-[12px] text-faint">{ago(a.at, now)}</time>
+                </div>
+              </motion.li>
+            ))}
           </AnimatePresence>
         </ol>
       )}
-      <h2 className="mt-6 mb-3 text-[16px] font-semibold">本周</h2>
-      <div className="grid grid-cols-2 gap-2.5">
-        {stats.map(([v, l]) => (
-          <div key={l} className="rounded-[18px] bg-muted px-3.5 py-3">
-            <b className="block text-[26px] leading-tight font-semibold tabular-nums">{v}</b>
-            <small className="text-[12px] text-muted-foreground">{l}</small>
-          </div>
-        ))}
-      </div>
     </aside>
   );
-}
-
-/** 「本周」四格：按已加载的页面统计（本周一起） */
-function weekStats(pages: Page[], now: number): [string, string][] {
-  const d = new Date(now);
-  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7)).getTime();
-  const week = pages.filter((p) => new Date(p.created_at).getTime() >= monday);
-  const collect = pages.filter((p) => p.category === "collect" && p.eligible_count);
-  const elig = collect.reduce((t, p) => t + (p.eligible_count ?? 0), 0);
-  const resp = collect.reduce((t, p) => t + Math.min(p.respondent_count ?? 0, p.eligible_count ?? 0), 0);
-  return [
-    [String(week.length), "新页面"],
-    [String(pages.reduce((t, p) => t + p.response_count, 0)), "收到回答"],
-    [String(week.filter((p) => p.generated_by).length), "AI 生成"],
-    [elig ? `${Math.round((resp / elig) * 100)}%` : "—", "参与率"],
-  ];
 }
 
 /** 格子墙缓存里找页面（详情页拿可见性等字段，省一次请求） */
@@ -519,6 +587,13 @@ export function cachedPage(id: string): Page | undefined {
     const p = v.items.find((x) => x.id === id);
     if (p) return p;
   }
+}
+
+/** 同项目的其他页面（详情页「相关页面」）：只从格子墙缓存里取，最近更新的前 3 个；没缓存时为空 */
+export function relatedPages(projectId: string, exclude: string): Page[] {
+  const seen = new Map<string, Page>();
+  for (const v of cache.values()) for (const p of v.items) if (p.project_id === projectId && p.id !== exclude) seen.set(p.id, p);
+  return [...seen.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 3);
 }
 
 /** 页面设置保存后（或提交后）丢掉缓存里的旧副本（下次进入格子墙会刷新） */

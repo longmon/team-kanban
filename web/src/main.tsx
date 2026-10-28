@@ -1,11 +1,11 @@
 import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import "@fontsource-variable/outfit";
+import "@fontsource-variable/onest";
 import { AnimateUIProvider } from "@animate-ui/react/provider";
 import { MotionConfig } from "motion/react";
 import "./index.css";
 import { Link, match, navigate, useLocation } from "./router";
-import { Header } from "./shell";
+import { Shell } from "./shell";
 import { Loading, Page, REDUCED, SessionProvider, useSession, useTheme } from "./ui";
 import { Toaster } from "@/components/ui/sonner";
 import { ForgotPassword, Login, Register, ResetPassword, VerifyEmail } from "./pages/auth";
@@ -62,14 +62,12 @@ function App() {
   }
   return (
     <>
-      <Header />
-      {me && !me.user.email_verified && (
+      <Shell banner={me && !me.user.email_verified && (
         <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 border-b bg-warning/10 px-4 py-2 text-[13px]">
           <span>邮箱尚未验证，请查收验证邮件。</span>
           <Link to="/settings/account" className="font-medium underline underline-offset-4">重发验证邮件</Link>
         </div>
-      )}
-      <main className="mx-auto w-full max-w-[2200px] px-4 pt-6 pb-16 sm:px-6 xl:px-10 xl:pt-[26px]">{body}</main>
+      )}>{body}</Shell>
       <Toaster theme={mode} position="bottom-center" toastOptions={{ classNames: { toast: "toast" } }} />
     </>
   );

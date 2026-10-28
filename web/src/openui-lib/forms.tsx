@@ -137,9 +137,9 @@ export const TextArea = defineComponent({
 const FIELD_W = "max-w-3xl";
 
 /**
- * 票卡（单选 RadioGroup / 多选 CheckBoxGroup 共用）：≤ 4 项横排大票卡（字母大字、名称、说明），> 4 项自动换成竖排大行。
- * 选中 = 3px 主色描边 + 白底；已提交锁定后选中项加「你投的」标签、其余置灰（data-dim）；
- * 已提交或截止且有结果数据时，票卡底部（竖排为左侧）按得票比例涨出填充并显示票数、百分比、领先。
+ * 票卡（单选 RadioGroup / 多选 CheckBoxGroup 共用）：竖排选项行（字母方块、名称、说明）。
+ * 选中 = 2px 主色描边 + 主色浅底、字母方块实色；已提交锁定后选中项加「你投的」标签、其余置灰（data-dim）；
+ * 已提交或截止且有结果数据时，选项行从左侧按得票比例涨出填充并显示票数、百分比、领先。
  * 结果首次出现（刚提交）时整组沿 Y 轴翻面 500ms 露出结果；减少动态时直接切换。
  */
 function Tickets({ field, items, isOn, control, locked, multi }: {
@@ -153,10 +153,10 @@ function Tickets({ field, items, isOn, control, locked, multi }: {
   const show = useFlip(!!t);
   const [scope] = show;
   const res = show[1] ? t : null;
-  const rows = items.length > 4;
+  const rows = true;
   const max = res ? Math.max(0, ...Object.values(res.counts)) : 0;
   return (
-    <div ref={scope} className={cn("tickets grid min-w-0 gap-3.5", rows ? "grid-cols-1" : "grid-cols-[repeat(auto-fit,minmax(min(100%,200px),1fr))]")}
+    <div ref={scope} className={cn("tickets grid min-w-0 gap-2.5", rows ? "grid-cols-1" : "grid-cols-[repeat(auto-fit,minmax(min(100%,200px),1fr))]")}
 >
       {items.map((it, i) => {
         const id = `${uid}-${i}`;
@@ -171,17 +171,17 @@ function Tickets({ field, items, isOn, control, locked, multi }: {
         return (
           <label key={i} htmlFor={id} data-on={on || undefined} data-dim={dim || undefined} data-ticket=""
             className={cn(
-              "ticket relative isolate flex cursor-pointer overflow-hidden rounded-[24px] border-[3px] border-transparent bg-muted transition-[background-color,border-color,opacity,scale] has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/80 active:scale-[.99]",
-              rows ? "min-h-[72px] items-center gap-4 rounded-[18px] px-5 py-3" : "min-h-[220px] flex-col px-5 py-4.5 max-sm:min-h-[150px]",
-              on ? "border-primary bg-card" : "hover:bg-accent",
-              dim && "opacity-70",
+              "ticket relative isolate flex cursor-pointer overflow-hidden rounded-[14px] bg-card transition-[background-color,border-color,opacity,scale] has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/80 active:scale-[.99]",
+              rows ? "min-h-[68px] items-center gap-4 px-4 py-3" : "min-h-[220px] flex-col px-5 py-4.5 max-sm:min-h-[150px]",
+              on ? "border-2 border-primary bg-primary-soft" : "border-[1.5px] border-border hover:border-input",
+              dim && "opacity-50",
             )}>
             {res && (
-              <span aria-hidden="true" className={cn("ticket-fill absolute -z-10", rows ? "inset-y-0 left-0 origin-left" : "inset-x-0 bottom-0 origin-bottom", on ? "bg-primary-soft" : "bg-foreground/[0.06]")}
+              <span aria-hidden="true" className={cn("ticket-fill absolute -z-10", rows ? "inset-y-0 left-0 origin-left" : "inset-x-0 bottom-0 origin-bottom", on ? "bg-primary/10" : "bg-foreground/[0.05]")}
                 style={rows ? { width: `${pct}%` } : { height: `${pct}%` }} />
             )}
             {control(it, i, id, label)}
-            <span className={cn("leading-none font-semibold tabular-nums", rows ? "w-8 text-[28px]" : "text-[56px] max-sm:text-[40px]", on ? "text-primary" : "text-muted-foreground")}>{letter}</span>
+            <span className={cn("grid size-10 shrink-0 place-items-center rounded-[11px] text-[16px] leading-none font-bold tabular-nums", on ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground")}>{letter}</span>
             <span className={cn("grid min-w-0 gap-0.5", rows ? "flex-1" : "mt-2.5")}>
               <span className={cn("leading-snug font-semibold [overflow-wrap:anywhere]", rows ? "text-[15px]" : "text-[18px]")}>{name}</span>
               {!!it.description && <span className="text-[13px] text-muted-foreground">{String(it.description)}</span>}
@@ -193,7 +193,7 @@ function Tickets({ field, items, isOn, control, locked, multi }: {
               </span>
             )}
             {on && locked && (
-              <span className={cn("inline-flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-[12px] font-semibold whitespace-nowrap text-primary-foreground", rows ? "shrink-0" : "absolute top-4 right-4")}>
+              <span className={cn("inline-flex items-center gap-[5px] rounded-full bg-primary px-2.5 py-[3px] text-[12px] font-semibold whitespace-nowrap text-primary-foreground", rows ? "shrink-0" : "absolute top-4 right-4")}>
                 <Check className="size-3.5" strokeWidth={3} />{multi ? "你选的" : "你投的"}
               </span>
             )}

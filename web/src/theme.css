@@ -1,15 +1,15 @@
 /*
  * 主题 token（shadcn CSS 变量方案）。整套配色只在这里定义：换配色方向时只替换本文件的变量值。
- * 当前为方向 B「糖纸格」：白底 + 李子墨字 + 葡萄紫主操作色；六种页面类型各有一对「浅底 / 强调」糖纸色，是界面里唯一的大胆。
- * 格子 24px、题头 28px 大圆角，按钮全胶囊；零阴影（只有浮层一档柔影），白底容器 1px 描边。
+ * 当前为方向 A「长春花工作台」：雾白画布 + 白卡 + 夜墨字 + 长春花蓝主色；唯一的大胆是右栏那块实色「等我处理」面板。
+ * 圆角：卡片 14、面板 18、按钮与小块 10、胶囊 999；卡片只用 1px 描边无阴影，只有浮层一档柔影。
  * 规范与对比度核对见 docs/design-system.md，改色值后要按那里的表重新核对。
  */
 :root {
-  /* 圆角：rounded-lg = 14px（输入框、弹层、白底容器），rounded-md = 12px（菜单项），rounded-sm = 10px；格子 rounded-[24px]、题头 rounded-[28px]、按钮/胶囊 rounded-full */
-  --radius: 14px;
-  /* 拉丁与数字：自托管 Outfit（main.tsx 引入 @fontsource-variable/outfit）；中文走系统栈（不加载中文网络字体） */
+  /* 圆角：rounded-lg = 10px（按钮、输入框、小块），rounded-md = 8px，rounded-sm = 6px；卡片 rounded-[14px]、面板 rounded-[18px]、胶囊 rounded-full */
+  --radius: 10px;
+  /* 拉丁与数字：自托管 Onest（main.tsx 引入 @fontsource-variable/onest，自带等宽数字）；中文走系统栈（不加载中文网络字体） */
   --font-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
-  --font-body: "Outfit Variable", "Outfit", ui-sans-serif, system-ui, -apple-system, "Segoe UI", var(--font-cjk);
+  --font-body: "Onest Variable", "Onest", ui-sans-serif, system-ui, -apple-system, "Segoe UI", var(--font-cjk);
   --font-heading: var(--font-body);
 
   /* 动效：时长 150–500ms，缓动统一；prefers-reduced-motion 时由 index.css 关闭 */
@@ -25,101 +25,114 @@
   /* 轻弹簧（过冲约 5%），只用于按钮松开回弹 */
   --ease-spring: linear(0, 0.22 6%, 0.56 14%, 0.86 24%, 1.03 34%, 1.055 42%, 1.04 52%, 1.012 64%, 0.996 78%, 1);
 
-  --background: #ffffff;
-  --foreground: #241f2e;
+  --background: #f6f7fb;
+  --foreground: #161a33;
   --card: #ffffff;
-  --card-foreground: #241f2e;
+  --card-foreground: #161a33;
   --popover: #ffffff;
-  --popover-foreground: #241f2e;
-  --primary: #6c4cf5;
+  --popover-foreground: #161a33;
+  --primary: #5468ff;
   --primary-foreground: #ffffff;
-  /* 主色浅底：我投的票卡填充、「你的回答」底、锁定提示图标底 */
-  --primary-soft: #efebff;
-  --secondary: #f7f6f9;
-  --secondary-foreground: #241f2e;
-  --muted: #f7f6f9;
-  --muted-foreground: #6b6577;
-  --accent: #f1eff5;
-  --accent-foreground: #241f2e;
-  --destructive: #c2381f;
-  --border: #eeebf2;
-  --input: #dcd8e3;
-  --ring: #6c4cf5;
-  /* 「当前选中 / 提示」浅底（历史版本提示条、待参与计数），上面的字一律李子墨 */
-  --highlight: #efebff;
-  --highlight-foreground: #241f2e;
-  --coral: #f07a22;
-  /* 实时点（正在发生、实时进度） */
-  --live: #22c55e;
-  --live-ring: #dcfce7;
+  /* 主色浅底：我投的票卡、选中导航、当前版本 */
+  --primary-soft: #eef0ff;
+  --secondary: #f1f2f7;
+  --secondary-foreground: #161a33;
+  /* 分段控件底、进度条轨道 */
+  --muted: #eceef5;
+  --muted-foreground: #5a6078;
+  /* 三级文字（时间、计数、说明）：比设计稿 #8B90A7 略深，白底 ≥ 4:1 */
+  --faint: #7a7f98;
+  --accent: #f1f2f7;
+  --accent-foreground: #161a33;
+  --destructive: #d93a26;
+  --border: #e4e7f0;
+  --input: #d5d9e6;
+  --ring: #5468ff;
+  --highlight: #eef0ff;
+  --highlight-foreground: #161a33;
+  /* 珊瑚：截止、提醒、等你处理；薄荷：已完成、实时、锁定提示 */
+  --coral: #ff6b57;
+  --coral-soft: #fff0ec;
+  --coral-ink: #c8402e;
+  --mint: #17b297;
+  --mint-soft: #e3f6f1;
+  --mint-ink: #0c6b5a;
+  --live: #17b297;
+  --live-ring: #e3f6f1;
 
-  /* 页面类型糖纸色：-f 饱和浅底（待办格、题头色带）、-l 更浅底（其他格子）、强调色（图标、条、描边）、-ink 作文字用（在 -f 与白底上都 ≥ 4.5:1） */
-  --t-vote: #f07a22;   --t-vote-f: #ffe7d3;   --t-vote-l: #fff6ef;   --t-vote-ink: #9e5627;
-  --t-form: #e14c78;   --t-form-f: #ffe1ea;   --t-form-l: #fff4f7;   --t-form-ink: #ae4064;
-  --t-report: #2a8be0; --t-report-f: #dcefff; --t-report-l: #f2f8ff; --t-report-ink: #286cac;
-  --t-flow: #4a63e6;   --t-flow-f: #e3e8ff;   --t-flow-l: #f4f6ff;   --t-flow-ink: #465cd4;
-  --t-arch: #159c88;   --t-arch-f: #d8f4ee;   --t-arch-l: #f0faf8;   --t-arch-ink: #1a776d;
-  --t-book: #4e9a28;   --t-book-f: #e4f5d7;   --t-book-l: #f5fbf0;   --t-book-ink: #42782a;
+  /* 页面类型色：强调色（图标、条、描边）、-f 浅底（图标方块、缩略图）、-l 同 -f、-ink 作文字用 */
+  --t-vote: #5468ff;   --t-vote-f: #eef0ff;   --t-vote-l: #eef0ff;   --t-vote-ink: #4352d6;
+  --t-form: #ff6b57;   --t-form-f: #fff0ec;   --t-form-l: #fff0ec;   --t-form-ink: #c8402e;
+  --t-report: #17b297; --t-report-f: #e3f6f1; --t-report-l: #e3f6f1; --t-report-ink: #0c7f6b;
+  --t-flow: #f08c1a;   --t-flow-f: #fff3e3;   --t-flow-l: #fff3e3;   --t-flow-ink: #a85c0a;
+  --t-arch: #8e63f2;   --t-arch-f: #f2ecff;   --t-arch-l: #f2ecff;   --t-arch-ink: #6c45cf;
+  --t-book: #1e9be0;   --t-book-f: #e5f4fd;   --t-book-l: #e5f4fd;   --t-book-ink: #1672a6;
 
-  /* 图表 5 色：首色为主色，其余在 OKLCH 里按 protan/deutan/tritan 色弱模拟（Machado 2009）搜索，两两 OKLab ΔE ≥ 8.4，与卡片对比 ≥ 3:1 */
-  --chart-1: #6c4cf5;
+  /* 图表 5 色：首色为主色 */
+  --chart-1: #5468ff;
   --chart-2: #da6c1e;
   --chart-3: #1e907f;
   --chart-4: #0f92f7;
   --chart-5: #c83846;
   /* 语义状态色（Callout / Tag / 涨跌），作文字用时在卡片与 12–15% 浅底上都 ≥ 4.5:1 */
-  --success: #276d35;
+  --success: #0c7f6b;
   --warning: #a5481c;
   --info: #2f63a6;
 
   /* 零阴影：卡片用 1px 线（--shadow-card 保留变量名供 OpenUI 组件，值为 1px 线）；只有浮层一档柔影 */
   --shadow-card: 0 0 0 1px var(--border);
   --shadow-card-hover: 0 0 0 1px var(--input);
-  --shadow-pop: 0 16px 40px -16px rgb(36 31 46 / 0.28), 0 2px 8px -2px rgb(36 31 46 / 0.08);
+  --shadow-pop: 0 8px 24px rgb(22 26 51 / 0.10), 0 1px 3px rgb(22 26 51 / 0.06);
   --shadow-primary: none;
   --shadow-primary-press: none;
 }
 
 .dark {
-  --background: #17141d;
-  --foreground: #edeaf2;
-  --card: #1e1a26;
-  --card-foreground: #edeaf2;
-  --popover: #221e2b;
-  --popover-foreground: #edeaf2;
-  --primary: #9c86ff;
-  --primary-foreground: #17141d;
-  --primary-soft: #2c2547;
-  --secondary: #26212f;
-  --secondary-foreground: #edeaf2;
-  --muted: #26212f;
-  --muted-foreground: #a9a3b5;
-  --accent: #2a2534;
-  --accent-foreground: #edeaf2;
-  --destructive: #ff8a6e;
+  --background: #12142a;
+  --foreground: #e8eaf6;
+  --card: #1a1d38;
+  --card-foreground: #e8eaf6;
+  --popover: #1f2342;
+  --popover-foreground: #e8eaf6;
+  --primary: #8b9bff;
+  --primary-foreground: #12142a;
+  --primary-soft: #262c5c;
+  --secondary: #23274a;
+  --secondary-foreground: #e8eaf6;
+  --muted: #23274a;
+  --muted-foreground: #a7acc7;
+  --faint: #8a90b0;
+  --accent: #262a4e;
+  --accent-foreground: #e8eaf6;
+  --destructive: #ff8a7a;
   --border: rgb(255 255 255 / 0.09);
   --input: rgb(255 255 255 / 0.16);
-  --ring: #9c86ff;
-  --highlight: #2c2547;
-  --highlight-foreground: #edeaf2;
-  --coral: #f59a52;
-  --live: #4ade80;
-  --live-ring: rgb(74 222 128 / 0.2);
+  --ring: #8b9bff;
+  --highlight: #262c5c;
+  --highlight-foreground: #e8eaf6;
+  --coral: #ff8a7a;
+  --coral-soft: #3a2232;
+  --coral-ink: #ff9d8f;
+  --mint: #3cc9ad;
+  --mint-soft: #15343a;
+  --mint-ink: #6fdcc6;
+  --live: #3cc9ad;
+  --live-ring: rgb(60 201 173 / 0.2);
 
-  /* 暗色：类型色按 18%（-f）/ 10%（-l）透明度叠在暗底上；文字色提亮到 ≥ 4.5:1 */
-  --t-vote-f: #3e261e;   --t-vote-l: #2d1e1e;   --t-vote-ink: #f59a52;
-  --t-form-f: #3b1e2d;   --t-form-l: #2b1a26;   --t-form-ink: #ef7fa0;
-  --t-report-f: #1a2940; --t-report-l: #192031; --t-report-ink: #6aaeec;
-  --t-flow-f: #202241;   --t-flow-l: #1c1c31;   --t-flow-ink: #8d9cf0;
-  --t-arch-f: #172c30;   --t-arch-l: #172228;   --t-arch-ink: #3cc2ad;
-  --t-book-f: #212c1f;   --t-book-l: #1d211e;   --t-book-ink: #7cc055;
+  /* 暗色：类型色按约 18% 叠在暗底上作浅底；强调色与文字色提亮到 ≥ 4.5:1 */
+  --t-vote: #8b9bff;   --t-vote-f: #262c5c;   --t-vote-l: #262c5c;   --t-vote-ink: #a5b1ff;
+  --t-form: #ff8a7a;   --t-form-f: #3a2232;   --t-form-l: #3a2232;   --t-form-ink: #ff9d8f;
+  --t-report: #3cc9ad; --t-report-f: #15343a; --t-report-l: #15343a; --t-report-ink: #6fdcc6;
+  --t-flow: #f5a54a;   --t-flow-f: #3a2c25;   --t-flow-l: #3a2c25;   --t-flow-ink: #f7b366;
+  --t-arch: #ab8cff;   --t-arch-f: #2d2557;   --t-arch-l: #2d2557;   --t-arch-ink: #bea6ff;
+  --t-book: #5bb8f0;   --t-book-f: #17304a;   --t-book-l: #17304a;   --t-book-ink: #7cc8f5;
 
-  --chart-1: #9c86ff;
+  --chart-1: #8b9bff;
   --chart-2: #f59d4f;
   --chart-3: #2ac3bb;
   --chart-4: #5197c6;
   --chart-5: #e07084;
-  --success: #6fcf8a;
+  --success: #6fdcc6;
   --warning: #f2b266;
   --info: #84b4f0;
 
