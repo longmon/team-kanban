@@ -99,6 +99,7 @@ function usePlace() {
   } else if (path === "/settings/tokens") segs = ["设置", "访问令牌"];
   else if (path === "/settings/account") segs = ["设置", "账号与外观"];
   else if (path === "/orgs") segs = ["组织"];
+  else if (path.startsWith("/admin")) segs = ["系统管理"];
   else segs = [on];
   const s = segs.filter(Boolean) as string[];
   return { org, list, cur, path, view, segs: s, up };
@@ -188,6 +189,7 @@ function MenuBar({ onSearch }: { onSearch: () => void }) {
         <DropdownMenuItem onSelect={() => navigate("/settings/tokens")}>新建令牌…</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => navigate("/orgs")}>组织…</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => navigate("/settings/account")}>账号设置</DropdownMenuItem>
+        {me?.user.is_superadmin && <DropdownMenuItem onSelect={() => navigate("/admin")}>系统管理</DropdownMenuItem>}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={act.logout}>注销 {me?.user.display_name}…</DropdownMenuItem>
       </Menu>
@@ -245,6 +247,7 @@ function StartMenu({ close, onSearch }: { close: () => void; onSearch: () => voi
         <Item icon="gear" onClick={go("/settings/account")}>设置</Item>
         <Item icon="key" onClick={go("/settings/tokens")}>访问令牌</Item>
         <Item icon="org" onClick={go("/orgs")}>组织</Item>
+        {me?.user.is_superadmin && <Item icon="gear" onClick={go("/admin")}>系统管理</Item>}
         <Item icon="props" onClick={() => (close(), act.toggleSkin())}>切换到默认主题</Item>
         <li className="hr" />
         <Item icon="shut" onClick={() => (close(), act.logout())}>注销 {me?.user.display_name}…</Item>

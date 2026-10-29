@@ -889,6 +889,18 @@ await step("superadmin-create-assign-disable", async () => {
     await org.getByText("评审组").waitFor();
     await p.waitForTimeout(400);
     await p.screenshot({ path: `${OUT}/admin-user-detail.png`, fullPage: true });
+    // 经典主题（Win98）下详情页与列表也能正常显示：切皮肤截图后切回
+    const detailUrl = p.url();
+    await p.evaluate(() => localStorage.setItem("tk-skin", "classic"));
+    await p.reload();
+    await p.getByRole("region", { name: "组织 演示组织" }).getByText("评审组").waitFor();
+    await p.screenshot({ path: `${OUT}/admin-user-detail-classic.png`, fullPage: true });
+    await p.goto(BASE + "/admin");
+    await p.locator("tr", { hasText: "ada@example.com" }).waitFor();
+    await p.screenshot({ path: `${OUT}/admin-users-classic.png`, fullPage: true });
+    await p.evaluate(() => localStorage.removeItem("tk-skin"));
+    await p.goto(detailUrl);
+    await p.getByRole("region", { name: "组织 演示组织" }).waitFor();
     p.once("dialog", (d) => d.accept());
     await p.getByRole("button", { name: "禁用账号" }).click();
     await p.getByText("已禁用", { exact: true }).first().waitFor();
