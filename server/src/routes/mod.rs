@@ -1,4 +1,5 @@
 mod account;
+mod admin;
 mod groups;
 mod invites;
 mod orgs;
@@ -68,6 +69,15 @@ pub fn api_router() -> Router<AppState> {
         .route("/invites/{id}", delete(invites::revoke_invite))
         .route("/invites/by-token/{token}", get(invites::preview_invite))
         .route("/invites/by-token/{token}/accept", post(invites::accept_invite))
+        // 超级管理员（仅 cookie 会话）
+        .route("/admin/users", get(admin::list_users).post(admin::create_user))
+        .route("/admin/users/{id}", get(admin::get_user).patch(admin::update_user))
+        .route("/admin/users/{id}/reset-password", post(admin::reset_password))
+        .route("/admin/users/{id}/orgs/{org_id}", axum::routing::put(admin::set_membership).delete(admin::remove_membership))
+        .route("/admin/users/{id}/projects/{project_id}", axum::routing::put(admin::set_project_member).delete(admin::remove_project_member))
+        .route("/admin/users/{id}/groups/{group_id}", axum::routing::put(admin::add_group_member).delete(admin::remove_group_member))
+        .route("/admin/orgs", get(admin::list_orgs).post(admin::create_org))
+        .route("/admin/orgs/{id}/structure", get(admin::org_structure))
         // PAT
         .route("/tokens", get(tokens::list_tokens).post(tokens::create_token))
         .route("/tokens/{id}", delete(tokens::revoke_token))
@@ -115,14 +125,14 @@ pub fn list(items: Vec<Value>, next: Option<String>) -> Value {
 }
 
 pub async fn user_full(db: &PgPool, id: Uuid) -> AppResult<Value> {
-    let (email, name, verified, created, must_change): (String, String, Option<DateTime<Utc>>, DateTime<Utc>, bool) =
-        sqlx::query_as("SELECT email, display_name, email_verified_at, created_at, must_change_password FROM users WHERE id = $1")
+    let (email, name, verified, created, must_change, superadmin): (String, String, Option<DateTime<Utc>>, DateTime<Utc>, bool, bool) =
+        sqlx::query_as("SELECT email, display_name, email_verified_at, created_at, must_change_password, is_superadmin FROM users WHERE id = $1")
             .bind(id)
             .fetch_one(db)
             .await?;
     Ok(json!({
         "id": id, "email": email, "display_name": name, "email_verified": verified.is_some(), "created_at": ts(&created),
-        "must_change_password": must_change,
+        "must_change_password": must_change, "is_superadmin": superadmin,
     }))
 }
 

@@ -12,7 +12,8 @@ import { Toaster } from "@/components/ui/sonner";
 import { ForceChangePassword, ForgotPassword, Login, Register, ResetPassword, VerifyEmail } from "./pages/auth";
 import { AcceptInvite } from "./pages/invite";
 import { Home, OrgsPage } from "./pages/home";
-import { OrgPage } from "./pages/org";
+import { GroupPage, OrgPage } from "./pages/org";
+import { AdminPage, AdminUserPage } from "./pages/admin";
 import { ProjectPage } from "./pages/project";
 import { PageViewRoute, ShareViewRoute } from "./pages/view";
 import { ResultsPage } from "./pages/results";
@@ -31,6 +32,9 @@ const routes: Route[] = [
   ["/invite/:token", (p) => <AcceptInvite token={p.token} />, false],
   ["/o/:orgSlug", (p) => <OrgPage slug={p.orgSlug} />, true],
   ["/o/:orgSlug/p/:projectSlug", (p) => <ProjectPage orgSlug={p.orgSlug} projectSlug={p.projectSlug} />, true],
+  ["/o/:orgSlug/groups/:groupId", (p) => <GroupPage orgSlug={p.orgSlug} groupId={p.groupId} />, true],
+  ["/admin", () => <AdminPage />, true],
+  ["/admin/users/:id", (p) => <AdminUserPage id={p.id} />, true],
   ["/pages/:id", (p) => <PageViewRoute id={p.id} />, false],
   ["/pages/:id/results", (p) => <ResultsPage id={p.id} />, true],
   ["/pages/:id/links", (p) => <LinksPage id={p.id} />, true],

@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, put, qs } from "../api";
 import { Link, navigate } from "../router";
 import {
-  AuthCard, CheckField, Empty, ErrorBox, Field, fmtTime, loadMyProjects, Loading, MoreButton, NativeSelect, Notice, Page as Shell,
+  AuthCard, CheckField, Empty, ErrorBox, Field, fmtTime, FormDialog, loadMyProjects, Loading, MoreButton, NativeSelect, Notice, Page as Shell,
   PageHeader, Panel, ROLE_LABEL, TableCard, VIS_LABEL, toast, useAction, useLoad, usePaged,
   useSession, useTab,
 } from "../ui";
@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { SLUG_RE } from "./home";
 import { Wall } from "./feed";
-import { GroupDetail, Invites, MemberPicker } from "./org";
+import { InfoList, Invites, MemberPicker, RoleDialog } from "./org";
 import { AgentOnboarding } from "./settings";
 import type { Group, Org, Page, Paged, Project, ProjectGroupGrant, ProjectMember, ProjectRole, Visibility } from "../types";
 
@@ -180,6 +180,8 @@ function Members({ org, project, admin }: { org: Org; project: Project; admin: b
   const { me } = useSession();
   const list = usePaged<ProjectMember>(`/projects/${project.id}/members`);
   const [role, setRole] = useState<ProjectRole>("editor");
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<ProjectMember | null>(null);
   const a = useAction();
   const remove = (uid: string, self: boolean) =>
     confirm(self ? "确定退出该项目？" : "确定移除该成员？") &&
@@ -191,8 +193,8 @@ function Members({ org, project, admin }: { org: Org; project: Project; admin: b
       } else list.reload();
     });
   return (
-    <div className={admin ? "split" : "stack"}>
     <div className="stack">
+      {admin && <div className="flex justify-end"><Button size="sm" onClick={() => setAdding(true)}>添加成员</Button></div>}
       <ErrorBox error={list.error || a.error} />
       <TableCard><Table>
         <TableHeader><TableRow><TableHead>成员</TableHead><TableHead>角色</TableHead><TableHead>加入时间</TableHead><TableHead /></TableRow></TableHeader>
@@ -202,14 +204,10 @@ function Members({ org, project, admin }: { org: Org; project: Project; admin: b
             return (
               <TableRow key={m.user.id}>
                 <TableCell><div className="font-medium">{m.user.display_name}{self && <span className="muted font-normal">（我）</span>}</div><div className="muted small">{m.user.email}</div></TableCell>
-                <TableCell>
-                  {admin ? (
-                    <NativeSelect aria-label="角色" value={m.role} options={PROJECT_ROLES}
-                      onChange={(r) => a.run(async () => (await patch(`/projects/${project.id}/members/${m.user.id}`, { role: r }), list.reload()))} />
-                  ) : ROLE_LABEL[m.role]}
-                </TableCell>
+                <TableCell>{ROLE_LABEL[m.role]}</TableCell>
                 <TableCell>{fmtTime(m.joined_at)}</TableCell>
                 <TableCell className="text-right">
+                  {admin && <Button size="sm" variant="ghost" onClick={() => setEditing(m)}>编辑</Button>}
                   {(admin || self) && (
                     <Button size="sm" variant="ghost-destructive" disabled={a.busy} onClick={() => remove(m.user.id, self)}>{self ? "退出" : "移除"}</Button>
                   )}
@@ -220,44 +218,40 @@ function Members({ org, project, admin }: { org: Org; project: Project; admin: b
         </TableBody>
       </Table></TableCard>
       <MoreButton p={list} />
-    </div>
-      {admin && (
-        <Panel title="添加成员" desc="只能添加本组织成员；组织外的人用下方「邀请」。">
+      {adding && (
+        <FormDialog onClose={() => setAdding(false)} title="添加成员" desc="只能添加本组织成员；组织外的人用下方「邀请」。">
           <div className="form">
             <Field label="角色"><NativeSelect value={role} onChange={setRole} options={PROJECT_ROLES} /></Field>
             <MemberPicker orgId={org.id}
-              onPick={async (uid) => (post(`/projects/${project.id}/members`, { user_id: uid, role }), list.reload())} />
+              onPick={async (uid) => (await post(`/projects/${project.id}/members`, { user_id: uid, role }), toast.ok("已添加"), list.reload())} />
           </div>
-        </Panel>
+        </FormDialog>
+      )}
+      {editing && (
+        <RoleDialog title={`修改 ${editing.user.display_name} 的项目角色`} value={editing.role} options={PROJECT_ROLES} onClose={() => setEditing(null)}
+          onSave={async (r) => (await patch(`/projects/${project.id}/members/${editing.user.id}`, { role: r }), list.reload())} />
       )}
     </div>
   );
 }
 
-/** 项目群组：本项目自己的群组（可新建、管理成员，授权不能单独撤销）+ 已授权的组织级群组（可授权/撤销） */
+/** 项目群组：本项目自己的群组（可新建；成员在群组页管理；授权不能单独撤销）+ 已授权的组织级群组（可授权/撤销） */
 function ProjectGroups({ org, project, admin }: { org: Org; project: Project; admin: boolean }) {
   const grants = useLoad(() => get<{ items: ProjectGroupGrant[] }>(`/projects/${project.id}/groups`), [project.id]);
-  const groups = useLoad(() => (admin ? get<Paged<Group>>(`/orgs/${org.id}/groups?limit=200`) : Promise.resolve({ items: [], next_cursor: null })), [org.id, admin]);
-  const [pick, setPick] = useState({ group_id: "", role: "viewer" as ProjectRole });
-  const [f, setF] = useState({ name: "", role: "viewer" as ProjectRole });
-  const [open, setOpen] = useState<string | null>(null);
+  const [dlg, setDlg] = useState<null | "create" | "grant">(null);
+  const [editing, setEditing] = useState<ProjectGroupGrant | null>(null);
   const a = useAction();
-  const setRole = (gid: string, role: ProjectRole) =>
-    a.run(async () => (await put(`/projects/${project.id}/groups/${gid}`, { role }), grants.reload()));
-  const create = (e: FormEvent) => {
-    e.preventDefault();
-    a.run(async () => {
-      await post(`/projects/${project.id}/groups`, f);
-      toast.ok("已创建项目群组");
-      setF({ ...f, name: "" });
-      grants.reload();
-    });
-  };
+  const setRole = (gid: string, role: ProjectRole) => put(`/projects/${project.id}/groups/${gid}`, { role }).then(() => grants.reload());
   const items = grants.data?.items ?? [];
   const granted = new Set(items.map((g) => g.group.id));
   return (
-    <div className={admin ? "split" : "stack"}>
     <div className="stack">
+      {admin && (
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button size="sm" variant="outline" onClick={() => setDlg("grant")}>授权组织级群组</Button>
+          <Button size="sm" onClick={() => setDlg("create")}>新建项目群组</Button>
+        </div>
+      )}
       <ErrorBox error={grants.error || a.error} />
       {items.length > 0 && (
         <div className="list">
@@ -275,53 +269,92 @@ function ProjectGroups({ org, project, admin }: { org: Org; project: Project; ad
                 </div>
                 <div className="list-stat">{g.member_count !== undefined && <><b>{g.member_count}</b> 人</>}</div>
                 <div className="list-actions">
-                  {admin ? <NativeSelect aria-label="角色" value={g.role} options={own ? PROJECT_ROLES.filter(([r]) => r !== "admin") : PROJECT_ROLES} onChange={(r) => setRole(g.group.id, r)} /> : ROLE_LABEL[g.role]}
-                  {own && <Button size="sm" variant="ghost" onClick={() => setOpen(open === g.group.id ? null : g.group.id)}>{open === g.group.id ? "收起" : "成员"}</Button>}
+                  <span className="self-center text-[13px] text-muted-foreground">{ROLE_LABEL[g.role]}</span>
+                  {own && <Button size="sm" variant="ghost" asChild><Link to={`/o/${org.slug}/groups/${g.group.id}`}>成员</Link></Button>}
+                  {admin && <Button size="sm" variant="ghost" onClick={() => setEditing(g)}>编辑</Button>}
                   {admin && !own && (
                     <Button size="sm" variant="ghost-destructive" disabled={a.busy}
                       onClick={() => a.run(async () => (await del(`/projects/${project.id}/groups/${g.group.id}`), grants.reload()))}>撤销授权</Button>
                   )}
                 </div>
-                {own && open === g.group.id && (
-                  <div className="list-expand">
-                    <GroupDetail org={org} canManage={admin} onChange={grants.reload}
-                      group={{ id: g.group.id, org_id: org.id, name: g.group.name, description: g.description ?? "", member_count: g.member_count ?? 0, created_at: g.created_at, project_id: project.id }} />
-                  </div>
-                )}
               </div>
             );
           })}
         </div>
       )}
       {grants.data?.items.length === 0 && <Empty icon={<ShieldCheck />} title="还没有项目群组">新建项目群组后，群组成员会按所选角色访问本项目，agent 也能把页面直接发给这个群组。</Empty>}
-    </div>
-      {admin && (
-        <div className="stack">
-          <Panel title="新建项目群组" desc="只属于本项目；你会自动加入，成员按所选角色访问本项目。">
-            <form onSubmit={create} className="form">
-              <Field label="名称"><Input required maxLength={100} placeholder="例如：前端组" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-              <Field label="成员角色"><NativeSelect value={f.role} onChange={(v) => setF({ ...f, role: v })} options={PROJECT_ROLES.filter(([r]) => r !== "admin")} /></Field>
-              <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy}>创建群组</Button></div>
-            </form>
-          </Panel>
-          <Panel title="授权组织级群组">
-            <div className="form">
-              <NativeSelect aria-label="群组" value={pick.group_id} onChange={(v) => setPick({ ...pick, group_id: v })}
-                options={[["", "选择群组"], ...(groups.data?.items.filter((g) => !g.project_id && !granted.has(g.id)).map((g) => [g.id, g.name] as [string, string]) ?? [])]} />
-              <NativeSelect aria-label="角色" value={pick.role} onChange={(v) => setPick({ ...pick, role: v })} options={PROJECT_ROLES} />
-              <div className="form-actions">
-                <Button size="sm" disabled={!pick.group_id || a.busy}
-                  onClick={() => setRole(pick.group_id, pick.role)?.then(() => setPick({ ...pick, group_id: "" }))}>授权</Button>
-              </div>
-            </div>
-          </Panel>
-        </div>
+      {dlg === "create" && <NewProjectGroupDialog project={project} onClose={() => setDlg(null)} onDone={grants.reload} />}
+      {dlg === "grant" && <GrantGroupDialog org={org} granted={granted} onClose={() => setDlg(null)} onGrant={setRole} />}
+      {editing && (
+        <RoleDialog title={`修改群组「${editing.group.name}」的项目角色`} value={editing.role} onClose={() => setEditing(null)}
+          options={editing.project_id === project.id ? PROJECT_ROLES.filter(([r]) => r !== "admin") : PROJECT_ROLES}
+          onSave={(r) => setRole(editing.group.id, r)} />
       )}
     </div>
   );
 }
 
+function NewProjectGroupDialog({ project, onClose, onDone }: { project: Project; onClose: () => void; onDone: () => void }) {
+  const [f, setF] = useState({ name: "", role: "viewer" as ProjectRole });
+  const a = useAction();
+  const create = (e: FormEvent) => {
+    e.preventDefault();
+    a.run(async () => {
+      await post(`/projects/${project.id}/groups`, f);
+      toast.ok("已创建项目群组");
+      onDone();
+      onClose();
+    });
+  };
+  return (
+    <FormDialog onClose={onClose} title="新建项目群组" desc="只属于本项目；你会自动加入，成员按所选角色访问本项目。">
+      <form onSubmit={create} className="form">
+        <Field label="名称"><Input required maxLength={100} placeholder="例如：前端组" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <Field label="成员角色"><NativeSelect value={f.role} onChange={(v) => setF({ ...f, role: v })} options={PROJECT_ROLES.filter(([r]) => r !== "admin")} /></Field>
+        <ErrorBox error={a.error} />
+        <div className="form-actions"><Button type="button" variant="ghost" onClick={onClose}>取消</Button><Button type="submit" loading={a.busy} disabled={a.busy}>创建群组</Button></div>
+      </form>
+    </FormDialog>
+  );
+}
+
+function GrantGroupDialog({ org, granted, onClose, onGrant }: { org: Org; granted: Set<string>; onClose: () => void; onGrant: (gid: string, role: ProjectRole) => Promise<unknown> }) {
+  const groups = useLoad(() => get<Paged<Group>>(`/orgs/${org.id}/groups?limit=200`), [org.id]);
+  const [pick, setPick] = useState({ group_id: "", role: "viewer" as ProjectRole });
+  const a = useAction();
+  return (
+    <FormDialog onClose={onClose} title="授权组织级群组" desc="群组成员按所选角色访问本项目。">
+      <form className="form" onSubmit={(e) => (e.preventDefault(), a.run(async () => (await onGrant(pick.group_id, pick.role), onClose())))}>
+        <Field label="群组">
+          <NativeSelect aria-label="群组" value={pick.group_id} onChange={(v) => setPick({ ...pick, group_id: v })}
+            options={[["", "选择群组"], ...(groups.data?.items.filter((g) => !g.project_id && !granted.has(g.id)).map((g) => [g.id, g.name] as [string, string]) ?? [])]} />
+        </Field>
+        <Field label="角色"><NativeSelect aria-label="角色" value={pick.role} onChange={(v) => setPick({ ...pick, role: v })} options={PROJECT_ROLES} /></Field>
+        <ErrorBox error={groups.error || a.error} />
+        <div className="form-actions"><Button type="button" variant="ghost" onClick={onClose}>取消</Button><Button type="submit" disabled={!pick.group_id || a.busy} loading={a.busy}>授权</Button></div>
+      </form>
+    </FormDialog>
+  );
+}
+
 function ProjectSettings({ org, project, onSaved }: { org: Org; project: Project; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const a = useAction();
+  return (
+    <div className="cols-2">
+      <Panel title="基本信息" actions={<Button variant="outline" size="sm" onClick={() => setEditing(true)}>编辑</Button>}>
+        <InfoList items={[["名称", project.name], ["标识（slug）", <span className="font-mono">{project.slug}</span>], ["描述", project.description || "—"]]} />
+      </Panel>
+      <Panel title="删除项目" desc="删除后项目内所有页面将不可访问。" danger
+        actions={<Button variant="destructive" disabled={a.busy}
+          onClick={() => confirm(`确定删除项目「${project.name}」？`) && a.run(async () => (await del(`/projects/${project.id}`), await loadMyProjects(true), navigate(`/o/${org.slug}`)))}>删除项目</Button>} />
+      <ErrorBox error={a.error} />
+      {editing && <ProjectEditDialog org={org} project={project} onClose={() => setEditing(false)} onSaved={onSaved} />}
+    </div>
+  );
+}
+
+function ProjectEditDialog({ org, project, onClose, onSaved }: { org: Org; project: Project; onClose: () => void; onSaved: () => void }) {
   const [f, setF] = useState({ name: project.name, slug: project.slug, description: project.description });
   const a = useAction();
   const save = (e: FormEvent) => {
@@ -330,24 +363,20 @@ function ProjectSettings({ org, project, onSaved }: { org: Org; project: Project
       const p = await patch<Project>(`/projects/${project.id}`, f);
       await loadMyProjects(true);
       toast.ok("已保存");
-      if (p.slug !== project.slug) navigate(`/o/${org.slug}/p/${p.slug}`, true);
+      onClose();
+      if (p.slug !== project.slug) navigate(`/o/${org.slug}/p/${p.slug}?tab=settings`, true);
       else onSaved();
     });
   };
   return (
-    <div className="cols-2">
-      <Panel title="基本信息">
+    <FormDialog onClose={onClose} title="编辑项目">
       <form onSubmit={save} className="form">
         <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
         <Field label="标识（slug）"><Input required pattern={SLUG_RE.source} value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} /></Field>
         <Field label="描述"><Textarea rows={3} maxLength={2000} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
         <ErrorBox error={a.error} />
-        <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy}>保存</Button></div>
+        <div className="form-actions"><Button type="button" variant="ghost" onClick={onClose}>取消</Button><Button type="submit" loading={a.busy} disabled={a.busy}>保存</Button></div>
       </form>
-      </Panel>
-      <Panel title="删除项目" desc="删除后项目内所有页面将不可访问。" danger
-        actions={<Button variant="destructive" disabled={a.busy}
-          onClick={() => confirm(`确定删除项目「${project.name}」？`) && a.run(async () => (await del(`/projects/${project.id}`), await loadMyProjects(true), navigate(`/o/${org.slug}`)))}>删除项目</Button>} />
-    </div>
+    </FormDialog>
   );
 }

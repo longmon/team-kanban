@@ -43,6 +43,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-0}
       TRUST_PROXY: ${TRUST_PROXY:-0}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-1}
+      SUPERADMIN_EMAILS: ${SUPERADMIN_EMAILS:-}
       SMTP_URL: ${SMTP_URL:-}
       SMTP_FROM: ${SMTP_FROM:-}
     ports:
@@ -119,6 +120,17 @@ You need **two host names** pointing to the server, e.g. `kanban.example.com` (m
 
 3. `docker compose up -d`. To make registration invite-only after creating the first account, set `ALLOW_SIGNUP=0` and run `docker compose up -d` again.
 
+### First super admin
+
+Super admins manage all accounts and organizations site-wide (menu **System admin** → `/admin`). To create the first one: register the account normally, then add its email to `.env` and restart:
+
+```bash
+echo 'SUPERADMIN_EMAILS=you@example.com' >> .env   # comma-separated for several
+docker compose up -d
+```
+
+On every start the server marks the listed **already registered** accounts as super admins (idempotent; unregistered emails are only logged as a warning — register, then restart). It only grants: removing an email from the variable does not revoke; revoke in the admin UI (at least one active super admin must remain). Super admin APIs accept browser sessions only, never access tokens.
+
 Behind Cloudflare (orange cloud), use SSL mode **Full (strict)**. The repository's [Caddyfile](https://github.com/longmon/team-kanban/blob/main/Caddyfile) shows a hardened setup that trusts only Cloudflare IPs and takes the client IP from `CF-Connecting-IP`.
 
 ## Environment variables
@@ -132,6 +144,7 @@ Behind Cloudflare (orange cloud), use SSL mode **Full (strict)**. The repository
 | `COOKIE_SECURE` | `1` | `0` for plain-http local use |
 | `TRUST_PROXY` | `0` | `1` behind a reverse proxy (client IP from `X-Forwarded-For`, used for rate limiting) |
 | `ALLOW_SIGNUP` | `1` | `0` = invite-only |
+| `SUPERADMIN_EMAILS` | empty | Comma-separated emails; on start, those already registered become super admins (grant only, see [First super admin](#first-super-admin)) |
 | `SMTP_URL` / `SMTP_FROM` | empty | e.g. `smtps://user:pass@smtp.example.com:465` / `Team Kanban <noreply@example.com>`. Without SMTP, emails are only written to the log |
 | `BIND` | `0.0.0.0:8080` | Listen address |
 | `RUST_LOG` | `info` | Log level |
@@ -213,6 +226,17 @@ codex mcp add team-kanban -- tkanban mcp                             # Codex
 
 3. `docker compose up -d`。注册完第一个账号后，如果只想凭邀请注册，设 `ALLOW_SIGNUP=0` 再执行一次 `docker compose up -d`。
 
+### 第一个超级管理员
+
+超级管理员管理全站账号与组织（账号菜单「系统管理」→ `/admin`）。设置第一个：先正常注册该账号，再把邮箱写进 `.env` 并重启：
+
+```bash
+echo 'SUPERADMIN_EMAILS=you@example.com' >> .env   # 多个用逗号分隔
+docker compose up -d
+```
+
+服务每次启动都会把其中**已注册**的账号设为超管（幂等；还没注册的邮箱只在日志里告警，注册后再重启即可）。只授予不撤销：从变量里删掉邮箱不会撤销，撤销在系统管理里操作（至少保留一个可用超管）。超管接口只接受浏览器登录会话，访问令牌一律拒绝。
+
 前面用 Cloudflare 代理（橙云）时，SSL 模式选 **Full (strict)**。仓库里的 [Caddyfile](https://github.com/longmon/team-kanban/blob/main/Caddyfile) 是加固版：只信任 Cloudflare 的 IP 段，客户端 IP 取 `CF-Connecting-IP`。
 
 ### 环境变量
@@ -226,6 +250,7 @@ codex mcp add team-kanban -- tkanban mcp                             # Codex
 | `COOKIE_SECURE` | `1` | 本地 http 设为 `0` |
 | `TRUST_PROXY` | `0` | 在反向代理后面设为 `1`（从 `X-Forwarded-For` 取客户端 IP，用于限流） |
 | `ALLOW_SIGNUP` | `1` | `0` = 只能凭邀请注册 |
+| `SUPERADMIN_EMAILS` | 空 | 逗号分隔的邮箱；启动时把其中已注册的账号设为超级管理员（只授予不撤销，见上文「第一个超级管理员」） |
 | `SMTP_URL` / `SMTP_FROM` | 空 | 例如 `smtps://user:pass@smtp.example.com:465` / `Team Kanban <noreply@example.com>`；不配时邮件内容只写进日志 |
 | `BIND` | `0.0.0.0:8080` | 监听地址 |
 | `RUST_LOG` | `info` | 日志级别 |

@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use relay::{AppState, Config, MIGRATOR, app, spawn_background};
+use relay::{AppState, Config, MIGRATOR, app, bootstrap_superadmins, spawn_background};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -20,6 +20,13 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|e| format!("连接数据库失败: {e}"))?;
     MIGRATOR.run(&db).await.map_err(|e| format!("迁移失败: {e}"))?;
+    let (n, missing) = bootstrap_superadmins(&db, &relay::config::superadmin_emails()).await.map_err(|e| format!("设置超管失败: {e}"))?;
+    if n > 0 {
+        tracing::info!("SUPERADMIN_EMAILS：新设 {n} 个超管");
+    }
+    if !missing.is_empty() {
+        tracing::warn!("SUPERADMIN_EMAILS 里这些邮箱还没注册，注册后重启生效: {}", missing.join(", "));
+    }
     if cfg.pages_origin.is_none() {
         tracing::warn!("未配置 PAGES_ORIGIN：html 页面与主站同源，仅靠 sandbox 隔离，生产环境必须配置");
     }

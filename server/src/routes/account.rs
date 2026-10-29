@@ -106,14 +106,20 @@ pub async fn login(State(st): State<AppState>, c: Caller, h: HeaderMap, JsonBody
     let email = r.email.trim().to_lowercase();
     let key = format!("login_fail:{email}");
     st.rl.check(&key, 10).map_err(AppError::rate_limited)?;
-    let row: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, password_hash FROM users WHERE email = $1").bind(&email).fetch_optional(&st.db).await?;
-    let (id, hash) = row.map_or((None, None), |(i, h)| (Some(i), Some(h)));
+    let row: Option<(Uuid, String, bool)> = sqlx::query_as("SELECT id, password_hash, disabled_at IS NOT NULL FROM users WHERE email = $1")
+        .bind(&email)
+        .fetch_optional(&st.db)
+        .await?;
+    let (id, hash, disabled) = row.map_or((None, None, false), |(i, h, d)| (Some(i), Some(h), d));
     if !verify_password(r.password, hash).await {
         st.rl.fail(&key, 10, MIN15);
         return Err(AppError::new(StatusCode::UNAUTHORIZED, "invalid_credentials", "邮箱或密码错误"));
     }
     st.rl.clear(&key);
+    // 密码正确后才提示已禁用（不向猜密码的人暴露账号状态）
+    if disabled {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "account_disabled", "账号已被停用，请联系管理员"));
+    }
     logged_in(&st, id.expect("verified"), &c, &h, StatusCode::OK).await
 }
 

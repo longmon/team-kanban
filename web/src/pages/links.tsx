@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ApiError, del, get, post, qs } from "../api";
 import { Link } from "../router";
-import { AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, Loading, NativeSelect, Page, PageHeader, Panel, TableCard, useAction, useLoad, useOwnOrg } from "../ui";
+import { AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, FormDialog, Loading, NativeSelect, Page, PageHeader, TableCard, useAction, useLoad, useOwnOrg } from "../ui";
 import type { PageView, ShareLink } from "../types";
 
 const EXPIRES: [string, string][] = [
@@ -24,6 +24,7 @@ export function LinksPage({ id }: { id: string }) {
   const [inactive, setInactive] = useState(false);
   const links = useLoad(() => get<{ items: ShareLink[] }>(`/pages/${id}/share-links${qs({ include_inactive: inactive })}`), [id, inactive]);
   const a = useAction();
+  const [creating, setCreating] = useState(false);
 
   if (page.loading) return <Page><Loading /></Page>;
   if (page.error || !page.data!.can_manage) {
@@ -33,8 +34,8 @@ export function LinksPage({ id }: { id: string }) {
   return (
     <Page>
       <PageHeader crumbs={<Link to={`/pages/${id}`}>{page.data!.page.title}</Link>} title="临时链接"
-        desc="临时链接让不在项目里的人（含未登录用户）查看并提交此页面，不受页面可见性限制。" />
-      <div className="split">
+        desc="临时链接让不在项目里的人（含未登录用户）查看并提交此页面，不受页面可见性限制。"
+        actions={<Button onClick={() => setCreating(true)}>新建链接</Button>} />
       <div className="stack">
       <CheckField checked={inactive} onChange={setInactive}>显示已失效</CheckField>
       <ErrorBox error={links.error} />
@@ -60,10 +61,9 @@ export function LinksPage({ id }: { id: string }) {
           </TableBody>
         </Table>
       </TableCard>}
-      {links.data?.items.length === 0 && <Empty icon={<Link2 />} title="暂无链接">在右侧新建一个，发给需要查看或提交的人。</Empty>}
+      {links.data?.items.length === 0 && <Empty icon={<Link2 />} title="暂无链接">点右上角「新建链接」，发给需要查看或提交的人。</Empty>}
       </div>
-      <Panel title="新建链接"><ShareLinkForm pageId={id} onCreated={links.reload} /></Panel>
-      </div>
+      {creating && <FormDialog onClose={() => setCreating(false)} title="新建链接"><ShareLinkForm pageId={id} onCreated={links.reload} /></FormDialog>}
     </Page>
   );
 }

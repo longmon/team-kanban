@@ -1,5 +1,5 @@
 // 组织页：项目、群组、成员、邀请、审计、设置（api.md §4、§5、§12）
-import { useState, type FormEvent } from "react";
+import { Fragment, useState, type FormEvent, type ReactNode } from "react";
 import { FolderKanban, Mail, ScrollText, Users } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { del, get, patch, post, qs } from "../api";
 import { Link, navigate } from "../router";
 import {
-  AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, ListSkeleton, Loading, MoreButton, NativeSelect, Notice, Page, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
+  AuthCard, CheckField, CopyText, Empty, ErrorBox, Field, fmtTime, FormDialog, ListSkeleton, Loading, MoreButton, NativeSelect, Notice, Page, PAGE_TABS_LIST, PAGE_TABS_TRIGGER,
   PageHeader, Panel, ROLE_LABEL, TableCard, toast, useAction, useLoad, usePaged, useSession, useTab, loadMyProjects,
 } from "../ui";
 import { autoSlug, SLUG_RE, Tile, TILES, useSlugFallback } from "./home";
@@ -50,6 +50,27 @@ export function OrgPage({ slug }: { slug: string }) {
 
 function Projects({ org }: { org: Org }) {
   const list = usePaged<Project>(`/orgs/${org.id}/projects`);
+  const [creating, setCreating] = useState(false);
+  return (
+    <div className="stack">
+      <div className="flex justify-end"><Button size="sm" onClick={() => setCreating(true)}>新建项目</Button></div>
+      <ErrorBox error={list.error} />
+      {list.loading && list.items.length === 0 && <ListSkeleton />}
+      {!list.loading && list.items.length === 0 && <Empty icon={<FolderKanban />} title="还没有项目">点右上角「新建项目」，再让 agent 往里发布页面。</Empty>}
+      {list.items.length > 0 && (
+        <div className={TILES}>
+          {list.items.map((p) => (
+            <Tile key={p.id} to={`/o/${org.slug}/p/${p.slug}`} title={p.name} desc={p.description} slug={p.slug} role={p.my_role ? ROLE_LABEL[p.my_role] : undefined} />
+          ))}
+        </div>
+      )}
+      <MoreButton p={list} />
+      {creating && <NewProjectDialog org={org} onClose={() => setCreating(false)} />}
+    </div>
+  );
+}
+
+function NewProjectDialog({ org, onClose }: { org: Org; onClose: () => void }) {
   const fallback = useSlugFallback("p");
   const [f, setF] = useState({ name: "", slug: "", description: "" });
   const a = useAction();
@@ -62,30 +83,32 @@ function Projects({ org }: { org: Org }) {
     });
   };
   return (
-    <div className="split">
-    <div className="stack">
-      <ErrorBox error={list.error} />
-      {list.loading && list.items.length === 0 && <ListSkeleton />}
-      {!list.loading && list.items.length === 0 && <Empty icon={<FolderKanban />} title="还没有项目">在下方新建一个项目，再让 agent 往里发布页面。</Empty>}
-      {list.items.length > 0 && (
-        <div className={TILES}>
-          {list.items.map((p) => (
-            <Tile key={p.id} to={`/o/${org.slug}/p/${p.slug}`} title={p.name} desc={p.description} slug={p.slug} role={p.my_role ? ROLE_LABEL[p.my_role] : undefined} />
-          ))}
-        </div>
-      )}
-      <MoreButton p={list} />
-    </div>
-      <Panel title="新建项目">
-        <form onSubmit={submit} className="form">
-          <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value, slug: autoSlug(e.target.value, fallback) })} /></Field>
-          <Field label="标识（slug）"><Input required pattern={SLUG_RE.source} value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} /></Field>
-          <Field label="描述"><Textarea rows={2} maxLength={2000} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
-          <ErrorBox error={a.error} />
-          <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy}>创建项目</Button></div>
-        </form>
-      </Panel>
-    </div>
+    <FormDialog onClose={onClose} title="新建项目">
+      <form onSubmit={submit} className="form">
+        <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value, slug: autoSlug(e.target.value, fallback) })} /></Field>
+        <Field label="标识（slug）"><Input required pattern={SLUG_RE.source} value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} /></Field>
+        <Field label="描述"><Textarea rows={2} maxLength={2000} value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
+        <ErrorBox error={a.error} />
+        <div className="form-actions"><Button type="button" variant="ghost" onClick={onClose}>取消</Button><Button type="submit" loading={a.busy} disabled={a.busy}>创建项目</Button></div>
+      </form>
+    </FormDialog>
+  );
+}
+
+/** 改角色弹窗（组织成员、项目成员、项目群组授权共用） */
+export function RoleDialog<R extends string>({ title, value, options, onSave, onClose }: {
+  title: string; value: R; options: [R, string][]; onSave: (role: R) => Promise<unknown>; onClose: () => void;
+}) {
+  const [role, setRole] = useState<R>(value);
+  const a = useAction();
+  return (
+    <FormDialog onClose={onClose} title={title}>
+      <form className="form" onSubmit={(e) => (e.preventDefault(), a.run(async () => (await onSave(role), onClose())))}>
+        <Field label="角色"><NativeSelect aria-label="角色" value={role} onChange={setRole} options={options} /></Field>
+        <ErrorBox error={a.error} />
+        <div className="form-actions"><Button type="button" variant="ghost" onClick={onClose}>取消</Button><Button type="submit" loading={a.busy} disabled={a.busy || role === value}>保存</Button></div>
+      </form>
+    </FormDialog>
   );
 }
 
@@ -115,20 +138,11 @@ export function MemberPicker({ orgId, onPick, label = "添加" }: { orgId: strin
 function Groups({ org }: { org: Org }) {
   const admin = isAdmin(org);
   const list = usePaged<Group>(`/orgs/${org.id}/groups?include=project`);
-  const [open, setOpen] = useState<string | null>(null);
-  const [f, setF] = useState({ name: "", description: "" });
-  const a = useAction();
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    a.run(async () => {
-      await post(`/orgs/${org.id}/groups`, f);
-      setF({ name: "", description: "" });
-      list.reload();
-    });
-  };
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Group | null>(null);
   return (
-    <div className={admin ? "split" : "stack"}>
     <div className="stack">
+      {admin && <div className="flex justify-end"><Button size="sm" onClick={() => setCreating(true)}>新建群组</Button></div>}
       <ErrorBox error={list.error} />
       {list.loading && list.items.length === 0 && <ListSkeleton />}
       {!list.loading && list.items.length === 0 && <Empty icon={<Users />} title="还没有群组">群组用来批量授权项目和页面，例如「评审组」。项目专属的群组在项目页「成员与权限」里新建。</Empty>}
@@ -145,44 +159,91 @@ function Groups({ org }: { org: Org }) {
               </div>
               <div className="list-stat"><b>{g.member_count}</b> 人</div>
               <div className="list-actions">
-                <Button size="sm" variant="ghost" onClick={() => setOpen(open === g.id ? null : g.id)}>{open === g.id ? "收起" : "成员"}</Button>
+                <Button size="sm" variant="ghost" asChild><Link to={`/o/${org.slug}/groups/${g.id}`}>成员</Link></Button>
+                {admin && <Button size="sm" variant="ghost" onClick={() => setEditing(g)}>编辑</Button>}
               </div>
-              {open === g.id && <div className="list-expand"><GroupDetail org={org} group={g} onChange={list.reload} /></div>}
             </div>
           ))}
         </div>
       )}
       <MoreButton p={list} />
-    </div>
-      {admin && (
-        <Panel title="新建组织级群组" desc="可授权给多个项目；只给某个项目用的群组请到该项目页新建。">
-          <form onSubmit={submit} className="form">
-            <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-            <Field label="描述"><Input value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
-            <ErrorBox error={a.error} />
-            <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy}>创建群组</Button></div>
-          </form>
-        </Panel>
-      )}
+      {creating && <NewGroupDialog org={org} onClose={() => setCreating(false)} onDone={list.reload} />}
+      {editing && <GroupEditDialog group={editing} onClose={() => setEditing(null)} onDone={list.reload} />}
     </div>
   );
 }
 
-/** 群组成员与设置；canManage 缺省为组织管理员（项目页对项目群组传入项目管理员身份） */
-export function GroupDetail({ org, group, onChange, canManage }: { org: Org; group: Group; onChange: () => void; canManage?: boolean }) {
-  const { me } = useSession();
-  const admin = canManage ?? isAdmin(org);
-  const members = usePaged<GroupMember>(`/groups/${group.id}/members`);
+function NewGroupDialog({ org, onClose, onDone }: { org: Org; onClose: () => void; onDone: () => void }) {
+  const [f, setF] = useState({ name: "", description: "" });
+  const a = useAction();
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    a.run(async () => (await post(`/orgs/${org.id}/groups`, f), onDone(), onClose()));
+  };
+  return (
+    <FormDialog onClose={onClose} title="新建组织级群组" desc="可授权给多个项目；只给某个项目用的群组请到该项目页新建。">
+      <form onSubmit={submit} className="form">
+        <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <Field label="描述"><Input value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
+        <ErrorBox error={a.error} />
+        <div className="form-actions"><Button type="button" variant="ghost" onClick={onClose}>取消</Button><Button type="submit" loading={a.busy} disabled={a.busy}>创建群组</Button></div>
+      </form>
+    </FormDialog>
+  );
+}
+
+/** 改群组名称/描述、删除群组（组织管理员；项目群组还有项目管理员） */
+function GroupEditDialog({ group, onClose, onDone, onDeleted }: { group: Group; onClose: () => void; onDone: () => void; onDeleted?: () => void }) {
   const [edit, setEdit] = useState({ name: group.name, description: group.description });
   const a = useAction();
+  return (
+    <FormDialog onClose={onClose} title="编辑群组">
+      <form className="form" onSubmit={(e) => (e.preventDefault(), a.run(async () => (await patch(`/groups/${group.id}`, edit), toast.ok("已保存"), onDone(), onClose())))}>
+        <Field label="名称"><Input required value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} /></Field>
+        <Field label="描述"><Input value={edit.description} onChange={(e) => setEdit({ ...edit, description: e.target.value })} /></Field>
+        <ErrorBox error={a.error} />
+        <div className="form-actions">
+          <Button type="button" variant="ghost-destructive" disabled={a.busy} className="mr-auto"
+            onClick={() => confirm(`删除群组「${group.name}」？同时移除其页面受众与项目授权。`) && a.run(async () => (await del(`/groups/${group.id}`), onClose(), (onDeleted ?? onDone)()))}>删除群组</Button>
+          <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
+          <Button type="submit" loading={a.busy} disabled={a.busy}>保存</Button>
+        </div>
+      </form>
+    </FormDialog>
+  );
+}
+
+/** 群组成员管理独立页 /o/:orgSlug/groups/:groupId：组织管理员可管理；项目群组的项目管理员也可以 */
+export function GroupPage({ orgSlug, groupId }: { orgSlug: string; groupId: string }) {
+  const { me } = useSession();
+  const org = me!.orgs.find((o) => o.slug === orgSlug);
+  const group = useLoad(() => (org ? get<Group>(`/groups/${groupId}`) : Promise.resolve(null)), [org?.id, groupId]);
+  const pid = group.data?.project_id;
+  const proj = useLoad(() => (pid ? get<Project>(`/projects/${pid}`).catch(() => null) : Promise.resolve(null)), [pid]);
+  const members = usePaged<GroupMember>(org && group.data ? `/groups/${groupId}/members` : null);
+  const [dlg, setDlg] = useState<null | "add" | "edit">(null);
+  const a = useAction();
+  if (group.loading && !group.data) return <Page><Loading /></Page>;
+  if (!org || !group.data) return <AuthCard title="群组不存在或无权访问"><p className="text-sm"><Link className="link" to={org ? `/o/${org.slug}?tab=groups` : "/"}>返回</Link></p></AuthCard>;
+  const g = group.data;
+  const admin = isAdmin(org) || proj.data?.my_role === "admin";
+  const back = pid && proj.data ? `/o/${org.slug}/p/${proj.data.slug}?tab=members` : `/o/${org.slug}?tab=groups`;
   const remove = (uid: string) =>
     a.run(async () => {
-      await del(`/groups/${group.id}/members/${uid}`);
+      await del(`/groups/${g.id}/members/${uid}`);
       members.reload();
-      onChange();
+      group.reload();
     });
   return (
-    <div className="stack">
+    <Page>
+      <PageHeader
+        crumbs={<><Link to={`/o/${org.slug}`}>{org.name}</Link>{proj.data && <Link to={back}>{proj.data.name}</Link>}<Link to={back}>群组</Link></>}
+        title={g.name} badge={g.project && <Badge variant="info">项目：{g.project.name}</Badge>} desc={g.description || undefined}
+        actions={<>
+          <Button variant="outline" asChild><Link to={back}>返回</Link></Button>
+          {admin && <Button variant="outline" onClick={() => setDlg("edit")}>编辑</Button>}
+          {admin && <Button onClick={() => setDlg("add")}>添加成员</Button>}
+        </>} />
       <ErrorBox error={members.error || a.error} />
       <TableCard><Table>
         <TableHeader><TableRow><TableHead>成员</TableHead><TableHead>加入时间</TableHead><TableHead /></TableRow></TableHeader>
@@ -201,23 +262,15 @@ export function GroupDetail({ org, group, onChange, canManage }: { org: Org; gro
           ))}
         </TableBody>
       </Table></TableCard>
+      {!members.loading && members.items.length === 0 && <Empty icon={<Users />} title="群组还没有成员" />}
       <MoreButton p={members} />
-      {admin && (
-        <>
-          <h4 className="sub-title">添加成员</h4>
-          <MemberPicker orgId={org.id} onPick={async (uid) => (await post(`/groups/${group.id}/members`, { user_id: uid }), members.reload(), onChange())} />
-          <h4 className="sub-title">修改群组</h4>
-          <div className="row wrap toolbar">
-            <Input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} aria-label="群组名" />
-            <Input value={edit.description} placeholder="描述" onChange={(e) => setEdit({ ...edit, description: e.target.value })} aria-label="描述" />
-            <Button size="sm" variant="outline" disabled={a.busy}
-              onClick={() => a.run(async () => (await patch(`/groups/${group.id}`, edit), toast.ok("已保存"), onChange()))}>保存</Button>
-            <Button size="sm" variant="ghost-destructive" disabled={a.busy}
-              onClick={() => confirm(`删除群组「${group.name}」？同时移除其页面受众与项目授权。`) && a.run(async () => (await del(`/groups/${group.id}`), onChange()))}>删除群组</Button>
-          </div>
-        </>
+      {dlg === "add" && (
+        <FormDialog onClose={() => setDlg(null)} title="添加成员" desc="只能添加本组织成员。">
+          <MemberPicker orgId={org.id} onPick={async (uid) => (await post(`/groups/${g.id}/members`, { user_id: uid }), toast.ok("已添加"), members.reload(), group.reload())} />
+        </FormDialog>
       )}
-    </div>
+      {dlg === "edit" && <GroupEditDialog group={g} onClose={() => setDlg(null)} onDone={group.reload} onDeleted={() => navigate(back)} />}
+    </Page>
   );
 }
 
@@ -230,6 +283,7 @@ function Members({ org }: { org: Org }) {
   const canEdit = (m: OrgMember) => org.my_role === "owner" || (org.my_role === "admin" && m.role !== "owner");
   const canRemove = (m: OrgMember) => org.my_role === "owner" || (org.my_role === "admin" && m.role === "member");
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<OrgMember | null>(null);
   const [secret, setSecret] = useState<{ email: string; password: string | null } | null>(null);
   const resetPw = (m: OrgMember) =>
     confirm(`为 ${m.user.display_name} 重新生成一次性密码？旧的初始密码立即失效。`) &&
@@ -256,14 +310,10 @@ function Members({ org }: { org: Org }) {
                     {m.must_change_password && <Badge variant="warning" className="ml-1.5">待改初始密码</Badge>}</div>
                   <div className="muted small">{m.user.email}</div>
                 </TableCell>
-                <TableCell>
-                  {!self && canEdit(m) ? (
-                    <NativeSelect aria-label="角色" value={m.role} options={m.role === "owner" && org.my_role !== "owner" ? [["owner", ROLE_LABEL.owner]] : roles}
-                      onChange={(role) => a.run(async () => (await patch(`/orgs/${org.id}/members/${m.user.id}`, { role }), list.reload()))} />
-                  ) : ROLE_LABEL[m.role]}
-                </TableCell>
+                <TableCell>{ROLE_LABEL[m.role]}</TableCell>
                 <TableCell>{fmtTime(m.joined_at)}</TableCell>
                 <TableCell className="text-right">
+                  {!self && canEdit(m) && <Button size="sm" variant="ghost" onClick={() => setEditing(m)}>编辑</Button>}
                   {!self && canRemove(m) && m.must_change_password && (
                     <Button size="sm" variant="ghost" disabled={a.busy} onClick={() => resetPw(m)}>重置密码</Button>
                   )}
@@ -279,22 +329,34 @@ function Members({ org }: { org: Org }) {
       </Table></TableCard>
       <MoreButton p={list} />
       {creating && <NewAccountDialog org={org} onClose={() => setCreating(false)} onCreated={(email, password) => (setCreating(false), setSecret({ email, password }), list.reload())} />}
-      <Dialog open={!!secret} onOpenChange={(o) => !o && setSecret(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>账号已就绪</DialogTitle>
-            <DialogDescription>把邮箱和初始密码交给对方；对方首次登录后必须先修改密码。</DialogDescription>
-          </DialogHeader>
-          <p className="text-sm"><span className="text-muted-foreground">登录邮箱 </span>{secret?.email}</p>
-          {secret?.password ? (
-            <div className="stack">
-              <Notice tone="warning">初始密码只显示这一次，关闭后无法再查看，请立即复制。</Notice>
-              <CopyText text={secret.password} />
-            </div>
-          ) : <p className="text-sm text-muted-foreground">初始密码为你刚才填写的密码。</p>}
-        </DialogContent>
-      </Dialog>
+      {editing && (
+        <RoleDialog title={`修改 ${editing.user.display_name} 的组织角色`} value={editing.role} onClose={() => setEditing(null)}
+          options={editing.role === "owner" && org.my_role !== "owner" ? [["owner", ROLE_LABEL.owner]] : roles}
+          onSave={async (role) => (await patch(`/orgs/${org.id}/members/${editing.user.id}`, { role }), list.reload())} />
+      )}
+      <SecretDialog secret={secret} onClose={() => setSecret(null)} />
     </div>
+  );
+}
+
+/** 一次性初始密码（新建账号、重置密码）：只显示这一次，带复制 */
+export function SecretDialog({ secret, onClose, title = "账号已就绪" }: { secret: { email: string; password: string | null } | null; onClose: () => void; title?: string }) {
+  return (
+    <Dialog open={!!secret} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>把邮箱和初始密码交给对方；对方首次登录后必须先修改密码。</DialogDescription>
+        </DialogHeader>
+        <p className="text-sm"><span className="text-muted-foreground">登录邮箱 </span>{secret?.email}</p>
+        {secret?.password ? (
+          <div className="stack">
+            <Notice tone="warning">初始密码只显示这一次，关闭后无法再查看，请立即复制。</Notice>
+            <CopyText text={secret.password} />
+          </div>
+        ) : <p className="text-sm text-muted-foreground">初始密码为你刚才填写的密码。</p>}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -396,6 +458,24 @@ export function Invites({ org, listPath, targets, projectId }: {
 }) {
   const [inactive, setInactive] = useState(false);
   const list = usePaged<Invite>(listPath + qs({ include_inactive: inactive }));
+  const [creating, setCreating] = useState(false);
+  return (
+    <div className="stack">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <CheckField checked={inactive} onChange={setInactive}>显示已失效</CheckField>
+        <Button size="sm" onClick={() => setCreating(true)}>新建邀请</Button>
+      </div>
+      <ErrorBox error={list.error} />
+      <InviteTable items={list.items} onRevoke={list.reload} />
+      <MoreButton p={list} />
+      {creating && <InviteDialog org={org} targets={targets} projectId={projectId} onClose={() => setCreating(false)} onCreated={list.reload} />}
+    </div>
+  );
+}
+
+function InviteDialog({ org, targets, projectId, onClose, onCreated }: {
+  org: Org; targets: ("org" | "project" | "group")[]; projectId?: string; onClose: () => void; onCreated: () => void;
+}) {
   const groups = useLoad(() => (targets.includes("group") ? get<{ items: Group[] }>(`/orgs/${org.id}/groups?limit=200`) : Promise.resolve({ items: [] })), [org.id]);
   const [f, setF] = useState({ target_type: targets[0] as string, group_id: "", role: "", email: "", max_uses: "1", expires_in: "604800" });
   const [created, setCreated] = useState<string | null>(null);
@@ -418,44 +498,36 @@ export function Invites({ org, listPath, targets, projectId }: {
         expires_in: Number(f.expires_in),
       });
       setCreated(r.url);
-      list.reload();
+      onCreated();
     });
   };
   return (
-    <div className="split">
-      <div className="stack">
-        <CheckField checked={inactive} onChange={setInactive}>显示已失效</CheckField>
-        <ErrorBox error={list.error} />
-        <InviteTable items={list.items} onRevoke={list.reload} />
-        <MoreButton p={list} />
-      </div>
-      <Panel title="发出邀请" desc="生成链接后发给对方；对方登录或注册后即可加入。">
-        <form onSubmit={submit} className="form">
-          {targets.length > 1 && (
-            <Field label="邀请加入">
-              <NativeSelect value={f.target_type} onChange={(v) => setF({ ...f, target_type: v })} options={targets.map((t) => [t, TARGET_LABEL[t]])} />
-            </Field>
-          )}
-          {f.target_type === "group" && (
-            <Field label="群组">
-              <NativeSelect value={f.group_id} onChange={(v) => setF({ ...f, group_id: v })}
-                options={[["", "请选择"], ...(groups.data?.items.map((g) => [g.id, g.name] as [string, string]) ?? [])]} />
-            </Field>
-          )}
-          <Field label="角色"><NativeSelect value={role} onChange={(v) => setF({ ...f, role: v })} options={roleOpts} /></Field>
-          <Field label="限定邮箱（可选）" hint="填写后会发邮件，只有该邮箱的已验证账号能接受，且只能用一次">
-            <Input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
+    <FormDialog onClose={onClose} title="发出邀请" desc="生成链接后发给对方；对方登录或注册后即可加入。">
+      <form onSubmit={submit} className="form">
+        {targets.length > 1 && (
+          <Field label="邀请加入">
+            <NativeSelect value={f.target_type} onChange={(v) => setF({ ...f, target_type: v })} options={targets.map((t) => [t, TARGET_LABEL[t]])} />
           </Field>
-          {!f.email.trim() && (
-            <Field label="可用次数"><Input type="number" min={1} max={1000} value={f.max_uses} onChange={(e) => setF({ ...f, max_uses: e.target.value })} /></Field>
-          )}
-          <Field label="有效期"><NativeSelect value={f.expires_in} onChange={(v) => setF({ ...f, expires_in: v })} options={EXPIRES} /></Field>
-          <ErrorBox error={a.error} />
-          <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy || (f.target_type === "group" && !f.group_id)}>生成邀请链接</Button></div>
-          {created && <div className="stack"><span className="small">邀请链接只显示这一次：</span><CopyText text={created} /></div>}
-        </form>
-      </Panel>
-    </div>
+        )}
+        {f.target_type === "group" && (
+          <Field label="群组">
+            <NativeSelect value={f.group_id} onChange={(v) => setF({ ...f, group_id: v })}
+              options={[["", "请选择"], ...(groups.data?.items.map((g) => [g.id, g.name] as [string, string]) ?? [])]} />
+          </Field>
+        )}
+        <Field label="角色"><NativeSelect value={role} onChange={(v) => setF({ ...f, role: v })} options={roleOpts} /></Field>
+        <Field label="限定邮箱（可选）" hint="填写后会发邮件，只有该邮箱的已验证账号能接受，且只能用一次">
+          <Input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
+        </Field>
+        {!f.email.trim() && (
+          <Field label="可用次数"><Input type="number" min={1} max={1000} value={f.max_uses} onChange={(e) => setF({ ...f, max_uses: e.target.value })} /></Field>
+        )}
+        <Field label="有效期"><NativeSelect value={f.expires_in} onChange={(v) => setF({ ...f, expires_in: v })} options={EXPIRES} /></Field>
+        <ErrorBox error={a.error} />
+        <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy || (f.target_type === "group" && !f.group_id)}>生成邀请链接</Button></div>
+        {created && <div className="stack"><span className="small">邀请链接只显示这一次：</span><CopyText text={created} /></div>}
+      </form>
+    </FormDialog>
   );
 }
 
@@ -519,18 +591,9 @@ function Audit({ org }: { org: Org }) {
 
 function OrgSettings({ org }: { org: Org }) {
   const { me, refresh } = useSession();
-  const [f, setF] = useState({ name: org.name, slug: org.slug });
+  const [editing, setEditing] = useState(false);
   const [confirmSlug, setConfirmSlug] = useState("");
   const a = useAction();
-  const save = (e: FormEvent) => {
-    e.preventDefault();
-    a.run(async () => {
-      const o = await patch<Org>(`/orgs/${org.id}`, f);
-      await refresh();
-      toast.ok("已保存");
-      if (o.slug !== org.slug) navigate(`/o/${o.slug}`, true);
-    });
-  };
   const remove = () =>
     a.run(async () => {
       await del(`/orgs/${org.id}`, { confirm_slug: confirmSlug });
@@ -550,14 +613,11 @@ function OrgSettings({ org }: { org: Org }) {
       <ErrorBox error={a.error} />
       <div className="cols-2">
       {isAdmin(org) && (
-        <Panel title="基本信息">
-        <form onSubmit={save} className="form">
-          <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-          <Field label="标识（slug）"><Input required pattern={SLUG_RE.source} value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} /></Field>
-          <div className="form-actions"><Button type="submit" loading={a.busy} disabled={a.busy}>保存</Button></div>
-        </form>
+        <Panel title="基本信息" actions={<Button variant="outline" size="sm" onClick={() => setEditing(true)}>编辑</Button>}>
+          <InfoList items={[["名称", org.name], ["标识（slug）", <span className="font-mono">{org.slug}</span>]]} />
         </Panel>
       )}
+      {editing && <OrgEditDialog org={org} onClose={() => setEditing(false)} />}
       <div className="stack">
       <Panel title="退出组织" desc="退出后将无法访问该组织的项目和页面。"
         actions={<Button variant="outline" className="text-destructive hover:text-destructive" onClick={leave} disabled={a.busy}>退出组织</Button>} />
@@ -573,5 +633,40 @@ function OrgSettings({ org }: { org: Org }) {
       </div>
       </div>
     </div>
+  );
+}
+
+/** 只读的「名称：值」列表（基本信息面板） */
+export function InfoList({ items }: { items: [string, ReactNode][] }) {
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
+      {items.map(([k, v]) => <Fragment key={k}><dt className="text-muted-foreground">{k}</dt><dd className="min-w-0 [overflow-wrap:anywhere]">{v}</dd></Fragment>)}
+    </dl>
+  );
+}
+
+function OrgEditDialog({ org, onClose }: { org: Org; onClose: () => void }) {
+  const { refresh } = useSession();
+  const [f, setF] = useState({ name: org.name, slug: org.slug });
+  const a = useAction();
+  const save = (e: FormEvent) => {
+    e.preventDefault();
+    a.run(async () => {
+      const o = await patch<Org>(`/orgs/${org.id}`, f);
+      await refresh();
+      toast.ok("已保存");
+      onClose();
+      if (o.slug !== org.slug) navigate(`/o/${o.slug}?tab=settings`, true);
+    });
+  };
+  return (
+    <FormDialog onClose={onClose} title="编辑组织">
+      <form onSubmit={save} className="form">
+        <Field label="名称"><Input required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+        <Field label="标识（slug）"><Input required pattern={SLUG_RE.source} value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} /></Field>
+        <ErrorBox error={a.error} />
+        <div className="form-actions"><Button type="button" variant="ghost" onClick={onClose}>取消</Button><Button type="submit" loading={a.busy} disabled={a.busy}>保存</Button></div>
+      </form>
+    </FormDialog>
   );
 }

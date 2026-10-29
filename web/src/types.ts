@@ -1,6 +1,6 @@
 // api.md §1.3 等共用对象
 export type UserBrief = { id: string; display_name: string };
-export type UserFull = { id: string; email: string; display_name: string; email_verified: boolean; created_at: string; must_change_password?: boolean };
+export type UserFull = { id: string; email: string; display_name: string; email_verified: boolean; created_at: string; must_change_password?: boolean; is_superadmin?: boolean };
 export type OrgRole = "owner" | "admin" | "member";
 export type ProjectRole = "admin" | "editor" | "viewer";
 export type Visibility = "public" | "org" | "project" | "groups";
@@ -179,4 +179,25 @@ export type AuditEntry = {
   id: number; action: string; target_type: string; target_id: string | null;
   actor: { user: UserBrief | null; pat: { id: string; name: string } | null };
   meta: Record<string, unknown>; created_at: string;
+};
+
+/** 超管面板（api.md §15） */
+export type AdminUser = {
+  id: string; email: string; display_name: string; is_superadmin: boolean;
+  disabled: boolean; disabled_at: string | null; must_change_password: boolean; email_verified: boolean; created_at: string;
+  org_count?: number;
+};
+export type AdminUserOrg = {
+  org: { id: string; name: string; slug: string }; role: OrgRole; joined_at: string;
+  projects: { id: string; name: string; role: ProjectRole }[];
+  groups: { id: string; name: string; project_id: string | null }[];
+};
+export type AdminOrg = {
+  id: string; name: string; slug: string; created_at: string; member_count: number;
+  owners: { id: string; display_name: string; email: string }[];
+};
+export type OrgStructure = {
+  org: { id: string; name: string; slug: string };
+  projects: { id: string; name: string; slug: string }[];
+  groups: { id: string; name: string; project_id: string | null }[];
 };

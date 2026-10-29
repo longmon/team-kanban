@@ -23,7 +23,7 @@ use crate::{
 
 type J = AppResult<Json<Value>>;
 
-fn slug_taken(e: sqlx::Error) -> AppError {
+pub(super) fn slug_taken(e: sqlx::Error) -> AppError {
     if unique_violation(&e).is_some() { AppError::conflict("slug_taken", "slug 已被占用") } else { e.into() }
 }
 
@@ -186,14 +186,14 @@ pub struct RoleReq {
 }
 
 /// 锁住该组织的 owner 行并计数（防并发降级出零 owner）
-async fn owner_count(conn: &mut sqlx::PgConnection, org_id: Uuid) -> AppResult<i64> {
+pub(super) async fn owner_count(conn: &mut sqlx::PgConnection, org_id: Uuid) -> AppResult<i64> {
     Ok(sqlx::query_scalar("SELECT count(*) FROM (SELECT 1 FROM memberships WHERE org_id = $1 AND role = 'owner' FOR UPDATE) x")
         .bind(org_id)
         .fetch_one(conn)
         .await?)
 }
 
-fn last_owner() -> AppError {
+pub(super) fn last_owner() -> AppError {
     AppError::conflict("last_owner", "组织至少需要一个 owner")
 }
 
@@ -267,7 +267,7 @@ pub async fn remove_member(State(st): State<AppState>, c: Caller, P((org_id, use
 const MAX_ACCOUNT_TARGETS: usize = 50;
 
 /// 初始密码：给了就按注册的强度规则校验；没给就用 CSPRNG 生成 20 位 base64url 字符。返回 (明文, 是否系统生成)
-fn initial_password(pw: Option<&str>) -> AppResult<(String, bool)> {
+pub(super) fn initial_password(pw: Option<&str>) -> AppResult<(String, bool)> {
     match pw.filter(|p| !p.is_empty()) {
         Some(p) => {
             password_field("password", p)?;
@@ -277,7 +277,7 @@ fn initial_password(pw: Option<&str>) -> AppResult<(String, bool)> {
     }
 }
 
-fn password_mode(generated: bool) -> &'static str {
+pub(super) fn password_mode(generated: bool) -> &'static str {
     if generated { "generated" } else { "manual" }
 }
 
@@ -285,6 +285,80 @@ fn password_mode(generated: bool) -> &'static str {
 pub struct AccountProject {
     project_id: Uuid,
     role: String,
+}
+
+/// 建账号时附带的项目（含角色）与群组：组织管理员建账号与超管建账号共用同一套校验
+pub(super) struct Targets {
+    pids: Vec<Uuid>,
+    proles: Vec<&'static str>,
+    gids: Vec<Uuid>,
+}
+
+impl Targets {
+    pub(super) fn parse(projects: &[AccountProject], group_ids: &[Uuid]) -> AppResult<Self> {
+        if projects.len() > MAX_ACCOUNT_TARGETS || group_ids.len() > MAX_ACCOUNT_TARGETS {
+            return Err(AppError::field("body", "项目、群组各最多 50 个"));
+        }
+        let mut pids = Vec::new();
+        let mut proles = Vec::new();
+        for p in projects {
+            let pr = parse_project_role(&p.role)?;
+            if pids.contains(&p.project_id) {
+                return Err(AppError::field("projects", "项目重复"));
+            }
+            pids.push(p.project_id);
+            proles.push(pr.as_str());
+        }
+        let mut gids = group_ids.to_vec();
+        gids.sort();
+        gids.dedup();
+        Ok(Self { pids, proles, gids })
+    }
+
+    /// 项目必须属于该组织且未删除；群组必须属于该组织，项目群组只能是本次所选项目的
+    pub(super) async fn check(&self, conn: &mut sqlx::PgConnection, org_id: Uuid) -> AppResult<()> {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM projects WHERE org_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
+            .bind(org_id)
+            .bind(&self.pids)
+            .fetch_one(&mut *conn)
+            .await?;
+        if n as usize != self.pids.len() {
+            return Err(AppError::field("projects", "包含不存在或不属于本组织的项目"));
+        }
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM groups WHERE org_id = $1 AND id = ANY($2) AND (project_id IS NULL OR project_id = ANY($3))")
+            .bind(org_id)
+            .bind(&self.gids)
+            .bind(&self.pids)
+            .fetch_one(&mut *conn)
+            .await?;
+        if n as usize != self.gids.len() {
+            return Err(AppError::field("group_ids", "包含不存在、不属于本组织或不属于所选项目的群组"));
+        }
+        Ok(())
+    }
+
+    /// 调用前须已插入 (org_id, user_id) 的 memberships 行
+    pub(super) async fn insert(&self, conn: &mut sqlx::PgConnection, org_id: Uuid, user_id: Uuid) -> AppResult<()> {
+        sqlx::query("INSERT INTO project_members (org_id, project_id, user_id, role) SELECT $1, unnest($2::uuid[]), $3, unnest($4::text[])")
+            .bind(org_id)
+            .bind(&self.pids)
+            .bind(user_id)
+            .bind(&self.proles)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("INSERT INTO group_members (org_id, group_id, user_id) SELECT $1, unnest($2::uuid[]), $3")
+            .bind(org_id)
+            .bind(&self.gids)
+            .bind(user_id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// 审计 meta：projects（[{project_id, role}]）与 group_ids
+    pub(super) fn audit(&self) -> (Vec<Value>, &[Uuid]) {
+        (self.pids.iter().zip(&self.proles).map(|(p, r)| json!({ "project_id": p, "role": r })).collect(), &self.gids)
+    }
 }
 
 #[derive(Deserialize)]
@@ -315,22 +389,7 @@ pub async fn create_account(State(st): State<AppState>, c: Caller, P(org_id): P<
     if role == OrgRole::Admin && ctx.role() < OrgRole::Owner {
         return Err(AppError::forbidden());
     }
-    if r.projects.len() > MAX_ACCOUNT_TARGETS || r.group_ids.len() > MAX_ACCOUNT_TARGETS {
-        return Err(AppError::field("body", "项目、群组各最多 50 个"));
-    }
-    let mut pids = Vec::new();
-    let mut proles = Vec::new();
-    for p in &r.projects {
-        let pr = parse_project_role(&p.role)?;
-        if pids.contains(&p.project_id) {
-            return Err(AppError::field("projects", "项目重复"));
-        }
-        pids.push(p.project_id);
-        proles.push(pr.as_str());
-    }
-    let mut gids = r.group_ids.clone();
-    gids.sort();
-    gids.dedup();
+    let targets = Targets::parse(&r.projects, &r.group_ids)?;
     let (password, generated) = initial_password(r.password.as_deref())?;
     // 邮箱已存在：不改其密码、不回显其信息；本组织成员 → already_member，其他已注册用户 → 改用邀请
     let existing: Option<bool> = sqlx::query_scalar(
@@ -348,24 +407,7 @@ pub async fn create_account(State(st): State<AppState>, c: Caller, P(org_id): P<
     }
     let hash = hash_password(password.clone()).await?;
     let mut tx = st.db.begin().await?;
-    // 项目必须属于本组织且未删除；群组必须属于本组织，项目群组只能是本次所选项目的
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM projects WHERE org_id = $1 AND id = ANY($2) AND deleted_at IS NULL")
-        .bind(ctx.org_id())
-        .bind(&pids)
-        .fetch_one(&mut *tx)
-        .await?;
-    if n as usize != pids.len() {
-        return Err(AppError::field("projects", "包含不存在或不属于本组织的项目"));
-    }
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM groups WHERE org_id = $1 AND id = ANY($2) AND (project_id IS NULL OR project_id = ANY($3))")
-        .bind(ctx.org_id())
-        .bind(&gids)
-        .bind(&pids)
-        .fetch_one(&mut *tx)
-        .await?;
-    if n as usize != gids.len() {
-        return Err(AppError::field("group_ids", "包含不存在、不属于本组织或不属于所选项目的群组"));
-    }
+    targets.check(&mut tx, ctx.org_id()).await?;
     let id = new_id();
     sqlx::query(
         "INSERT INTO users (id, email, password_hash, display_name, email_verified_at, must_change_password) VALUES ($1, $2, $3, $4, now(), true)",
@@ -378,20 +420,8 @@ pub async fn create_account(State(st): State<AppState>, c: Caller, P(org_id): P<
     .await
     .map_err(|e| if unique_violation(&e).is_some() { registered() } else { e.into() })?;
     sqlx::query("INSERT INTO memberships (org_id, user_id, role) VALUES ($1, $2, $3)").bind(ctx.org_id()).bind(id).bind(role.as_str()).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO project_members (org_id, project_id, user_id, role) SELECT $1, unnest($2::uuid[]), $3, unnest($4::text[])")
-        .bind(ctx.org_id())
-        .bind(&pids)
-        .bind(id)
-        .bind(&proles)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("INSERT INTO group_members (org_id, group_id, user_id) SELECT $1, unnest($2::uuid[]), $3")
-        .bind(ctx.org_id())
-        .bind(&gids)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    let projects: Vec<Value> = pids.iter().zip(&proles).map(|(p, r)| json!({ "project_id": p, "role": r })).collect();
+    targets.insert(&mut tx, ctx.org_id(), id).await?;
+    let (projects, gids) = targets.audit();
     audit::log(
         &mut tx,
         Some(ctx.org_id()),
@@ -680,7 +710,7 @@ pub async fn my_projects(State(st): State<AppState>, c: Caller) -> J {
 
 // ---------------------------------------------------------------- 项目成员
 
-fn parse_project_role(s: &str) -> AppResult<ProjectRole> {
+pub(super) fn parse_project_role(s: &str) -> AppResult<ProjectRole> {
     ProjectRole::parse(s).ok_or_else(|| AppError::field("role", "取值必须是 admin/editor/viewer"))
 }
 

@@ -1,7 +1,7 @@
 // 外壳（方向 A 长春花工作台）：登录后左侧固定导航（品牌、组织切换、工作台 / 等我处理 / 我发布的、项目列表、底部当前用户与设置）；
 // < 1024 收成顶部条 + 抽屉。搜索框（⌘K 命令栏）由各页面放在自己的标题行（SearchButton）。未登录时只有一条简单顶栏
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Building2, Check, ChevronDown, FileText, FolderKanban, Home, Inbox, KeyRound, LayoutGrid, LogOut, Menu, Monitor, Moon, Search, Send, Settings, Sun, UserPlus, UserRound, X } from "lucide-react";
+import { Building2, Check, ChevronDown, FileText, FolderKanban, Home, Inbox, KeyRound, LayoutGrid, LogOut, Menu, Monitor, Moon, Search, Send, Settings, ShieldCheck, Sun, UserPlus, UserRound, X } from "lucide-react";
 import { get, post, qs } from "./api";
 import { cn } from "@/lib/utils";
 import { Link, navigate, useLocation, useQuery } from "./router";
@@ -250,6 +250,7 @@ function UserMenu() {
           <DropdownMenuItem onSelect={() => navigate("/orgs")}><Building2 />组织</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => navigate("/settings/tokens")}><KeyRound />访问令牌</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => navigate("/settings/account")}><UserRound />账号设置</DropdownMenuItem>
+          {me.user.is_superadmin && <DropdownMenuItem onSelect={() => navigate("/admin")}><ShieldCheck />系统管理</DropdownMenuItem>}
           <DropdownMenuItem onSelect={act.toggleTheme}>{act.dark ? <Sun /> : <Moon />}{act.dark ? "切换到亮色" : "切换到暗色"}</DropdownMenuItem>
           <DropdownMenuItem onSelect={act.toggleSkin}><Monitor />切换到经典主题</DropdownMenuItem>
           <DropdownMenuSeparator />

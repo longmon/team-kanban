@@ -199,11 +199,11 @@ async fn resolve(st: &AppState, req: &Parts) -> AppResult<Caller> {
     Ok(Caller { p, ip })
 }
 
-/// 返回 (会话主体, 是否必须先改密码)
+/// 返回 (会话主体, 是否必须先改密码)；账号已禁用视同无会话（禁用时也会删掉其会话）
 async fn load_session(db: &PgPool, token: &str) -> AppResult<Option<(UserPrincipal, bool)>> {
     let row: Option<(Uuid, Uuid, String, DateTime<Utc>, bool)> = sqlx::query_as(
         "SELECT s.id, s.user_id, s.csrf_token, s.last_seen_at, u.must_change_password FROM sessions s JOIN users u ON u.id = s.user_id
-          WHERE s.token_hash = $1 AND s.expires_at > now()",
+          WHERE s.token_hash = $1 AND s.expires_at > now() AND u.disabled_at IS NULL",
     )
     .bind(sha256(token))
     .fetch_optional(db)
@@ -220,12 +220,13 @@ async fn load_session(db: &PgPool, token: &str) -> AppResult<Option<(UserPrincip
     Ok(Some((UserPrincipal { user_id, via: Via::Session { session_id, csrf } }, must_change)))
 }
 
+/// 账号已禁用的 PAT 一律无效（不吊销，启用账号后未过期未吊销的令牌恢复可用）
 type PatRow = (Uuid, Uuid, Option<Uuid>, Option<Uuid>, Vec<String>, Option<DateTime<Utc>>);
 
 async fn load_pat(db: &PgPool, token: &str) -> AppResult<Option<UserPrincipal>> {
     let row: Option<PatRow> = sqlx::query_as(
-        "SELECT id, user_id, org_id, project_id, scopes, last_used_at FROM personal_access_tokens
-          WHERE token_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())",
+        "SELECT t.id, t.user_id, t.org_id, t.project_id, t.scopes, t.last_used_at FROM personal_access_tokens t JOIN users u ON u.id = t.user_id
+          WHERE t.token_hash = $1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now()) AND u.disabled_at IS NULL",
     )
     .bind(sha256(token))
     .fetch_optional(db)

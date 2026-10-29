@@ -64,3 +64,15 @@ pub fn host_of(origin: &str) -> String {
     let s = origin.split_once("://").map_or(origin, |(_, r)| r);
     s.split('/').next().unwrap_or("").to_ascii_lowercase()
 }
+
+/// `SUPERADMIN_EMAILS=a@x.com,b@y.com`：逗号/空白分隔，trim + 小写，去重
+pub fn superadmin_emails() -> Vec<String> {
+    parse_emails(&var("SUPERADMIN_EMAILS").unwrap_or_default())
+}
+
+pub fn parse_emails(s: &str) -> Vec<String> {
+    let mut v: Vec<String> = s.split([',', ' ', '\n', '\t']).map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect();
+    v.sort();
+    v.dedup();
+    v
+}

@@ -118,10 +118,13 @@ type Response = {
 | 403 | `email_mismatch` | 邀请绑定的邮箱与当前账号不一致 |
 | 403 | `signup_disabled` | `ALLOW_SIGNUP=0` 且无有效邀请 |
 | 403 | `password_change_required` | 会话用户是管理员建的账号且尚未改初始密码（见 §3） |
+| 403 | `account_disabled` | 登录时账号已被超管禁用（密码正确后才返回，见 §15） |
 | 404 | `not_found` | 不存在 / 已删除 / 跨租户 / 无查看权限（统一） |
 | 405 | `method_not_allowed` | |
 | 409 | `email_taken` `slug_taken` `name_taken` `already_member` | 唯一冲突 |
-| 409 | `email_registered` | 管理员建账号时邮箱已被组织外用户注册（请改用邀请） |
+| 409 | `email_registered` | 管理员建账号时邮箱已被组织外用户注册（请改用邀请）；超管建账号/建组织时 details 为 `{ "user_id": "..." }`（请在账号详情里分配） |
+| 409 | `last_superadmin` | 撤销或禁用后将没有可用的超级管理员 |
+| 409 | `cannot_disable_self` `cannot_reset_self` | 超管禁用自己 / 重置自己的密码 |
 | 409 | `password_in_use` | 重置一次性密码时该账号已改过密码、正常使用中 |
 | 409 | `last_owner` | 操作会让组织没有 owner |
 | 409 | `not_org_member` | 加入项目/群组的用户不是组织成员 |
@@ -157,7 +160,7 @@ type Response = {
 // 200
 { "user": UserFull, "csrf_token": "string" }
 ```
-错误：401 `invalid_credentials`、429。
+错误：401 `invalid_credentials`、403 `account_disabled`（密码正确但账号已禁用）、429。
 
 ### POST /api/auth/logout — `cookie` → 204
 清 cookie，删会话。
@@ -815,7 +818,9 @@ type AuditEntry = {
 
 ## 13. 前端路由（SPA，非 /api 路径均回落到 index.html）
 
-`/` `/login` `/register` `/verify-email?token=` `/forgot-password` `/reset-password?token=` `/invite/:token` `/o/:orgSlug` `/o/:orgSlug/p/:projectSlug` `/pages/:id` `/pages/:id/results` `/pages/:id/links` `/s/:token` `/settings/tokens` `/settings/account`
+`/` `/login` `/register` `/verify-email?token=` `/forgot-password` `/reset-password?token=` `/invite/:token` `/o/:orgSlug` `/o/:orgSlug/p/:projectSlug` `/o/:orgSlug/groups/:groupId`（群组成员管理） `/pages/:id` `/pages/:id/results` `/pages/:id/links` `/s/:token` `/settings/tokens` `/settings/account` `/admin`（系统管理，超管；`?tab=orgs`） `/admin/users/:id`（超管账号详情）
+
+管理类页面「列表与编辑分开」：列表页只放列表 + 右上角「新增」+ 每行「编辑」；简单表单（改名、改角色、新建项目/群组/令牌/临时链接/邀请、组织/项目基础信息）用弹窗；复杂编辑（群组成员、超管账号详情）是独立页面。
 
 邮件与返回给 agent 的链接只使用：`/pages/{id}`、`/s/{token}`、`/invite/{token}`、`/verify-email?token=`、`/reset-password?token=`。
 
@@ -933,3 +938,74 @@ type AuditEntry = {
 ### list_pages
 - 入参：`{ server?: string, org?: string, project?: string /* UUID、"org_slug/project_slug"、slug 或名称 */ }`（不要求发布权；不套用 profile 默认目标）
 - 出参：`{ server, pages: Page[] }`（`GET /api/pages`，自动翻页最多 500 条，超出时附 `truncated: true`）；`closed_at` 非空 = 已关闭
+
+## 15. 超级管理员 `/api/admin`
+
+平台级角色，与组织角色独立（`users.is_superadmin`）。所有端点 **只接受 cookie 会话**：匿名 401，PAT（哪怕属于超管）403，非超管 403。每个写操作记审计（`audit_log`，不记密码；涉及某组织的分配同时带 `org_id`，该组织的审计里可见）。
+
+**第一个超管**：服务器环境变量 `SUPERADMIN_EMAILS=a@example.com,b@example.com`（逗号分隔，大小写不敏感）。每次启动把其中**已注册**的账号设为超管（幂等，已是超管的不动；未注册的邮箱只在日志里告警，注册后重启生效）。只授予不撤销：从变量里删掉邮箱不会撤销，撤销在超管面板里做。server 二进制没有子命令机制，只提供环境变量。
+
+**禁用**：`users.disabled_at` 非空。禁用时删其全部会话（立即下线）；会话与 PAT 鉴权都过滤已禁用账号（PAT 不吊销）；登录密码正确后返回 403 `account_disabled`。启用后可重新登录，**未过期、未吊销的 PAT 自动恢复可用**；被踢掉的旧会话不恢复。
+
+```ts
+type AdminUser = {
+  id: string; email: string; display_name: string; is_superadmin: boolean;
+  disabled: boolean; disabled_at: string | null; must_change_password: boolean; email_verified: boolean; created_at: string;
+  org_count?: number;            // 仅列表
+}
+```
+
+`UserFull`（§1.3，`/auth/me` 等）新增 `is_superadmin: boolean`，前端据此显示「系统管理」入口。
+
+### GET /api/admin/users?q=&status=&limit=&cursor=
+`q` 按邮箱/姓名前缀（不区分大小写）；`status` ∈ `disabled` | `must_change` | `superadmin`（空 = 全部）。按创建先后倒序。→ `{ items: AdminUser[], next_cursor }`
+
+### POST /api/admin/users
+```json
+// req
+{ "email": "string", "display_name": "string", "password": "string?", "is_superadmin": false,
+  "orgs": [ { "org_id": "uuid", "role": "owner|admin|member",
+              "projects": [{ "project_id": "uuid", "role": "admin|editor|viewer" }], "group_ids": ["uuid"] } ] }
+// 201
+{ "user": AdminUser, "generated_password": "string|null" }
+```
+与组织管理员建账号（§4.2）同一套校验与默认：密码不给则 CSPRNG 生成 20 位（只在本响应出现一次，不入库明文、不进审计）、给了按注册强度校验；邮箱视为已验证；`must_change_password = true`。每个组织的项目必须属于该组织且未删除，群组必须属于该组织且项目群组只能是所选项目的；组织不能重复、不能是已删除组织；最多 50 个组织、每组织项目/群组各 50。邮箱已注册 → 409 `email_registered`（details.user_id）——已注册账号请用下面的分配接口，**绝不改其密码**。审计：`admin.user_create`（全局）+ 每组织一条 `admin.member_set`。限流 60 次/小时/超管（与重置密码、建组织时新建所有者共用）。
+
+### GET /api/admin/users/{id}
+```json
+{ "user": AdminUser,
+  "orgs": [ { "org": { "id", "name", "slug" }, "role": "owner|admin|member", "joined_at": "...",
+              "projects": [{ "id", "name", "role" }], "groups": [{ "id", "name", "project_id": "uuid|null" }] } ] }
+```
+只列未删除的组织与项目。
+
+### PATCH /api/admin/users/{id}
+`{ "display_name"?: string, "is_superadmin"?: bool, "disabled"?: bool }`（至少一个）→ `{ "user": AdminUser }`。不能禁用自己（409 `cannot_disable_self`）；撤销超管或禁用超管后必须至少剩一个**未禁用**的超管（409 `last_superadmin`，锁住全部超管行再计数，防并发互撤）。审计：`admin.user_update`（改名）、`admin.superadmin_grant` / `admin.superadmin_revoke`、`admin.user_disable`（meta.sessions_revoked）/ `admin.user_enable`。
+
+### POST /api/admin/users/{id}/reset-password
+`{ "password"?: string }` → `{ "generated_password": "string|null" }`。显式重置任意账号（不限 must_change_password），设 `must_change_password = true`（下次登录必须先改密码，复用 0007 机制），删其全部会话。不能重置自己（409 `cannot_reset_self`）。审计 `admin.password_reset`（meta.password = generated|manual）。
+
+### 组织 / 项目 / 群组分配（均 → 204）
+| 方法 路径 | 说明 |
+|---|---|
+| `PUT /api/admin/users/{id}/orgs/{org_id}` `{ role }` | 加入组织或改组织角色（owner 也可）；把最后一个 owner 降级 → 409 `last_owner`。审计 `admin.member_set`（meta.old/new） |
+| `DELETE /api/admin/users/{id}/orgs/{org_id}` | 移出组织（级联移出该组织的项目与群组）；最后一个 owner → 409 `last_owner`。审计 `admin.member_remove` |
+| `PUT /api/admin/users/{id}/projects/{project_id}` `{ role }` | 加入项目或改项目角色；须先是该组织成员（409 `not_org_member`）。审计 `admin.project_member_set` |
+| `DELETE /api/admin/users/{id}/projects/{project_id}` | 审计 `admin.project_member_remove` |
+| `PUT /api/admin/users/{id}/groups/{group_id}` | 加入群组（幂等，重复不记审计）；须先是该组织成员。审计 `admin.group_member_add` |
+| `DELETE /api/admin/users/{id}/groups/{group_id}` | 审计 `admin.group_member_remove` |
+
+### GET /api/admin/orgs?q=&limit=&cursor=
+`q` 按 slug / 名称前缀。→ `{ items: [{ id, name, slug, created_at, member_count, owners: [{ id, display_name, email }] }], next_cursor }`（不含已删除组织）
+
+### GET /api/admin/orgs/{id}/structure
+超管不必是成员。→ `{ org: { id, name, slug }, projects: [{ id, name, slug }], groups: [{ id, name, project_id }] }`
+
+### POST /api/admin/orgs
+```json
+// req：owner_user_id（已有账号）与 owner（同时新建账号）二选一
+{ "name": "string", "slug": "string", "owner_user_id": "uuid?", "owner": { "email": "string", "display_name": "string", "password": "string?" } }
+// 201
+{ "org": { "id", "name", "slug", "created_at" }, "owner": AdminUser, "generated_password": "string|null" }
+```
+超管本人不因此成为成员（`orgs.created_by` 记超管）。新建所有者同 POST /api/admin/users 的规则（邮箱已注册 → 409 `email_registered`）。审计 `admin.org_create`（meta.owner_user_id、owner_created），新建所有者另记 `admin.user_create`。

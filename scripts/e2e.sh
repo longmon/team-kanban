@@ -43,11 +43,19 @@ fi
 
 echo "== 临时库 $DB，服务 $BASE（PAGES_ORIGIN=http://localhost:$PORT）"
 pgq "CREATE DATABASE $DB"
-DATABASE_URL=$PG_URL/$DB PUBLIC_URL=$BASE PAGES_ORIGIN=http://localhost:$PORT BIND=127.0.0.1:$PORT \
-  SECRET_KEY=e2e-secret-key-0123456789abcdef0123456789 COOKIE_SECURE=0 RUST_LOG=info \
-  "$ROOT/server/target/release/relay" >"$OUT/server.log" 2>&1 &
-SERVER_PID=$!
-for _ in $(seq 50); do curl -sf "$BASE/openui/prompt.md" >/dev/null && break; sleep 0.2; done
+SA_EMAIL=root@example.com SA_PASSWORD=rootpass12345
+start_server() {
+  DATABASE_URL=$PG_URL/$DB PUBLIC_URL=$BASE PAGES_ORIGIN=http://localhost:$PORT BIND=127.0.0.1:$PORT \
+    SECRET_KEY=e2e-secret-key-0123456789abcdef0123456789 COOKIE_SECURE=0 RUST_LOG=info SUPERADMIN_EMAILS=$SA_EMAIL \
+    "$ROOT/server/target/release/relay" >>"$OUT/server.log" 2>&1 &
+  SERVER_PID=$!
+  for _ in $(seq 50); do curl -sf "$BASE/openui/prompt.md" >/dev/null && break; sleep 0.2; done
+}
+start_server
+# 首个超管：先注册，再重启让 SUPERADMIN_EMAILS 生效（与部署文档一致）
+curl -sf -H 'Content-Type: application/json' -d "{\"email\":\"$SA_EMAIL\",\"password\":\"$SA_PASSWORD\",\"display_name\":\"Root\"}" "$BASE/api/auth/register" >/dev/null
+kill "$SERVER_PID" && wait "$SERVER_PID" 2>/dev/null || true
+start_server
 curl -sf "$BASE/" | grep -q '<div id="root">' || { echo "首页不是 SPA，web/dist 没嵌进去？"; exit 1; }
 curl -sf "$BASE/openui/library.schema.json" | jq -e . >/dev/null
 
@@ -73,6 +81,6 @@ echo "== MCP 冒烟"
   cargo test -q --test live -- --nocapture)
 
 echo "== 浏览器 e2e"
-(cd "$ROOT/web" && BASE=$BASE node e2e/e2e.mjs "$OUT")
+(cd "$ROOT/web" && BASE=$BASE SA_EMAIL=$SA_EMAIL SA_PASSWORD=$SA_PASSWORD node e2e/e2e.mjs "$OUT")
 
 echo "== 全部通过"

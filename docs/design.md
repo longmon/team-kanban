@@ -78,7 +78,7 @@ Dockerfile docker-compose.yml Caddyfile.example
 
 ### 3.1 账号
 
-**users** — `id uuid PK`、`email text UNIQUE`（CHECK 已小写去空格）、`password_hash text`、`display_name text(1..50)`、`email_verified_at timestamptz?`、`must_change_password bool NOT NULL DEFAULT false`（0007：管理员建的账号为 true，改密前会话只能看自己/改密码/登出）、`created_at`、`updated_at`。
+**users** — `id uuid PK`、`email text UNIQUE`（CHECK 已小写去空格）、`password_hash text`、`display_name text(1..50)`、`email_verified_at timestamptz?`、`must_change_password bool NOT NULL DEFAULT false`（0007：管理员建的账号为 true，改密前会话只能看自己/改密码/登出）、`is_superadmin bool NOT NULL DEFAULT false`、`disabled_at timestamptz?`（0011：超级管理员与账号禁用，见 §5.5）、`created_at`、`updated_at`。
 扩展余地：接 OAuth 时新增 `user_identities(user_id, provider, subject, UNIQUE(provider, subject))`，`password_hash` 改可空。现在不建。
 
 **sessions** — `id`、`user_id → users CASCADE`、`token_hash bytea UNIQUE`、`csrf_token text`、`ip inet`、`user_agent text`、`created_at`、`last_seen_at`、`expires_at`。索引 `user_id`、`expires_at`。
@@ -347,6 +347,14 @@ SSE（`/responses/stream`）：先按 §5.3 判定查看权限，再要求 `can_
 
 任何提交记录响应都不含提交者 email 与 ip（ip 只存库供运维排查）。
 
+### 5.5 超级管理员与账号禁用（api.md §15）
+
+- **平台级角色**：`users.is_superadmin`，与组织角色独立，不经 `authz.rs` 的 Ctx（超管接口不属于任何租户），在 `routes/admin.rs` 的 `require_superadmin` 统一判定：只接受 cookie 会话（PAT 一律 403），再查 `users.is_superadmin`。超管**不**因此获得任何组织/项目/页面的访问权——要看某组织内容仍需是成员（可以在面板里把自己加进去，留审计）。
+- **能做**：查看全站账号；建账号并分配到多个组织（各自组织角色，可选项目及角色、群组）；对已有账号增删组织/项目/群组分配、改角色（不改其密码）；禁用/启用；显式重置密码（一次性密码 + `must_change_password`）；建组织并指定所有者；授予/撤销其他人的超管。
+- **不变量**：不能禁用自己；撤销或禁用后至少剩一个未禁用的超管（`FOR UPDATE` 锁全部超管行再计数）；组织分配沿用 owner 至少一个（`last_owner`）、项目/群组须先是组织成员、建账号时项目群组只能是所选项目的（与 `create_account` 共用 `orgs.rs Targets`）。
+- **首个超管**：`SUPERADMIN_EMAILS` 环境变量，启动时幂等授予已注册账号（`lib.rs bootstrap_superadmins`）。先注册、再配变量重启。
+- **禁用**：`users.disabled_at`。`auth.rs` 的 `load_session` / `load_pat` 都在原查询上 JOIN users 加 `disabled_at IS NULL`（按主键探测一行，无额外往返）；禁用时同事务删会话；登录在密码校验通过后才返回 `account_disabled`，不向猜密码的人暴露账号状态。PAT 不吊销，启用后未过期未吊销的自动恢复。
+
 ## 6. 会话、CSRF、限流、审计、PAGES_ORIGIN
 
 ### 6.1 会话
@@ -402,6 +410,9 @@ invite.create  invite.revoke  invite.accept
 page.publish  page.update(meta 含变更字段，visibility/groups 变更时记录旧→新)  page.delete  page.close  page.reopen
 share_link.create  share_link.revoke
 pat.create  pat.revoke
+admin.user_create  admin.user_update  admin.user_disable(meta: sessions_revoked)  admin.user_enable  admin.superadmin_grant  admin.superadmin_revoke
+admin.password_reset(meta: password=generated|manual)  admin.member_set(meta: old/new)  admin.member_remove  admin.project_member_set  admin.project_member_remove
+admin.group_member_add  admin.group_member_remove  admin.org_create(meta: owner_user_id/owner_created)
 ```
 `meta` 只记录 id、角色、字段名与旧新值；**不记录** token、密码、页面内容、提交数据。
 
@@ -459,6 +470,7 @@ Strict-Transport-Security 由 Caddy 加
 | `TRUST_PROXY` | `0` | 在 Caddy 后面设 `1` |
 | `COOKIE_SECURE` | `1` | 仅本地 http 开发设 `0` |
 | `ALLOW_SIGNUP` | `1` | `0` 时只能凭邀请链接注册 |
+| `SUPERADMIN_EMAILS` | 空 | 逗号分隔的邮箱；每次启动把其中已注册的账号设为超级管理员（幂等，只授予不撤销，见 §5.5） |
 | `SMTP_URL` / `SMTP_FROM` | 空 | 见 §7.2 |
 | `RUST_LOG` | `info` | tracing 日志级别 |
 

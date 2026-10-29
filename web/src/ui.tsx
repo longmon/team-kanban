@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -373,6 +374,23 @@ export function AuthCard({ title, desc, children }: { title?: ReactNode; desc?: 
         {children}
       </div>
     </div>
+  );
+}
+
+/** 列表页的「新增 / 编辑」弹窗：标题、说明 + 表单；内容超高时内部滚动 */
+export function FormDialog({ open = true, onClose, title, desc, children, wide }: {
+  open?: boolean; onClose: () => void; title: ReactNode; desc?: ReactNode; children: ReactNode; wide?: boolean;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className={cn("max-h-[calc(100dvh-2rem)] overflow-y-auto", wide && "sm:max-w-xl")} {...(desc ? {} : { "aria-describedby": undefined })}>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          {desc && <DialogDescription>{desc}</DialogDescription>}
+        </DialogHeader>
+        {children}
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -9,7 +9,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { del, get, patch, post, qs } from "../api";
 import { Link } from "../router";
-import { CheckField, copyText, CopyText, Empty, ErrorBox, Field, fmtTime, NativeSelect, Notice, Page, PageHeader, Panel, TableCard, toast, useAction, useLoad, useSession, useTheme, type Skin } from "../ui";
+import { CheckField, copyText, CopyText, Empty, ErrorBox, Field, fmtTime, FormDialog, NativeSelect, Notice, Page, PageHeader, Panel, TableCard, toast, useAction, useLoad, useSession, useTheme, type Skin } from "../ui";
 import type { Paged, Pat, Project, Scope, UserFull } from "../types";
 
 /** MCP 接入片段（README §3.2–3.3）：服务器地址取当前站点，令牌由 tkanban add 交互输入，不写进片段 */
@@ -78,38 +78,18 @@ const SCOPES: [Scope, string][] = [["publish", "发布页面（publish）"], ["r
 const PAT_EXPIRES: [string, string][] = [["2592000", "30 天"], ["7776000", "90 天"], ["31536000", "1 年"], ["", "永不过期"]];
 
 export function TokenSettings() {
-  const { me } = useSession();
   const [showRevoked, setShowRevoked] = useState(false);
   const list = useLoad(() => get<{ items: Pat[] }>(`/tokens${qs({ include_revoked: showRevoked })}`), [showRevoked]);
-  const [f, setF] = useState({ name: "", scopes: ["publish", "read_responses"] as Scope[], org_id: "", project_id: "", expires_in: "7776000" });
-  const projects = useLoad(
-    () => (f.org_id ? get<Paged<Project>>(`/orgs/${f.org_id}/projects?limit=200`) : Promise.resolve({ items: [], next_cursor: null })),
-    [f.org_id],
-  );
-  const [token, setToken] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const a = useAction();
-  const toggle = (s: Scope) => setF({ ...f, scopes: f.scopes.includes(s) ? f.scopes.filter((x) => x !== s) : [...f.scopes, s] });
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    a.run(async () => {
-      const r = await post<{ pat: Pat; token: string }>("/tokens", {
-        name: f.name, scopes: f.scopes,
-        org_id: f.org_id || undefined, project_id: f.project_id || undefined,
-        expires_in: f.expires_in ? Number(f.expires_in) : null,
-      });
-      setToken(r.token);
-      setF({ ...f, name: "" });
-      list.reload();
-    });
-  };
   return (
     <Page>
       <PageHeader title="个人访问令牌"
-        desc={<>令牌供本机 agent 的 MCP 使用（环境变量 <code>TEAM_KANBAN_TOKEN</code>）。令牌的权限不会超过你本人的当前权限。</>} />
-      <div className="split">
+        desc={<>令牌供本机 agent 的 MCP 使用（环境变量 <code>TEAM_KANBAN_TOKEN</code>）。令牌的权限不会超过你本人的当前权限。</>}
+        actions={<Button onClick={() => setCreating(true)}>新建令牌</Button>} />
       <div className="stack">
       <CheckField checked={showRevoked} onChange={setShowRevoked}>显示已撤销</CheckField>
-      <ErrorBox error={list.error} />
+      <ErrorBox error={list.error || a.error} />
       {!!list.data?.items.length && <TableCard>
         <Table>
           <TableHeader><TableRow><TableHead>名称</TableHead><TableHead>范围</TableHead><TableHead>权限</TableHead><TableHead>到期</TableHead><TableHead>最近使用</TableHead><TableHead /></TableRow></TableHeader>
@@ -132,9 +112,38 @@ export function TokenSettings() {
           </TableBody>
         </Table>
       </TableCard>}
-      {list.data?.items.length === 0 && <Empty icon={<KeyRound />} title="暂无令牌">新建一个令牌，配置到 agent 的 MCP 里。</Empty>}
+      {list.data?.items.length === 0 && <Empty icon={<KeyRound />} title="暂无令牌">点右上角「新建令牌」，配置到 agent 的 MCP 里。</Empty>}
       </div>
-      <Panel title="新建令牌">
+      {creating && <NewTokenDialog onClose={() => setCreating(false)} onCreated={list.reload} />}
+    </Page>
+  );
+}
+
+function NewTokenDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const { me } = useSession();
+  const [f, setF] = useState({ name: "", scopes: ["publish", "read_responses"] as Scope[], org_id: "", project_id: "", expires_in: "7776000" });
+  const projects = useLoad(
+    () => (f.org_id ? get<Paged<Project>>(`/orgs/${f.org_id}/projects?limit=200`) : Promise.resolve({ items: [], next_cursor: null })),
+    [f.org_id],
+  );
+  const [token, setToken] = useState<string | null>(null);
+  const a = useAction();
+  const toggle = (s: Scope) => setF({ ...f, scopes: f.scopes.includes(s) ? f.scopes.filter((x) => x !== s) : [...f.scopes, s] });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    a.run(async () => {
+      const r = await post<{ pat: Pat; token: string }>("/tokens", {
+        name: f.name, scopes: f.scopes,
+        org_id: f.org_id || undefined, project_id: f.project_id || undefined,
+        expires_in: f.expires_in ? Number(f.expires_in) : null,
+      });
+      setToken(r.token);
+      setF({ ...f, name: "" });
+      onCreated();
+    });
+  };
+  return (
+    <FormDialog onClose={onClose} title="新建令牌" wide>
         <form onSubmit={submit} className="form">
           <Field label="名称"><Input required maxLength={100} placeholder="例如：笔记本上的 Claude" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
           <div className="grid gap-2.5"><span className="text-[13px] font-medium">权限</span>
@@ -161,9 +170,7 @@ export function TokenSettings() {
           </div>
         )}
         <McpSnippet />
-      </Panel>
-      </div>
-    </Page>
+    </FormDialog>
   );
 }
 

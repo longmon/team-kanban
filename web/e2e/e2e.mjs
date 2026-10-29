@@ -2,6 +2,7 @@
 //   BASE=http://127.0.0.1:8080 node web/e2e/e2e.mjs [截图目录]
 // 前提：后端以 PUBLIC_URL=$BASE、PAGES_ORIGIN=同端口另一主机名（127.0.0.1 ↔ localhost）启动，库是空的。
 // 浏览器：CHROME 环境变量，缺省找 ~/.cache/ms-playwright 下的 headless shell。任一场景失败则退出码 1。
+// 超管场景：SA_EMAIL / SA_PASSWORD 为已由 SUPERADMIN_EMAILS 引导成超管的账号（scripts/e2e.sh 会准备）；未设置则跳过。
 import { chromium } from "playwright-core";
 import { execSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -118,6 +119,7 @@ const step = async (name, fn) => {
   catch (e) { failed++; console.log("FAIL", name, e.message.split("\n")[0]); await page.screenshot({ path: `${OUT}/fail-${name}.png` }).catch(() => {}); }
 };
 const toast = (t) => page.locator(".toast", { hasText: t }).first().waitFor({ timeout: 5000 });
+const toast2 = (p, t) => p.locator(".toast", { hasText: t }).first().waitFor({ timeout: 5000 });
 const login = async (p, email) => {
   await p.goto(BASE + "/login");
   await p.fill("input[type=email]", email);
@@ -385,16 +387,19 @@ await step("html-frame-submit", async () => {
 });
 await step("links-create", async () => {
   await page.goto(voteUrl + "/links");
-  await page.getByRole("button", { name: "创建链接" }).click();
+  await page.getByRole("button", { name: "新建链接" }).click(); // 列表页只放列表，新建在弹窗里
+  await page.getByRole("dialog", { name: "新建链接" }).getByRole("button", { name: "创建链接" }).click();
   await page.getByText("链接只显示这一次").waitFor();
 });
 await step("tokens-create", async () => {
   await page.goto(BASE + "/settings/tokens");
+  await page.getByRole("button", { name: "新建令牌" }).click(); // 新建在弹窗里
   await page.fill("input[placeholder*=笔记本]", "test");
   await page.getByRole("button", { name: "创建令牌" }).click();
   await page.getByText("令牌只显示这一次").waitFor();
-  await page.getByRole("button", { name: "撤销" }).first().waitFor();
   await page.getByText("tkanban add team-kanban --url " + BASE).waitFor(); // MCP 配置片段
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "撤销" }).first().waitFor();
 });
 await step("page-meta-edit", async () => {
   // 页面设置在详情页操作条「管理」里；改为公开要在对话框里确认
@@ -420,16 +425,25 @@ await step("page-meta-edit", async () => {
 });
 await step("project-group-create", async () => {
   // 项目页「成员与权限」→ 新建项目群组：出现在列表里，标「项目群组」，成员数 1（创建者自动加入）
+  // 新建在弹窗里；群组成员管理是独立页面（带返回、URL 可直达）
   await page.goto(BASE + "/o/demo/p/demo?tab=members");
+  await page.getByRole("button", { name: "新建项目群组" }).click();
   await page.fill("input[placeholder*=前端组]", "前端组");
   await page.getByRole("button", { name: "创建群组" }).click();
   await toast("已创建项目群组");
   const row = page.locator(".list-row", { hasText: "前端组" });
   await row.getByText("项目群组").waitFor();
   await row.locator(".list-stat", { hasText: "1" }).waitFor();
-  await row.getByRole("button", { name: "成员" }).click();
-  await row.getByText("demo@example.com").waitFor();
   await page.screenshot({ path: `${OUT}/project-groups.png`, fullPage: true });
+  await row.getByRole("link", { name: "成员" }).click();
+  await page.waitForURL(/\/o\/demo\/groups\/[0-9a-f-]+$/);
+  await page.getByRole("heading", { name: "前端组" }).waitFor();
+  await page.getByText("demo@example.com").waitFor();
+  await page.getByRole("button", { name: "添加成员" }).click();
+  await page.getByRole("dialog", { name: "添加成员" }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.getByRole("link", { name: "返回" }).click();
+  await page.waitForURL(/\/o\/demo\/p\/demo\?tab=members$/);
 });
 await step("page-meta-project-group", async () => {
   // 页面设置的群组候选：本项目群组在前（带「本项目」），再组织级群组；选本项目群组保存
@@ -769,6 +783,126 @@ await step("admin-create-account-force-change", async () => {
     await q.getByRole("heading", { name: "请先修改密码" }).waitFor({ state: "detached" });
     await q.waitForURL((u) => u.pathname === "/");
     await q.getByText("评审组可见").first().waitFor(); // 群组授权生效：首页动态里能看到评审组页面
+  } finally { await c2.close(); await c3.close(); }
+});
+await step("list-add-edit-dialogs", async () => {
+  // 列表页只放列表 +「新增」+ 每行「编辑」：简单表单在弹窗里，复杂设置是独立页面
+  await page.goto(BASE + "/o/demo?tab=members");
+  const row = page.locator("tr", { hasText: "member@example.com" });
+  await row.getByRole("button", { name: "编辑" }).click();
+  const dlg = page.getByRole("dialog", { name: "修改 Member 的组织角色" });
+  await dlg.getByRole("combobox", { name: "角色" }).waitFor();
+  await page.screenshot({ path: `${OUT}/org-member-edit-dialog.png` });
+  await dlg.getByRole("button", { name: "取消" }).click();
+  await dlg.waitFor({ state: "detached" });
+  await page.screenshot({ path: `${OUT}/org-members.png`, fullPage: true });
+  await page.goto(BASE + "/o/demo");
+  await page.getByRole("button", { name: "新建项目" }).click();
+  await page.getByRole("dialog", { name: "新建项目" }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.goto(BASE + "/o/demo?tab=groups");
+  await page.locator(".list-row", { hasText: "评审组" }).getByRole("button", { name: "编辑" }).click();
+  await page.getByRole("dialog", { name: "编辑群组" }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.goto(BASE + "/o/demo?tab=invites");
+  await page.getByRole("button", { name: "新建邀请" }).click();
+  await page.getByRole("dialog", { name: "发出邀请" }).getByRole("button", { name: "生成邀请链接" }).click();
+  await page.getByText("邀请链接只显示这一次").waitFor();
+  await page.keyboard.press("Escape");
+  await page.goto(BASE + "/o/demo?tab=settings");
+  await page.getByRole("button", { name: "编辑" }).click();
+  await page.getByRole("dialog", { name: "编辑组织" }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.goto(BASE + "/o/demo/p/demo?tab=settings");
+  await page.getByRole("button", { name: "编辑" }).click();
+  await page.getByRole("dialog", { name: "编辑项目" }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: `${OUT}/project-settings.png`, fullPage: true });
+  await page.goto(BASE + "/o/demo/p/demo?tab=members");
+  await page.locator("tr", { hasText: "demo@example.com" }).getByRole("button", { name: "编辑" }).click();
+  await page.getByRole("dialog", { name: /的项目角色$/ }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: `${OUT}/project-members.png`, fullPage: true });
+  // 非超管看不到「系统管理」，直接访问 /admin 显示无权限
+  await page.getByRole("button", { name: "账号菜单" }).click();
+  if (await page.getByRole("menuitem", { name: "系统管理" }).count()) throw new Error("non-superadmin sees 系统管理");
+  await page.keyboard.press("Escape");
+  await page.goto(BASE + "/admin");
+  await page.getByRole("heading", { name: "无权访问" }).waitFor();
+});
+await step("superadmin-create-assign-disable", async () => {
+  // 超管建账号并分配组织（项目 + 群组）→ 新账号登录改密 → 超管禁用 → 该账号被踢下线、不能再登录
+  if (!process.env.SA_EMAIL) return console.log("skip: SA_EMAIL 未设置");
+  const c2 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const p = await c2.newPage();
+  watch(p);
+  const c3 = await browser.newContext();
+  const q = await c3.newPage();
+  watch(q);
+  try {
+    await p.goto(BASE + "/login");
+    await p.fill("input[type=email]", process.env.SA_EMAIL);
+    await p.fill("input[type=password]", process.env.SA_PASSWORD);
+    await p.getByRole("button", { name: "登录" }).click();
+    await p.waitForURL((u) => !u.pathname.startsWith("/login"));
+    await p.getByRole("button", { name: "账号菜单" }).click();
+    await p.getByRole("menuitem", { name: "系统管理" }).click();
+    await p.waitForURL(/\/admin$/);
+    await p.locator("tr", { hasText: "demo@example.com" }).waitFor();
+    await p.waitForTimeout(400); // 等路由淡入结束再截图
+    await p.screenshot({ path: `${OUT}/admin-users.png`, fullPage: true });
+
+    await p.getByRole("button", { name: "新增账号" }).click();
+    const dlg = p.getByRole("dialog", { name: "新增账号" });
+    await dlg.getByLabel("邮箱").fill("ada@example.com");
+    await dlg.getByLabel("姓名").fill("Ada");
+    await dlg.getByRole("button", { name: "添加组织" }).click();
+    await dlg.getByRole("combobox", { name: "组织", exact: true }).click();
+    await p.getByRole("option", { name: "演示组织" }).click();
+    await dlg.getByText("演示项目", { exact: true }).click();
+    await dlg.getByRole("combobox", { name: "演示项目 角色" }).waitFor();
+    await dlg.getByText("评审组", { exact: true }).click();
+    await p.screenshot({ path: `${OUT}/admin-new-user-dialog.png` });
+    await dlg.getByRole("button", { name: "创建账号" }).click();
+    const done = p.getByRole("dialog", { name: "账号已就绪" });
+    await done.getByText("初始密码只显示这一次").waitFor();
+    const pw = (await done.locator("code").innerText()).trim();
+    await done.getByRole("button", { name: "关闭" }).click();
+    const row = p.locator("tr", { hasText: "ada@example.com" });
+    await row.getByText("待改密").waitFor();
+
+    await q.goto(BASE + "/login");
+    await q.fill("input[type=email]", "ada@example.com");
+    await q.fill("input[type=password]", pw);
+    await q.getByRole("button", { name: "登录" }).click();
+    await q.getByRole("heading", { name: "请先修改密码" }).waitFor();
+    await q.fill("input[autocomplete=current-password]", pw);
+    await q.fill("input[autocomplete=new-password]", "ada-pass-12345");
+    await q.getByRole("button", { name: "修改密码并进入" }).click();
+    await q.waitForURL((u) => u.pathname === "/");
+    await q.getByText("评审组可见").first().waitFor(); // 群组分配生效
+
+    await row.getByRole("link", { name: "编辑" }).click();
+    await p.waitForURL(/\/admin\/users\/[0-9a-f-]+$/);
+    const org = p.getByRole("region", { name: "组织 演示组织" });
+    await org.getByText("演示项目").waitFor();
+    await org.getByText("评审组").waitFor();
+    await p.waitForTimeout(400);
+    await p.screenshot({ path: `${OUT}/admin-user-detail.png`, fullPage: true });
+    p.once("dialog", (d) => d.accept());
+    await p.getByRole("button", { name: "禁用账号" }).click();
+    await p.getByText("已禁用", { exact: true }).first().waitFor();
+
+    // 被禁用的账号：下一次请求即被踢回登录页；再登录提示已停用
+    await q.goto(BASE + "/");
+    await q.waitForURL(/\/login/);
+    await q.fill("input[type=email]", "ada@example.com");
+    await q.fill("input[type=password]", "ada-pass-12345");
+    await q.getByRole("button", { name: "登录" }).click();
+    await q.getByText("账号已被停用").waitFor();
+
+    await p.getByRole("button", { name: "启用账号" }).click();
+    await toast2(p, "已启用");
   } finally { await c2.close(); await c3.close(); }
 });
 await step("task-tree-review", async () => {

@@ -48,6 +48,21 @@ impl AppState {
     }
 }
 
+/// 启动时把 SUPERADMIN_EMAILS 里已注册的账号设为超管（幂等：已是超管的不动；只授予不撤销，撤销在超管面板里做）。
+/// 返回 (本次新授予数, 未注册的邮箱)
+pub async fn bootstrap_superadmins(db: &PgPool, emails: &[String]) -> Result<(u64, Vec<String>), sqlx::Error> {
+    if emails.is_empty() {
+        return Ok((0, vec![]));
+    }
+    let n = sqlx::query("UPDATE users SET is_superadmin = true, updated_at = now() WHERE email = ANY($1) AND NOT is_superadmin")
+        .bind(emails)
+        .execute(db)
+        .await?
+        .rows_affected();
+    let found: Vec<String> = sqlx::query_scalar("SELECT email FROM users WHERE email = ANY($1)").bind(emails).fetch_all(db).await?;
+    Ok((n, emails.iter().filter(|e| !found.contains(e)).cloned().collect()))
+}
+
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub fn app(st: AppState) -> Router {
