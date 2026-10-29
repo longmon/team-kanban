@@ -14,8 +14,10 @@ import { cn } from "@/lib/utils";
 import { Link, navigate, setQuery, useQuery } from "../router";
 import {
   AuthCard, copyText, ErrorBox, fmtDue, fmtRel, fmtTime, Initial, isClosed, loadMyProjects, Loading, NativeSelect, Notice, PAGE_TYPE_LABEL, REDUCED, toast, toneOf, ToneIcon,
-  useAction, useActiveProject, useLoad, useNow, useOwnOrg, useSession, VIS_LABEL,
+  useAction, useActiveProject, useClassic, useLoad, useNow, useOwnOrg, useSession, VIS_LABEL,
 } from "../ui";
+import { ClassicSheet, useClassicTitle } from "../classic";
+import { TONE_PIXEL } from "../pixel-icons";
 import { picked, specLabels, splitLetter, tallyValues, type SpecLabels } from "../data";
 import { cachedPage, patchCachedPage, relatedPages } from "./feed";
 import { SearchButton } from "../shell";
@@ -123,6 +125,7 @@ function Viewer({ src }: { src: Source }) {
   useEffect(load, [load, me?.user.id]);
   useOwnOrg(view?.page.org.id);
   useActiveProject(view?.page.project.id);
+  const classic = useClassic();
 
   const cv = view ? view.content.version ?? view.page.version : 0;
   const historical = !!view && cv < view.page.version;
@@ -161,6 +164,7 @@ function Viewer({ src }: { src: Source }) {
   // 任务树：只有 /pages/:id（非临时链接）能操作；已关闭页面只读
   const tasks = useTaskTree(view, src.kind === "page" && !historical && !view?.page.closed_at);
   const reopen = useAction();
+  useClassicTitle(view ? (historical && view.content.title) || view.page.title : undefined);
 
   if (error) {
     const code = error instanceof ApiError ? error.code : "";
@@ -210,9 +214,9 @@ function Viewer({ src }: { src: Source }) {
   const taskPage = !!view.task_tree;
   // 任务树省略说明区时（服务端存的是空 Stack）不渲染内容区
   const emptySpec = taskPage && view.content.kind === "openui" && view.content.spec.trim() === "root = Stack([])";
-  return (
+  const body = (
     <article data-tone={tone} className="flex flex-col">
-      <div className="flex min-w-0 items-center gap-4">
+      <div className="cl-hide flex min-w-0 items-center gap-4">
         <nav aria-label="路径" className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-[13px] text-faint [&_a]:underline-offset-4 [&_a]:transition-colors [&_a:hover]:text-foreground [&_a:hover]:underline [&>*+*]:before:mr-2 [&>*+*]:before:content-['/'] [&>a:nth-child(2)]:font-medium [&>a:nth-child(2)]:text-muted-foreground">
           <Crumbs view={view} /><span className="min-w-0 truncate">{(historical && view.content.title) || view.page.title}</span>
         </nav>
@@ -384,12 +388,25 @@ function Viewer({ src }: { src: Source }) {
       )}
     </article>
   );
+  if (!classic) return body;
+  // 经典主题：属性对话框（选项卡：页面类型 / 全部结果 / 分享；确定、取消回到上一级）
+  const up = () => (history.length > 1 ? history.back() : navigate("/"));
+  return (
+    <ClassicSheet title={(historical && view.content.title) || view.page.title} icon={TONE_PIXEL[tone]} onClose={up}
+      tabs={[
+        { label: PAGE_TYPE_LABEL[view.page.page_type], on: true },
+        ...(showResults ? [{ label: `全部结果${count !== null ? ` (${count})` : ""}`, onClick: () => navigate(`/pages/${pageId}/results`) }] : []),
+        { label: "分享", onClick: () => (manage ? setManageOpen(true) : copyText(location.href, "已复制链接")) },
+      ]}>
+      {body}
+    </ClassicSheet>
+  );
 }
 
 /** 白底 1px 描边的右栏/主区小卡 */
 function Box({ title, note, children }: { title: ReactNode; note?: ReactNode; children: ReactNode }) {
   return (
-    <section className="rounded-[16px] border bg-card px-[18px] py-4">
+    <section data-box="" className="rounded-[16px] border bg-card px-[18px] py-4">
       <h3 className="mb-3 flex items-center gap-2 text-[14px] font-semibold">{title}{note && <small className="ml-auto text-[12px] font-normal text-faint">{note}</small>}</h3>
       {children}
     </section>
@@ -424,7 +441,7 @@ function Progress({ view, rows, showResults, vote, now, tally, labels, mine }: {
         <span><b className="font-mono text-[20px] font-semibold tabular-nums">{n}</b>{total ? <span className="tabular-nums"> / {total}</span> : ""} 人已{v}</span>
         {total ? <span className="text-faint">还差 {Math.max(0, total - n)} 人</span> : null}
       </div>
-      <div className="mt-1.5 mb-3.5 h-2 overflow-hidden rounded-[4px] bg-muted">
+      <div data-bar="" className="mt-1.5 mb-3.5 h-2 overflow-hidden rounded-[4px] bg-muted">
         <i className="block h-full rounded-[4px] bg-mint transition-[width] duration-500 ease-rise" style={{ width: `${total ? Math.min(1, n / total) * 100 : n ? 100 : 0}%` }} />
       </div>
       {t && opts.map(([val, label], i) => {
@@ -438,7 +455,7 @@ function Progress({ view, rows, showResults, vote, now, tally, labels, mine }: {
               <span className={cn("min-w-0 truncate", me && "font-semibold text-primary")}>{letter}. {name}{me && "（你）"}</span>
               <b className="shrink-0 font-semibold tabular-nums">{c} {vote ? "票" : "人"}，{pct}%</b>
             </div>
-            <span className="block h-2.5 overflow-hidden rounded-[5px] bg-muted">
+            <span data-bar="" className="block h-2.5 overflow-hidden rounded-[5px] bg-muted">
               <motion.i className={cn("block h-full rounded-[5px]", me ? "bg-primary" : "bg-primary/40")} initial={REDUCED ? false : { width: 0 }} animate={{ width: `${pct}%` }}
                 transition={{ type: "spring", stiffness: 260, damping: 18 }} />
             </span>

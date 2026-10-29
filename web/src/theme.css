@@ -140,3 +140,93 @@
 
   --shadow-pop: 0 16px 40px -16px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(255 255 255 / 0.06);
 }
+
+/*
+ * 经典主题（Windows 98，<html data-skin="classic">，设置 › 外观里切换；强制亮色）：只覆盖 token，控件与布局差异在 classic.css。
+ * 灰色窗面 #c0c0c0、藏青选中 #000080、16 色调色板；圆角为 0，卡片阴影换成蚀刻分组框，浮层换成凸起窗口 bevel；动效时长归零。
+ */
+[data-skin=classic] {
+  --radius: 0px;
+  --font-cjk: SimSun, "宋体", NSimSun, "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  --font-body: Tahoma, "MS Sans Serif", "Microsoft Sans Serif", var(--font-cjk);
+  --font-heading: var(--font-body);
+  --dur-fast: 0ms;
+  --dur-base: 0ms;
+  --dur-slow: 0ms;
+  --dur-flip: 0ms;
+
+  /* Win98 窗面与 bevel 四色 */
+  --w-face: #c0c0c0;
+  --w-hi: #ffffff;
+  --w-light: #dfdfdf;
+  --w-shadow: #808080;
+  --w-dark: #0a0a0a;
+  --w-navy: #000080;
+  --w-title-b: #1084d0;
+  --w-desk: #008080;
+  --w-tip: #ffffe1;
+  --w-raised: inset -1px -1px var(--w-dark), inset 1px 1px var(--w-hi), inset -2px -2px var(--w-shadow), inset 2px 2px var(--w-light);
+  --w-raised-win: inset -1px -1px var(--w-dark), inset 1px 1px var(--w-light), inset -2px -2px var(--w-shadow), inset 2px 2px var(--w-hi);
+  --w-pressed: inset -1px -1px var(--w-hi), inset 1px 1px var(--w-dark), inset -2px -2px var(--w-light), inset 2px 2px var(--w-shadow);
+  --w-sunken: inset -1px -1px var(--w-hi), inset 1px 1px var(--w-shadow), inset -2px -2px var(--w-light), inset 2px 2px var(--w-dark);
+  --w-etched: inset -1px -1px var(--w-hi), inset 1px 1px var(--w-shadow), inset -2px -2px var(--w-shadow), inset 2px 2px var(--w-hi);
+  --w-thin-in: inset -1px -1px var(--w-hi), inset 1px 1px var(--w-shadow);
+  --w-thin-out: inset -1px -1px var(--w-shadow), inset 1px 1px var(--w-hi);
+
+  --background: #c0c0c0;
+  --foreground: #000000;
+  --card: #c0c0c0;
+  --card-foreground: #000000;
+  --popover: #c0c0c0;
+  --popover-foreground: #000000;
+  --primary: #000080;
+  --primary-foreground: #ffffff;
+  --primary-soft: #ffffff;
+  --secondary: #c0c0c0;
+  --secondary-foreground: #000000;
+  --muted: #c0c0c0;
+  --muted-foreground: #303030;
+  /* 窗面上 ≥ 4.5:1 */
+  --faint: #4a4a4a;
+  --accent: #dfdfdf;
+  --accent-foreground: #000000;
+  --destructive: #c00000;
+  --border: #808080;
+  --input: #808080;
+  --ring: #000000;
+  --highlight: #ffffe1;
+  --highlight-foreground: #000000;
+  --coral: #c00000;
+  --coral-soft: transparent;
+  --coral-ink: #c00000;
+  --mint: #000080;
+  --mint-soft: transparent;
+  --mint-ink: #006000;
+  --live: #00a000;
+  --live-ring: transparent;
+
+  --t-vote: #000080;   --t-vote-f: #ffffff;   --t-vote-l: #ffffff;   --t-vote-ink: #000080;
+  --t-form: #800000;   --t-form-f: #ffffff;   --t-form-l: #ffffff;   --t-form-ink: #800000;
+  --t-report: #006000; --t-report-f: #ffffff; --t-report-l: #ffffff; --t-report-ink: #006000;
+  --t-flow: #806000;   --t-flow-f: #ffffff;   --t-flow-l: #ffffff;   --t-flow-ink: #604000;
+  --t-arch: #800080;   --t-arch-f: #ffffff;   --t-arch-l: #ffffff;   --t-arch-ink: #800080;
+  --t-book: #008080;   --t-book-f: #ffffff;   --t-book-l: #ffffff;   --t-book-ink: #005050;
+  --t-task: #800000;   --t-task-f: #ffffff;   --t-task-l: #ffffff;   --t-task-ink: #800000;
+
+  /* 图表：Win98 16 色里的深色 */
+  --chart-1: #000080;
+  --chart-2: #800000;
+  --chart-3: #008080;
+  --chart-4: #808000;
+  --chart-5: #800080;
+  --success: #006000;
+  --warning: #804000;
+  --info: #000080;
+
+  --shadow-card: var(--w-etched);
+  --shadow-card-hover: var(--w-etched);
+  --shadow-pop: var(--w-raised-win);
+  --shadow-primary: none;
+  --shadow-primary-press: none;
+  color-scheme: light;
+}

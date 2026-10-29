@@ -106,7 +106,7 @@ export function StatusBadge({ status, className }: { status: TaskStatus; classNa
 
 function Bar({ value, className }: { value: number; className?: string }) {
   return (
-    <span className={cn("block h-2 overflow-hidden rounded-[4px] bg-muted", className)}>
+    <span data-bar="" className={cn("block h-2 overflow-hidden rounded-[4px] bg-muted", className)}>
       <i className="block h-full rounded-[4px] bg-mint transition-[width] duration-500 ease-rise" style={{ width: `${Math.round(Math.min(1, value) * 100)}%` }} />
     </span>
   );
@@ -143,7 +143,7 @@ export function TaskBoard({ t }: { t: TaskState }) {
   const { total, done, in_review } = tree.progress;
   const roots = kids.get(null) ?? [];
   return (
-    <section aria-label="任务" className="rounded-[16px] border bg-card">
+    <section aria-label="任务" data-box="" className="rounded-[16px] border bg-card">
       <header className="flex flex-col gap-3 border-b px-[18px] pt-4 pb-3.5">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <h2 className="text-[16px] font-semibold">任务</h2>
@@ -307,9 +307,9 @@ function Check3({ task, t, blocked }: { task: Task; t: TaskState; blocked: boole
       : task.status === "in_progress" ? "border-primary" : "border-input",
     can && "cursor-pointer hover:border-mint hover:bg-mint-soft");
   const label = `${task.title}：${STATUS_LABEL[task.status]}`;
-  if (!can) return <span role="img" aria-label={label} data-tone={task.status === "in_review" ? "flow" : undefined} className={cls}>{icon}</span>;
+  if (!can) return <span role="img" aria-label={label} data-tone={task.status === "in_review" ? "flow" : undefined} data-check3={task.status} className={cls}>{icon}</span>;
   return (
-    <button type="button" className={cls} aria-label={blocked ? `${label}（子任务未全部完成，暂不能提交）` : `勾选完成：${task.title}`} title={blocked ? "子任务全部完成后才能提交评审" : "完成并提交评审"}
+    <button type="button" data-check3={task.status} className={cls} aria-label={blocked ? `${label}（子任务未全部完成，暂不能提交）` : `勾选完成：${task.title}`} title={blocked ? "子任务全部完成后才能提交评审" : "完成并提交评审"}
       onClick={() => (blocked ? toast.err("子任务全部完成后才能提交评审") : t.setDlg({ kind: "submit", task }))}>
       {icon}
     </button>

@@ -4,9 +4,10 @@ import "@fontsource-variable/onest";
 import { AnimateUIProvider } from "@animate-ui/react/provider";
 import { MotionConfig } from "motion/react";
 import "./index.css";
+import "./classic.css";
 import { Link, match, navigate, useLocation } from "./router";
 import { Shell } from "./shell";
-import { Loading, Page, REDUCED, SessionProvider, useSession, useTheme } from "./ui";
+import { Loading, Page, REDUCED, SessionProvider, useClassic, useSession, useTheme } from "./ui";
 import { Toaster } from "@/components/ui/sonner";
 import { ForceChangePassword, ForgotPassword, Login, Register, ResetPassword, VerifyEmail } from "./pages/auth";
 import { AcceptInvite } from "./pages/invite";
@@ -93,13 +94,16 @@ function AuthNotFound() {
 // 减少动态：animate-ui 默认只去位移、仍保留淡入淡出；按设计规范 §5 时长归零，这里把它的动效节奏压到 1%（近乎瞬时，弹簧同比加速）。
 // ponytail: 只在加载时读一次系统设置，运行中切换需刷新页面
 // motion 自己的组件（动态流、操作条、结果条）同样处理：减少动态时默认过渡时长归零，各组件另外跳过入场（ui.tsx REDUCED）
-const tempo = REDUCED ? 0.01 : 1;
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <AnimateUIProvider tempo={tempo} reducedMotion="user">
-      <MotionConfig reducedMotion="user" transition={REDUCED ? { duration: 0 } : undefined}>
+// 经典主题（Win98）同样关闭动效：按减少动态处理
+function Root() {
+  const classic = useClassic();
+  const still = REDUCED || classic;
+  return (
+    <AnimateUIProvider tempo={still ? 0.01 : 1} reducedMotion={classic ? "always" : "user"}>
+      <MotionConfig reducedMotion={classic ? "always" : "user"} transition={still ? { duration: 0 } : undefined}>
         <SessionProvider><App /></SessionProvider>
       </MotionConfig>
     </AnimateUIProvider>
-  </StrictMode>,
-);
+  );
+}
+createRoot(document.getElementById("root")!).render(<StrictMode><Root /></StrictMode>);

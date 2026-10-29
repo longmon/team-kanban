@@ -309,3 +309,14 @@
 - 多列规则：KPI / Snippet / Overview 卡 `auto-fit minmax(220px,1fr)`；纵向 Stack 中连续 ≥ 2 个图表卡自动并排（≥1280px 两列，≥1800px 三列）；横向 `Stack(…, "row", …, wrap=true)` 子项 `flex: 1 1 220px`；环形/饼图容器宽 ≥ 420px 时图例放右侧。
 - 文本输入框最宽 `max-w-3xl`；正文段落 `.md p/li` 最宽 `80ch`。
 - 自动多列与票卡只改渲染，不改提交数据格式（`{action, form, values, params}`，见 `docs/api.md`）。
+
+## 9. 经典主题（Windows 98，可切换）
+
+默认仍是方向 A。用户在「设置 › 外观」（或头像菜单、命令栏「切换到经典主题」）切到经典后，`<html data-skin="classic">`，选择只存本机 `localStorage`（键 `tk-skin`，读不到按默认），经典主题强制亮色（不加 `.dark`），动效全部关闭。
+
+- token：`theme.css` 末尾 `[data-skin=classic]` 一组（灰窗面 `#c0c0c0`、藏青 `#000080`、16 色调色板、圆角 0、`--shadow-card` = 蚀刻分组框、`--shadow-pop` = 凸起窗口 bevel，另有 `--w-*` bevel 变量）。
+- 样式：`web/src/classic.css`（由设计稿 win98.css 演化，bevel 用 inset box-shadow）。**每条规则都以 `[data-skin=classic]` 开头**，文件不进 cascade layer，所以能盖过 Tailwind 工具类而不影响默认主题。shadcn 组件按 `data-slot` 换皮（按钮另有 `data-variant` / `data-size`）；页面里需要的钩子用 `data-*` 属性（`data-panel`、`data-box`、`data-bar`、`data-check3`、`data-initial`），不改默认外观。
+- 外壳：`web/src/classic.tsx`（资源管理器窗口、文件夹树、任务栏 + 开始菜单、右侧停靠小窗 `Dock`、属性对话框 `ClassicSheet`）；像素图标 `web/src/pixel-icons.tsx`（内联 SVG，不外链）。首页列表视图与停靠小窗在 `pages/feed.tsx`。
+- 字体：系统栈 Tahoma / "MS Sans Serif"，中文 SimSun / 宋体回退，12px；不加载网络字体。
+- 手机（≤ 760）：窗口全屏、树收进「开始」菜单、触控目标 ≥ 32px。
+- 新增组件或页面时：默认样式照旧写；如经典下明显不协调，在 `classic.css` 里按 `data-slot` 或 `data-*` 钩子补规则，不要给默认主题加条件类。

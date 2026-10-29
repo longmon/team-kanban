@@ -5,18 +5,25 @@ import { Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
-// 暗色切换（<html class="dark">）时重新渲染
+// 暗色切换（<html class="dark">）、经典主题切换（data-skin）时重新渲染
 const subscribeDark = (cb: () => void) => {
   const mo = new MutationObserver(cb);
-  mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-skin"] });
   return () => mo.disconnect();
 };
 const isDark = () => document.documentElement.classList.contains("dark");
+const isClassic = () => document.documentElement.dataset.skin === "classic";
+const themeKey = () => `${isDark()}:${isClassic()}`;
 
 /** 陶土 token → Mermaid themeVariables（只认颜色值，所以从计算样式取实际色值） */
 function themeVariables() {
   const css = getComputedStyle(document.documentElement);
   const v = (name: string) => css.getPropertyValue(name).trim();
+  // 经典主题（Win98）近似：白底黑框、宋体/Tahoma、黑色连线、灰色分组
+  const classic = isClassic() ? {
+    fontFamily: v("--font-body"), fontSize: "12px", primaryColor: "#ffffff", primaryBorderColor: "#000000", nodeBorder: "#000000",
+    lineColor: "#000000", mainBkg: "#ffffff", clusterBkg: "#c0c0c0", clusterBorder: "#808080", edgeLabelBackground: "#c0c0c0",
+  } : {};
   return {
     darkMode: isDark(),
     background: v("--card"),
@@ -38,6 +45,7 @@ function themeVariables() {
     noteBkgColor: v("--muted"),
     noteTextColor: v("--foreground"),
     noteBorderColor: v("--border"),
+    ...classic,
   };
 }
 
@@ -60,7 +68,7 @@ function render(id: string, code: string) {
 }
 
 export default function DiagramView({ code, caption }: { code: string; caption?: string }) {
-  const dark = useSyncExternalStore(subscribeDark, isDark);
+  const dark = useSyncExternalStore(subscribeDark, themeKey);
   const rid = "mmd-" + useId().replace(/[^a-zA-Z0-9]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

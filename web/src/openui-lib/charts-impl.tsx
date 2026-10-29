@@ -30,6 +30,9 @@ function Frame({ config, height, draw, children }: { config: ChartConfig; height
   );
 }
 
+/** 柱顶圆角：经典主题（Win98）为直角 */
+const R = () => (document.documentElement.dataset.skin === "classic" ? 0 : 4);
+
 // 进入动画：折线描边、柱从 0 生长、饼/环扫过，550ms ease-out；减少动态时关闭
 const MOTION = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -42,7 +45,8 @@ function useDraw() {
   const [on, setOn] = useState(false);
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el || !MOTION) return;
+    // 经典主题（Win98）不播进入动画，直接静态完整渲染
+    if (!el || !MOTION || document.documentElement.dataset.skin === "classic") return;
     const r = el.getBoundingClientRect();
     if (r.top < window.innerHeight && r.bottom > 0) return setOn(true);
     const io = new IntersectionObserver(([e]) => e.isIntersecting && (setOn(true), io.disconnect()));
@@ -102,7 +106,7 @@ export const BarChartView = ({ props }: P) => {
           {names.map((_, i) => (
             <Bar key={i} dataKey={`s${i}`} fill={`var(--color-s${i})`} fillOpacity={h.op(`s${i}`)} {...h.hover(`s${i}`)} maxBarSize={48} {...d.anim}
               stackId={stacked ? "a" : undefined} stroke={stacked ? "var(--card)" : undefined} strokeWidth={stacked ? 1 : 0}
-              radius={stacked ? (i === names.length - 1 ? [4, 4, 0, 0] : 0) : [4, 4, 0, 0]} />
+              radius={stacked ? (i === names.length - 1 ? [R(), R(), 0, 0] : 0) : [R(), R(), 0, 0]} />
           ))}
         </RBar>
       </Frame>
@@ -130,7 +134,7 @@ export const HorizontalBarChartView = ({ props }: P) => {
           {names.map((_, i) => (
             <Bar key={i} dataKey={`s${i}`} fill={`var(--color-s${i})`} fillOpacity={h.op(`s${i}`)} {...h.hover(`s${i}`)} maxBarSize={28} {...d.anim}
               stackId={stacked ? "a" : undefined} stroke={stacked ? "var(--card)" : undefined} strokeWidth={stacked ? 1 : 0}
-              radius={stacked ? (i === names.length - 1 ? [0, 4, 4, 0] : 0) : [0, 4, 4, 0]} />
+              radius={stacked ? (i === names.length - 1 ? [0, R(), R(), 0] : 0) : [0, R(), R(), 0]} />
           ))}
         </RBar>
       </Frame>

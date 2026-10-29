@@ -201,7 +201,7 @@ function TallyRow({ v, c, max, total, mine }: { v: string; c: number; max: numbe
         {mine && <Check strokeWidth={3} aria-label="我的选择" className="check-draw size-3.5 shrink-0 text-primary" />}
         <span className="truncate">{v}</span>
       </span>
-      <span className="h-2 overflow-hidden rounded-full bg-muted">
+      <span data-bar="" className="h-2 overflow-hidden rounded-full bg-muted">
         <span className="bar-grow block h-full rounded-full bg-primary transition-[width] duration-[360ms]" style={{ width: `${(c / max) * 100}%` }} />
       </span>
       <span className="text-right tabular-nums"><CountUp value={c} className="tally-n font-heading font-semibold" /><span className="ml-1.5 text-xs text-muted-foreground">{Math.round((c / total) * 100)}%</span></span>

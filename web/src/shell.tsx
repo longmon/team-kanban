@@ -1,12 +1,13 @@
 // 外壳（方向 A 长春花工作台）：登录后左侧固定导航（品牌、组织切换、工作台 / 等我处理 / 我发布的、项目列表、底部当前用户与设置）；
 // < 1024 收成顶部条 + 抽屉。搜索框（⌘K 命令栏）由各页面放在自己的标题行（SearchButton）。未登录时只有一条简单顶栏
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Building2, Check, ChevronDown, FileText, FolderKanban, Home, Inbox, KeyRound, LayoutGrid, LogOut, Menu, Moon, Search, Send, Settings, Sun, UserPlus, UserRound, X } from "lucide-react";
+import { Building2, Check, ChevronDown, FileText, FolderKanban, Home, Inbox, KeyRound, LayoutGrid, LogOut, Menu, Monitor, Moon, Search, Send, Settings, Sun, UserPlus, UserRound, X } from "lucide-react";
 import { get, post, qs } from "./api";
 import { cn } from "@/lib/utils";
 import { Link, navigate, useLocation, useQuery } from "./router";
 import { ROLE_LABEL, resetMyProjects, setCurrentOrg, useActiveProject, useCurrentOrgId, useMyProjects, useSession, useTheme } from "./ui";
 import { useHomeStats } from "./pages/feed";
+import { ClassicGuest, ClassicShell } from "./classic";
 import { Button } from "@/components/ui/button";
 import { CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command";
 import {
@@ -26,8 +27,8 @@ function BrandMark() {
 
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
 
-/** 命令栏、头像菜单共用的动作 */
-function useShellActions() {
+/** 命令栏、头像菜单共用的动作（经典外壳也用） */
+export function useShellActions() {
   const { me, setMe } = useSession();
   const theme = useTheme();
   const lastOrg = useCurrentOrgId();
@@ -41,6 +42,8 @@ function useShellActions() {
     org,
     toggleTheme: () => theme.setMode(theme.mode === "dark" ? "light" : "dark"),
     dark: theme.mode === "dark",
+    classic: theme.skin === "classic",
+    toggleSkin: () => theme.setSkin(theme.skin === "classic" ? "default" : "classic"),
     // 在项目页时邀请进项目（成员与权限 Tab），否则邀请进当前组织
     invite: () => navigate(project && org ? `/o/${org.slug}/p/${project}?tab=members` : org ? `/o/${org.slug}?tab=invites` : "/orgs"),
     orgSettings: () => navigate(org ? `/o/${org.slug}?tab=settings` : "/orgs"),
@@ -53,7 +56,7 @@ function useShellActions() {
   };
 }
 
-function CommandBar({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
+export function CommandBar({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
   const act = useShellActions();
   const projects = useMyProjects();
   const [q, setQ] = useState("");
@@ -107,7 +110,8 @@ function CommandBar({ open, setOpen }: { open: boolean; setOpen: (v: boolean) =>
           <CommandItem keywords={["组织", "设置"]} onSelect={run(act.orgSettings)}><Settings />进入组织设置</CommandItem>
           <CommandItem keywords={["组织", "创建", "org"]} onSelect={run(() => navigate("/orgs"))}><Building2 />组织</CommandItem>
           <CommandItem keywords={["账号", "密码", "设置"]} onSelect={run(() => navigate("/settings/account"))}><UserRound />账号设置</CommandItem>
-          <CommandItem keywords={["主题", "暗色", "亮色", "theme"]} onSelect={run(act.toggleTheme)}>{act.dark ? <Sun /> : <Moon />}切换主题</CommandItem>
+          {!act.classic && <CommandItem keywords={["主题", "暗色", "亮色", "theme"]} onSelect={run(act.toggleTheme)}>{act.dark ? <Sun /> : <Moon />}切换主题</CommandItem>}
+          <CommandItem keywords={["主题", "经典", "默认", "win98", "theme", "skin"]} onSelect={run(act.toggleSkin)}><Monitor />{act.classic ? "切换到默认主题" : "切换到经典主题"}</CommandItem>
           <CommandItem keywords={["退出", "登出", "logout"]} onSelect={run(act.logout)}><LogOut />退出登录</CommandItem>
         </CommandGroup>
       </CommandList>
@@ -247,6 +251,7 @@ function UserMenu() {
           <DropdownMenuItem onSelect={() => navigate("/settings/tokens")}><KeyRound />访问令牌</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => navigate("/settings/account")}><UserRound />账号设置</DropdownMenuItem>
           <DropdownMenuItem onSelect={act.toggleTheme}>{act.dark ? <Sun /> : <Moon />}{act.dark ? "切换到亮色" : "切换到暗色"}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={act.toggleSkin}><Monitor />切换到经典主题</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={act.logout}><LogOut />退出登录</DropdownMenuItem>
         </DropdownMenuContent>
@@ -301,6 +306,10 @@ export function Shell({ banner, children }: { banner?: ReactNode; children: Reac
     window.addEventListener("tk:search", onSearch);
     return () => (window.removeEventListener("keydown", onKey), window.removeEventListener("tk:search", onSearch));
   }, [me]);
+  const { skin } = useTheme();
+  // 经典主题：资源管理器窗口外壳（未登录时是青色桌面）
+  if (skin === "classic")
+    return me ? <ClassicShell banner={banner} onSearch={() => setOpen(true)}>{children}<CommandBar open={open} setOpen={setOpen} /></ClassicShell> : <ClassicGuest>{banner}{children}</ClassicGuest>;
   const main = <main className="mx-auto w-full max-w-[1920px] min-w-0 px-4 pt-5 pb-16 sm:px-6 lg:px-8 lg:pt-7">{children}</main>;
   if (!me) return <>{<GuestHeader />}{banner}{main}</>;
   const side = "flex flex-col gap-1 bg-card px-4 py-5";

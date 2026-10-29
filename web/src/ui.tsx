@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { errMsg, get, setCsrf } from "./api";
 import { setQuery, useQuery } from "./router";
+import { PixelIcon, TONE_PIXEL } from "./pixel-icons";
 import type { Me, MyProject, Paged } from "./types";
 
 /** 系统「减少动态效果」：motion 动画时长归零、不播入场（只在加载时读一次，与 main.tsx 的 tempo 一致） */
@@ -189,10 +190,20 @@ export function useActiveProject(id?: string) {
   return useSyncExternalStore((l) => (apListeners.add(l), () => void apListeners.delete(l)), () => activeProject);
 }
 
-// ---------- 主题（亮/暗） ----------
+// ---------- 主题（亮/暗）与皮肤（默认 / 经典） ----------
 // 键名与旧版一致（值为 JSON 字符串），已保存的偏好继续生效；未设置时跟随系统
 const THEME_KEY = "openui-theme-mode";
 type Mode = "light" | "dark";
+/** 皮肤：default = 方向 A 长春花工作台；classic = Windows 98 经典（<html data-skin="classic">，强制亮色）。只存本机，读不到用默认 */
+const SKIN_KEY = "tk-skin";
+export type Skin = "default" | "classic";
+const readSkin = (): Skin => {
+  try {
+    return localStorage.getItem(SKIN_KEY) === "classic" ? "classic" : "default";
+  } catch {
+    return "default";
+  }
+};
 const themeListeners = new Set<() => void>();
 const mq = window.matchMedia("(prefers-color-scheme: dark)");
 const readPref = (): Mode | null => {
@@ -203,12 +214,28 @@ const readPref = (): Mode | null => {
     return null;
   }
 };
-const currentMode = (): Mode => readPref() ?? (mq.matches ? "dark" : "light");
-const applyMode = () => document.documentElement.classList.toggle("dark", currentMode() === "dark");
+const currentMode = (): Mode => (readSkin() === "classic" ? "light" : readPref() ?? (mq.matches ? "dark" : "light"));
+const applyMode = () => {
+  const root = document.documentElement;
+  root.classList.toggle("dark", currentMode() === "dark");
+  if (readSkin() === "classic") root.dataset.skin = "classic";
+  else delete root.dataset.skin;
+};
 applyMode();
 mq.addEventListener("change", () => (applyMode(), themeListeners.forEach((l) => l())));
+const subscribeTheme = (l: () => void) => (themeListeners.add(l), () => void themeListeners.delete(l));
+/** 当前是否经典皮肤 */
+export const useClassic = () => useSyncExternalStore(subscribeTheme, readSkin) === "classic";
 export function useTheme() {
-  const mode = useSyncExternalStore((l) => (themeListeners.add(l), () => void themeListeners.delete(l)), currentMode);
+  const mode = useSyncExternalStore(subscribeTheme, currentMode);
+  const skin = useSyncExternalStore(subscribeTheme, readSkin);
+  const setSkin = (s: Skin) => {
+    try {
+      localStorage.setItem(SKIN_KEY, s);
+    } catch { /* 隐私模式下只在本次会话生效 */ }
+    applyMode();
+    themeListeners.forEach((l) => l());
+  };
   const setMode = (m: Mode) => {
     try {
       localStorage.setItem(THEME_KEY, JSON.stringify(m));
@@ -216,7 +243,7 @@ export function useTheme() {
     applyMode();
     themeListeners.forEach((l) => l());
   };
-  return { mode, setMode };
+  return { mode, setMode, skin, setSkin };
 }
 
 // ---------- 展示 ----------
@@ -317,6 +344,23 @@ export function Page({ children, className }: { children: ReactNode; className?:
 
 /** 居中小卡片：登录、注册、错误提示等 */
 export function AuthCard({ title, desc, children }: { title?: ReactNode; desc?: ReactNode; children?: ReactNode }) {
+  // 经典：Win98 登录对话框（标题栏 + 左侧钥匙图标 + 右侧内容）
+  if (useClassic())
+    return (
+      <div className="cl-auth">
+        <section className="cl-win" aria-label={typeof title === "string" ? title : undefined}>
+          <div className="cl-titlebar"><PixelIcon name="key" /><span className="cl-t">{title ?? "Team Kanban"}</span></div>
+          <div className="cl-auth-body">
+            <PixelIcon name="key" size={32} />
+            <div className="cl-auth-main">
+              {title && <h1 className="sr-only">{title}</h1>}
+              {desc && <p>{desc}</p>}
+              {children}
+            </div>
+          </div>
+        </section>
+      </div>
+    );
   return (
     <div className="mx-auto mt-6 w-full max-w-[400px] sm:mt-14">
       <div className="surface flex flex-col gap-5 p-6 sm:p-8">
@@ -337,9 +381,9 @@ export function Panel({ title, desc, actions, children, className, danger }: {
   title?: ReactNode; desc?: ReactNode; actions?: ReactNode; children?: ReactNode; className?: string; danger?: boolean;
 }) {
   return (
-    <section className={cn("surface", danger && "ring-1 ring-destructive/30", className)}>
+    <section data-panel="" className={cn("surface", danger && "ring-1 ring-destructive/30", className)}>
       {(title || actions) && (
-        <div className={cn("flex flex-wrap items-center justify-between gap-3 px-5 py-4 sm:px-6", children != null && "border-b")}>
+        <div data-panel-head="" className={cn("flex flex-wrap items-center justify-between gap-3 px-5 py-4 sm:px-6", children != null && "border-b")}>
           <div className="min-w-0">
             {title && <h2 className={cn("text-base leading-snug font-bold", danger && "text-destructive")}>{title}</h2>}
             {desc && <p className="mt-1 text-[13px] text-muted-foreground">{desc}</p>}
@@ -475,6 +519,8 @@ export const TONE_ICON: Record<Tone, typeof Vote> = {
 /** 圆角方块里的类型图标（格子、题头、动态）；白底 + 类型强调色 */
 export function ToneIcon({ tone, className }: { tone: Tone; className?: string }) {
   const Icon = TONE_ICON[tone];
+  // 经典：像素图标（题头大图标 32px，其余 16px）
+  if (useClassic()) return <PixelIcon name={TONE_PIXEL[tone]} size={/size-12\b/.test(className ?? "") ? 32 : 16} />;
   return (
     <span data-tone={tone} aria-hidden="true" className={cn("grid size-[30px] shrink-0 place-items-center rounded-[10px] bg-card text-tone-ink", className)}>
       <Icon className="size-4" />
@@ -531,7 +577,7 @@ export function Initial({ name, className, muted }: { name: string; className?: 
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return (
-    <span title={name} className={cn("grid size-7 shrink-0 place-items-center rounded-full text-[12px] font-semibold text-white ring-2 ring-card", muted && "bg-muted text-muted-foreground", className)}
+    <span title={name} data-initial="" className={cn("grid size-7 shrink-0 place-items-center rounded-full text-[12px] font-semibold text-white ring-2 ring-card", muted && "bg-muted text-muted-foreground", className)}
       style={muted ? undefined : { background: AVATAR_BG[h % AVATAR_BG.length] }}>
       {name.slice(0, 1).toUpperCase()}
     </span>

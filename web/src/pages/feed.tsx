@@ -1,7 +1,7 @@
 // 工作台（方向 A 长春花工作台）：首页（我能看的全部页面）与项目页（只看该项目）共用。
 // 中间：问候语 + 搜索框、类型分段（全部 / 投票 / 报告 / 流程与架构 / 表单 / 知识库，带计数）、按「今天 / 本周 / 更早」分组的卡片网格（带内容预览与状态徽章）；
 // 右栏：实色「等我处理」面板（按截止排序、倒计时圈、去投票 / 去填写，处理完移出）+「实时动态」。< 1280 时待办面板移到卡片上方、动态移到下方。
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "motion/react";
 import { Sparkles } from "lucide-react";
 import { ApiError, get, qs } from "../api";
@@ -9,10 +9,13 @@ import { cn } from "@/lib/utils";
 import { Link, useQuery } from "../router";
 import { picked, specLabels, type SpecLabels } from "../data";
 import {
-  dayBucket, ErrorBox, fmtDue, fmtLeft, fmtRel, Initial, isClosed, PAGE_TYPE_LABEL, REDUCED, toneOf, ToneIcon, useCurrentOrgId, useMyProjects, useNow, useSession, type Tone,
+  dayBucket, ErrorBox, fmtDue, fmtLeft, fmtRel, Initial, isClosed, PAGE_TYPE_LABEL, REDUCED, toneOf, ToneIcon, useClassic, useCurrentOrgId, useMyProjects, useNow, useSession, type Tone,
 } from "../ui";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SearchButton } from "../shell";
+import { Dock, MiniWindow } from "../classic";
+import { PixelIcon, TONE_PIXEL } from "../pixel-icons";
 import { AgentOnboarding } from "./settings";
 import type { Activity, Page, PageView, Paged, Response } from "../types";
 
@@ -114,6 +117,7 @@ let played = false;
 export function Wall({ projectId, title, empty }: { projectId?: string; title?: ReactNode; empty?: ReactNode }) {
   const { me } = useSession();
   const now = useNow();
+  const classic = useClassic();
   const path = projectId ? `/pages${qs({ project_id: projectId, limit: 30 })}` : HOME;
   const feed = useFeed(path);
   const projects = useMyProjects();
@@ -168,6 +172,34 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
   const sub = view === "todo" ? `${todos.length} 件事等你处理，按最近更新排列`
     : view === "mine" ? `你发布的 ${base.length} 个页面`
     : `${projectId ? `${items.length} 个页面` : `本周新增 ${week} 个页面`}，${todos.length ? `有 ${todos.length} 件事等你处理` : "暂时没有要你处理的事"}`;
+  // 经典主题：「详细信息」列表视图 + 停靠小窗（等我处理、实时动态）
+  if (classic)
+    return (
+      <div className="cl-wall">
+        <header className="cl-wall-head">
+          <PixelIcon name="logo" size={32} />
+          <div className="min-w-0 flex-1"><h1>{heading}</h1><p>{sub}</p></div>
+          <button type="button" className="cl-find" onClick={() => window.dispatchEvent(new Event("tk:search"))} aria-label="搜索页面">
+            <span><u>查</u>找:</span><span className="cl-field">搜索页面、项目或操作</span>
+          </button>
+        </header>
+        <div role="group" aria-label="筛选" className="cl-tabs">
+          {KINDS.filter(([v]) => v !== "closed" || counts.closed || kind === "closed").map(([v, label]) => (
+            <button key={v} type="button" aria-pressed={kind === v} onClick={() => setKind(v)}>{label} ({counts[v] ?? 0})</button>
+          ))}
+        </div>
+        <div className="cl-tabpanel">
+          <ErrorBox error={feed.error} />
+          <ClassicList groups={groups} now={now} proj={projectId ? undefined : proj} loaded={feed.loaded} empty={view === "todo" ? "没有等你处理的页面了。" : "没有符合条件的页面。"} />
+          <div ref={sentinel} />
+          {feed.loading && feed.items.length > 0 && <p className="py-1 text-center" role="status">加载中…</p>}
+        </div>
+        <Dock>
+          <ClassicTodo todos={todos} now={now} proj={projectId ? undefined : proj} />
+          <ClassicActivity projectId={projectId} />
+        </Dock>
+      </div>
+    );
   return (
     <div className="grid grid-cols-1 gap-x-7 gap-y-5 xl:grid-cols-[minmax(0,1fr)_340px] xl:grid-rows-[auto_1fr] min-[1500px]:grid-cols-[minmax(0,1fr)_372px]">
       <header className="order-1 min-w-0 xl:col-start-1 xl:row-start-1">
@@ -621,6 +653,132 @@ function ActivityFeed({ projectId }: { projectId?: string }) {
       )}
     </aside>
   );
+}
+
+// ---------- 经典主题：列表视图与停靠小窗 ----------
+/** 状态列：文字 + 色（red 等你处理 / ok 已完成 / mute 只读、已截止） */
+function statusOf(p: Page, now: number): [string, "red" | "ok" | "mute"] {
+  const tone = toneOf(p.page_type, p.category);
+  const ts = p.task_stats;
+  if (p.closed_at) return ["已关闭", "mute"];
+  if (ts) return ts.my_review ? [`待你评审 ${ts.my_review} 项`, "red"] : ts.my_todo ? [`你有 ${ts.my_todo} 项待办`, "red"]
+    : ts.total && ts.done === ts.total ? ["已全部完成", "ok"] : ts.in_review ? [`${ts.in_review} 项待评审`, "mute"] : ["进行中", "mute"];
+  if (isTodo(p, now)) return [`等你${tone === "vote" ? "投票" : "填写"}`, "red"];
+  if (p.my_submitted) return [`你已${tone === "vote" ? "投" : "提交"}`, "ok"];
+  if (p.category === "collect") return isClosed(p.closes_at, now) || !p.accept_responses ? ["已截止", "mute"] : ["收集中", "mute"];
+  return ["只读", "mute"];
+}
+
+/** 蓝色分段进度条 */
+function Blocks({ value, label }: { value: number; label: string }) {
+  return <span className="cl-mini-bar"><span data-bar=""><i style={{ width: `${Math.round(Math.min(1, value) * 100)}%` }} /></span>{label}</span>;
+}
+
+function ClassicList({ groups, now, proj, loaded, empty }: {
+  groups: (readonly [string, Page[]])[]; now: number; proj?: (id: string) => string | undefined; loaded: boolean; empty: string;
+}) {
+  const [sel, setSel] = useState<string | null>(null);
+  if (!loaded) return <div className="cl-list"><p className="p-2" role="status">加载中…</p></div>;
+  if (!groups.length) return <div className="cl-list"><p className="p-2">{empty}</p></div>;
+  return (
+    <div className="cl-list">
+      <table>
+        <colgroup><col /><col className="w-[72px]" /><col className="w-[96px]" /><col className="w-[150px]" /><col className="w-[100px]" /><col className="w-[150px]" /><col className="w-[96px]" /><col className="w-[84px]" /></colgroup>
+        <thead><tr><th>名称</th><th>类型</th><th>项目</th><th>发布者</th><th>状态</th><th>进度</th><th>截止</th><th>更新时间</th></tr></thead>
+        <tbody>
+          {groups.map(([g, ps]) => (
+            <Fragment key={g}>
+              <tr className="cl-grp"><td colSpan={8}>{g}<hr /></td></tr>
+              {ps.map((p) => {
+                const tone = toneOf(p.page_type, p.category);
+                const [st, c] = statusOf(p, now);
+                const n = p.respondent_count ?? p.response_count;
+                const ts = p.task_stats;
+                const prog = ts ? <Blocks value={ts.total ? ts.done / ts.total : 0} label={`${ts.done}/${ts.total}`} />
+                  : p.category === "collect" ? (p.eligible_count ? <Blocks value={n / p.eligible_count} label={`${n}/${p.eligible_count}`} /> : `${n} ${unit(p)}`)
+                  : p.highlights?.[0] ? `${p.highlights[0].value} ${p.highlights[0].label}` : "—";
+                return (
+                  <tr key={p.id} aria-selected={sel === p.id} onClick={() => setSel(p.id)}>
+                    <td><span className="nm"><PixelIcon name={TONE_PIXEL[tone]} /><Link to={`/pages/${p.id}`} data-vt={p.id} className="tile-title">{p.title}</Link></span></td>
+                    <td>{PAGE_TYPE_LABEL[p.page_type]}</td>
+                    <td>{proj?.(p.project_id) ?? "—"}</td>
+                    <td>{p.created_by.display_name}{p.generated_by ? ` - ${p.generated_by}` : ""}</td>
+                    <td className={`tag ${c}`}>{st}</td>
+                    <td>{prog}</td>
+                    <td>{p.closes_at ? fmtDue(p.closes_at, new Date(now)) : "—"}</td>
+                    <td>{fmtRel(p.updated_at, new Date(now))}</td>
+                  </tr>
+                );
+              })}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ClassicTodo({ todos, now, proj }: { todos: Page[]; now: number; proj?: (id: string) => string | undefined }) {
+  return (
+    <MiniWindow title={`等我处理 (${todos.length})`} icon="inbox" label="等我处理">
+      <p className="cl-mini-note">{todos.length ? "按截止时间排序，处理完自动移出。" : "都处理完了，暂时没有要你做的事。"}</p>
+      <ul className="cl-todo">
+        {todos.map((p) => {
+          const tone = toneOf(p.page_type, p.category);
+          const n = p.respondent_count ?? p.response_count;
+          const ts = p.task_stats;
+          const rest = p.eligible_count ? Math.max(0, p.eligible_count - n) : null;
+          const meta = ts ? [proj?.(p.project_id), ts.my_review ? `待你评审 ${ts.my_review} 项` : null, ts.my_todo ? `你的待办 ${ts.my_todo} 项` : null]
+            : [proj?.(p.project_id), n ? `已有 ${n} ${unit(p)}` : `还没人${verb(p)}`, rest ? `还差 ${rest} 人` : null];
+          const left = p.closes_at ? fmtLeft(p.closes_at, now) : null;
+          return (
+            <li key={p.id} data-todo>
+              <PixelIcon name={TONE_PIXEL[tone]} size={32} />
+              <div className="min-w-0 flex-1">
+                <b className="block truncate">{p.title}</b>
+                <small className="block truncate">{meta.filter(Boolean).join("，")}</small>
+                <div className="cl-todo-foot">
+                  <span className={p.closes_at ? "tag red" : undefined}>{ts ? `${ts.done} / ${ts.total} 项已完成` : p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left ? `（${left}）` : ""}` : "不限截止时间"}</span>
+                  <Button size="sm" variant="outline" asChild><Link to={`/pages/${p.id}`}>{ts ? (ts.my_review ? "去评审" : "去处理") : tone === "vote" ? "去投票" : "去填写"}</Link></Button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </MiniWindow>
+  );
+}
+
+function ClassicActivity({ projectId }: { projectId?: string }) {
+  const { items, off } = useActivity(projectId);
+  const now = useNow();
+  if (off) return null;
+  return (
+    <MiniWindow title="消息 - 实时动态" icon="msg" label="实时动态">
+      <ol className="cl-acts">
+        {items === null ? <li role="status">加载中…</li> : items.length === 0 ? <li>还没有动态。</li> : items.slice(0, 12).map((a) => (
+          <li key={`${a.type}:${a.page.id}:${a.at}:${a.task?.title ?? ""}`}>
+            <Initial name={a.actor?.name ?? "?"} />
+            <span className="min-w-0 flex-1 truncate">
+              <b>{a.actor?.name ?? "有人"}</b>{" "}
+              {a.type === "task" && a.task ? `${TASK_VERB[a.task.action] ?? ACT_VERB.task}「${a.task.title}」，在 ` : a.type === "submitted" && a.page.page_type === "vote" ? "投了 " : `${ACT_VERB[a.type]} `}
+              <Link to={`/pages/${a.page.id}`}>{a.page.title}</Link>
+            </span>
+            <time dateTime={a.at}>{ago(a.at, now)}</time>
+          </li>
+        ))}
+      </ol>
+      <div className="cl-status"><div className="grow"><i className="cl-led" aria-hidden="true" />已连接 - 实时推送</div></div>
+    </MiniWindow>
+  );
+}
+
+/** 某项目的页面（经典主题文件夹树）：只取格子墙缓存，最近更新的前 12 个，不含已关闭的 */
+export function pagesOf(projectId: string): Page[] {
+  const seen = new Map<string, Page>();
+  for (const v of cache.values()) for (const p of v.items) if (p.project_id === projectId && !p.closed_at) seen.set(p.id, p);
+  return [...seen.values()].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 12);
 }
 
 /** 格子墙缓存里找页面（详情页拿可见性等字段，省一次请求） */

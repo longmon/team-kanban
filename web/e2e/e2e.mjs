@@ -876,6 +876,47 @@ await step("reduced-motion", async () => {
     await p.screenshot({ path: `${OUT}/reduced-motion-report.png`, fullPage: true });
   } finally { await c2.close(); }
 });
+await step("classic-theme", async () => {
+  // 设置 › 外观切到经典（Win98）→ 刷新仍是经典且强制亮色 → 首页详细信息列表 + 停靠小窗 → 投票详情（属性对话框）提交并锁定 → 任务树正常 → 切回默认
+  const id = (await call(demo, "POST", "/pages", { project_id: project.id, title: "经典主题投票", kind: "openui", content: vote, page_type: "vote", visibility: "public", results_visible_to: "viewers" })).id;
+  const c2 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const p = await c2.newPage();
+  watch(p);
+  try {
+    await p.addInitScript(() => localStorage.setItem("openui-theme-mode", '"dark"'));
+    await login(p, "demo@example.com");
+    await p.goto(BASE + "/settings/account");
+    await p.getByRole("radio", { name: "经典（Windows 98）" }).click();
+    await p.waitForFunction(() => document.documentElement.dataset.skin === "classic" && !document.documentElement.classList.contains("dark"));
+    await p.reload();
+    await p.getByRole("region", { name: "Team Kanban - 资源管理器" }).waitFor();
+    if ((await p.evaluate(() => [document.documentElement.dataset.skin, document.documentElement.classList.contains("dark")])).join() !== "classic,false") throw new Error("classic not persisted or not light");
+    if (!(await p.getByRole("radio", { name: "暗色" }).isDisabled())) throw new Error("dark radio should be disabled in classic");
+    await p.goto(BASE + "/");
+    await p.locator(".cl-list tr", { hasText: "经典主题投票" }).getByText("等你投票").waitFor();
+    await p.getByRole("region", { name: "等我处理" }).getByText("经典主题投票").waitFor();
+    await p.screenshot({ path: `${OUT}/classic-home.png` });
+    await p.locator(".cl-list .tile-title", { hasText: "经典主题投票" }).click();
+    await p.waitForURL(new RegExp(`/pages/${id}$`));
+    await p.getByRole("region", { name: "经典主题投票 - 属性" }).getByText("技术选型投票").waitFor();
+    await ticket(p, "B. NATS").click();
+    await p.getByRole("button", { name: "提交" }).click();
+    await p.locator(".toast", { hasText: "已提交（#1）" }).first().waitFor({ timeout: 5000 });
+    await assertLocked(p, "B. NATS", 1);
+    await p.reload();
+    await assertLocked(p, "B. NATS", 1);
+    await p.screenshot({ path: `${OUT}/classic-vote.png` });
+    await p.goto(BASE + "/pages/" + TASKS);
+    await p.getByRole("tree", { name: "任务树" }).getByText("接口联调").waitFor();
+    await p.screenshot({ path: `${OUT}/classic-tasks.png` });
+    await p.goto(BASE + "/settings/account");
+    await p.getByRole("radio", { name: "默认（长春花工作台）" }).click();
+    await p.waitForFunction(() => !document.documentElement.dataset.skin);
+    await p.reload();
+    await p.getByRole("heading", { name: "账号设置" }).waitFor();
+    if (await p.locator("html[data-skin], .cl-desk").count()) throw new Error("skin not reset to default");
+  } finally { await c2.close(); }
+});
 console.log("console errors:", errors.length ? errors : "none");
 await browser.close();
 if (failed || errors.length) { console.log(`${failed} 个场景失败`); process.exit(1); }

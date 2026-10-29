@@ -4,10 +4,12 @@ import { Check, Copy, KeyRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { del, get, patch, post, qs } from "../api";
 import { Link } from "../router";
-import { CheckField, copyText, CopyText, Empty, ErrorBox, Field, fmtTime, NativeSelect, Notice, Page, PageHeader, Panel, TableCard, toast, useAction, useLoad, useSession } from "../ui";
+import { CheckField, copyText, CopyText, Empty, ErrorBox, Field, fmtTime, NativeSelect, Notice, Page, PageHeader, Panel, TableCard, toast, useAction, useLoad, useSession, useTheme, type Skin } from "../ui";
 import type { Paged, Pat, Project, Scope, UserFull } from "../types";
 
 /** MCP 接入片段（README §3.2–3.3）：服务器地址取当前站点，令牌由 tkanban add 交互输入，不写进片段 */
@@ -165,6 +167,32 @@ export function TokenSettings() {
   );
 }
 
+/** 外观：主题（默认 / 经典）与亮暗；只存本机 localStorage。经典主题固定亮色 */
+function Appearance() {
+  const t = useTheme();
+  const classic = t.skin === "classic";
+  const opt = "w-fit cursor-pointer gap-2.5 text-[13px] font-normal";
+  return (
+    <Panel title="外观" desc="只保存在这台设备的浏览器里。">
+      <div className="grid gap-2.5">
+        <span className="text-[13px] font-medium">主题</span>
+        <RadioGroup aria-label="主题" value={t.skin} onValueChange={(v) => t.setSkin(v as Skin)} className="gap-2.5">
+          <Label className={opt}><RadioGroupItem value="default" />默认（长春花工作台）</Label>
+          <Label className={opt}><RadioGroupItem value="classic" />经典（Windows 98）</Label>
+        </RadioGroup>
+      </div>
+      <div className="grid gap-2.5">
+        <span className="text-[13px] font-medium">亮 / 暗</span>
+        <RadioGroup aria-label="亮暗模式" value={t.mode} disabled={classic} onValueChange={(v) => t.setMode(v as "light" | "dark")} className="gap-2.5">
+          <Label className={opt}><RadioGroupItem value="light" />亮色</Label>
+          <Label className={opt}><RadioGroupItem value="dark" />暗色</Label>
+        </RadioGroup>
+        {classic && <span className="text-xs text-muted-foreground">经典主题固定为亮色。</span>}
+      </div>
+    </Panel>
+  );
+}
+
 export function AccountSettings() {
   const { me, refresh } = useSession();
   const [name, setName] = useState(me!.user.display_name);
@@ -205,6 +233,7 @@ export function AccountSettings() {
           <div className="form-actions"><Button type="submit" loading={b.busy} disabled={b.busy}>修改密码</Button></div>
         </form>
       </Panel>
+      <Appearance />
       </div>
     </Page>
   );
