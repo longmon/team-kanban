@@ -1,4 +1,4 @@
-//! 需求页面（page_type = requirement，docs/api.md §7.8）：正文、指派、状态流转、需求群组、附件、补充说明、关联页面、历史。
+//! 需求页面（对外英文名 Story：/api/stories、编号 STORY-12；内部 page_type、表名、模块名仍叫 requirement。docs/api.md §7.8）：正文、指派、状态流转、需求群组、附件、补充说明、关联页面、历史。
 //! 需求本身是一行 pages（发布/改标题/关闭/删除走页面接口），扩展字段在 requirements 等表（0012）。
 //! 状态：open 待认领 → analyzing 分析中 → developing 开发中 → in_review 待验收 →（发起人/项目管理员验收）done 已完成；
 //! 另有 rejected 已拒绝、on_hold 搁置。认领（claim）时自动建需求群组。
@@ -47,7 +47,7 @@ pub struct AssigneesInput {
     groups: Option<Vec<Uuid>>,
 }
 
-/// POST /pages（page_type=requirement）的 requirement 字段
+/// POST /pages（page_type=requirement）的 story 字段
 #[derive(Deserialize, Default)]
 pub struct ReqInput {
     body: Option<String>,
@@ -245,7 +245,7 @@ impl Who {
         self.user_id.unwrap_or_default()
     }
     fn code(&self) -> String {
-        format!("REQ-{}", self.number)
+        format!("STORY-{}", self.number)
     }
     fn writable(&self) -> AppResult<()> {
         if self.closed { Err(page_closed()) } else { Ok(()) }
@@ -320,11 +320,11 @@ fn transitions(w: &Who) -> Vec<&'static str> {
 
 // ---------------------------------------------------------------- 列表字段
 
-/// 页面列表 / 单页 JSON 的 requirement 列（x 为 page_select 输出别名，$1 = 调用者）：编号、状态、优先级、指派、是否指派给我、是否验收人
+/// 页面列表 / 单页 JSON 的 story 列（x 为 page_select 输出别名，$1 = 调用者）：编号、状态、优先级、指派、是否指派给我、是否验收人
 pub fn req_sql(x: &str) -> String {
     format!(
         "CASE WHEN {x}.page_type = 'requirement' THEN (
-           SELECT json_build_object('number', rq.number, 'code', 'REQ-' || rq.number, 'status', rq.status, 'priority', rq.priority,
+           SELECT json_build_object('number', rq.number, 'code', 'STORY-' || rq.number, 'status', rq.status, 'priority', rq.priority,
              'due_at', rq.due_at, 'group_id', rq.group_id,
              'assignees', COALESCE((SELECT json_agg(json_build_object('type', CASE WHEN ra.user_id IS NULL THEN 'group' ELSE 'user' END,
                                                     'id', COALESCE(ra.user_id, ra.group_id), 'name', COALESCE(au.display_name, ag.name))
@@ -335,7 +335,7 @@ pub fn req_sql(x: &str) -> String {
              'mine', EXISTS (SELECT 1 FROM requirement_assignees ra WHERE ra.org_id = rq.org_id AND ra.page_id = rq.page_id
                       AND (ra.user_id = $1 OR EXISTS (SELECT 1 FROM group_members rgm WHERE rgm.org_id = ra.org_id AND rgm.group_id = ra.group_id AND rgm.user_id = $1))),
              'acceptor', ({x}.is_creator OR {x}.role = 'admin'))
-             FROM requirements rq WHERE rq.org_id = {x}.org_id AND rq.page_id = {x}.id) END AS requirement"
+             FROM requirements rq WHERE rq.org_id = {x}.org_id AND rq.page_id = {x}.id) END AS story"
     )
 }
 
@@ -358,8 +358,8 @@ struct FileRow {
 const INLINE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 fn file_json(st: &AppState, w: &Who, f: &FileRow) -> Value {
-    let url = format!("{}/api/requirements/{}/files/{}", st.cfg.public_url, w.page_id, f.id);
-    let inline = INLINE_TYPES.contains(&f.content_type.as_str()).then(|| format!("/api/requirements/{}/files/{}?inline=1", w.page_id, f.id));
+    let url = format!("{}/api/stories/{}/files/{}", st.cfg.public_url, w.page_id, f.id);
+    let inline = INLINE_TYPES.contains(&f.content_type.as_str()).then(|| format!("/api/stories/{}/files/{}?inline=1", w.page_id, f.id));
     json!({
         "id": f.id, "name": f.name, "content_type": f.content_type, "size": f.size,
         "sha256": f.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>(),
@@ -505,7 +505,7 @@ pub struct UpdateReq {
     assignees: Option<AssigneesInput>,
 }
 
-/// PATCH /requirements/{id}：项目 editor 及以上（同页面管理权限）
+/// PATCH /stories/{id}：项目 editor 及以上（同页面管理权限）
 pub async fn update_requirement(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<UpdateReq>) -> J {
     let w = load_who(&st, &c, id, PUBLISH).await?;
     if !w.editor {
@@ -545,7 +545,7 @@ pub async fn update_requirement(State(st): State<AppState>, c: Caller, P(id): P<
         let (users, groups) = set_assignees(&mut tx, w.org_id, w.project_id, w.page_id, w.uid(), a).await?;
         event(&mut tx, &w, "assigned", None, None, Some(json!({ "users": users, "groups": groups }))).await?;
     }
-    audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.update", "page", Some(w.page_id), json!({ "fields": fields, "assignees": r.assignees.is_some() }))
+    audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.update", "page", Some(w.page_id), json!({ "fields": fields, "assignees": r.assignees.is_some() }))
         .await?;
     tx.commit().await?;
     let w = load_who(&st, &c, id, ANY_SCOPE).await?;
@@ -560,8 +560,8 @@ async fn lock(db: &mut PgConnection, w: &Who) -> AppResult<(String, Option<Uuid>
 }
 
 /// 以服务端身份为需求建项目群组（不要求调用者是项目管理员，权限来自「需求参与者」，见 docs/design.md §5.6）：
-/// 名称 `REQ-12 <标题前 40 字>`，同名时追加「 (2)」「 (3)」…；授权本项目 viewer（只读，不扩大可发布范围）；
-/// 成员 = 操作人 + 被指派成员 + 被指派群组当前成员（快照）+ 发起人（仍是组织成员者）。写 group.create 审计（meta.via = requirement）
+/// 名称 `STORY-12 <标题前 40 字>`，同名时追加「 (2)」「 (3)」…；授权本项目 viewer（只读，不扩大可发布范围）；
+/// 成员 = 操作人 + 被指派成员 + 被指派群组当前成员（快照）+ 发起人（仍是组织成员者）。写 group.create 审计（meta.via = story）
 async fn make_group(db: &mut PgConnection, c: &Caller, w: &Who) -> AppResult<(Uuid, String)> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('groups-name:' || $1::text, 0))").bind(w.org_id).execute(&mut *db).await?;
     let prefix: String = w.title.chars().take(40).collect();
@@ -628,14 +628,14 @@ async fn make_group(db: &mut PgConnection, c: &Caller, w: &Who) -> AppResult<(Uu
         "group.create",
         "group",
         Some(gid),
-        json!({ "project_id": w.project_id, "role": "viewer", "member_ids": members, "via": "requirement", "requirement_id": w.page_id, "system": true }),
+        json!({ "project_id": w.project_id, "role": "viewer", "member_ids": members, "via": "story", "story_id": w.page_id, "system": true }),
     )
     .await?;
     event(db, w, "group_created", None, None, Some(json!({ "group_id": gid, "name": name, "member_count": members.len() }))).await?;
     Ok((gid, name))
 }
 
-/// POST /requirements/{id}/claim：被指派者 / 发起人 / 项目管理员；待认领 → 分析中，没有需求群组时自动创建
+/// POST /stories/{id}/claim：被指派者 / 发起人 / 项目管理员；待认领 → 分析中，没有需求群组时自动创建
 pub async fn claim(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
     let w = load_who(&st, &c, id, PUBLISH).await?;
     w.writable()?;
@@ -655,13 +655,13 @@ pub async fn claim(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> J {
         .await?;
     event(&mut tx, &w, "claimed", Some(("open", "analyzing")), None, None).await?;
     let made = if group.is_none() { Some(make_group(&mut tx, &c, &w).await?) } else { None };
-    audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.claim", "page", Some(w.page_id), json!({ "group_created": made.as_ref().map(|g| g.0) })).await?;
+    audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.claim", "page", Some(w.page_id), json!({ "group_created": made.as_ref().map(|g| g.0) })).await?;
     tx.commit().await?;
     let w = load_who(&st, &c, id, ANY_SCOPE).await?;
     detail(&st, &c, &w).await
 }
 
-/// POST /requirements/{id}/group：不认领时手动建需求群组（参与者）
+/// POST /stories/{id}/group：不认领时手动建需求群组（参与者）
 pub async fn create_group(State(st): State<AppState>, c: Caller, P(id): P<Uuid>) -> AppResult<(StatusCode, Json<Value>)> {
     let w = load_who(&st, &c, id, PUBLISH).await?;
     w.writable()?;
@@ -684,7 +684,7 @@ pub struct StatusReq {
     note: Option<String>,
 }
 
-/// POST /requirements/{id}/status：按 rule 校验流转与身份
+/// POST /stories/{id}/status：按 rule 校验流转与身份
 pub async fn set_status(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, JsonBody(r): JsonBody<StatusReq>) -> J {
     let w = load_who(&st, &c, id, PUBLISH).await?;
     w.writable()?;
@@ -715,7 +715,7 @@ pub async fn set_status(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, J
     sqlx::query("UPDATE requirements SET status = $3, updated_at = now() WHERE org_id = $1 AND page_id = $2").bind(w.org_id).bind(w.page_id).bind(&r.status).execute(&mut *tx).await?;
     let note = (!note.is_empty()).then_some(note);
     event(&mut tx, &w, "status", Some((&from, &r.status)), note.as_deref(), None).await?;
-    audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.status", "page", Some(w.page_id), json!({ "from": from, "to": r.status })).await?;
+    audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.status", "page", Some(w.page_id), json!({ "from": from, "to": r.status })).await?;
     tx.commit().await?;
     let w = load_who(&st, &c, id, ANY_SCOPE).await?;
     detail(&st, &c, &w).await
@@ -755,7 +755,7 @@ pub async fn add_doc(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Json
         .bind(w.uid())
         .execute(&mut *tx)
         .await?;
-    audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.doc_add", "page", Some(w.page_id), json!({ "doc_id": doc_id })).await?;
+    audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.doc_add", "page", Some(w.page_id), json!({ "doc_id": doc_id })).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": doc_id, "title": title }))))
 }
@@ -775,7 +775,7 @@ pub async fn delete_doc(State(st): State<AppState>, c: Caller, P((id, doc_id)): 
         return Err(AppError::forbidden());
     }
     sqlx::query("DELETE FROM requirement_docs WHERE org_id = $1 AND page_id = $2 AND id = $3").bind(w.org_id).bind(w.page_id).bind(doc_id).execute(&mut *tx).await?;
-    audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.doc_delete", "page", Some(w.page_id), json!({ "doc_id": doc_id })).await?;
+    audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.doc_delete", "page", Some(w.page_id), json!({ "doc_id": doc_id })).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -807,7 +807,7 @@ async fn insert_link(db: &mut PgConnection, st: &AppState, c: &Caller, w: &Who, 
         .bind(w.uid())
         .execute(&mut *db)
         .await?;
-    audit::log(db, Some(w.org_id), &c.actor(), "requirement.link_add", "page", Some(w.page_id), json!({ "linked_page_id": target })).await?;
+    audit::log(db, Some(w.org_id), &c.actor(), "story.link_add", "page", Some(w.page_id), json!({ "linked_page_id": target })).await?;
     Ok(())
 }
 
@@ -841,20 +841,20 @@ pub async fn delete_link(State(st): State<AppState>, c: Caller, P((id, target)):
     if n == 0 {
         return Err(AppError::not_found());
     }
-    audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.link_remove", "page", Some(w.page_id), json!({ "linked_page_id": target })).await?;
+    audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.link_remove", "page", Some(w.page_id), json!({ "linked_page_id": target })).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// publish_page 带 requirement_id：发布者须能看到需求、是参与者或项目 editor、需求与页面同项目。返回需求 Who（事务里再关联）
+/// publish_page 带 story_id：发布者须能看到需求、是参与者或项目 editor、需求与页面同项目。返回需求 Who（事务里再关联）
 pub async fn check_publish_link(st: &AppState, c: &Caller, req_id: Uuid, project_id: Uuid) -> AppResult<Who> {
-    let w = load_who(st, c, req_id, PUBLISH).await.map_err(|e| if e.status == StatusCode::NOT_FOUND { AppError::field("requirement_id", "需求不存在或你看不到") } else { e })?;
+    let w = load_who(st, c, req_id, PUBLISH).await.map_err(|e| if e.status == StatusCode::NOT_FOUND { AppError::field("story_id", "需求不存在或你看不到") } else { e })?;
     w.writable()?;
     if !w.contributor() {
         return Err(AppError::forbidden());
     }
     if w.project_id != project_id {
-        return Err(AppError::field("requirement_id", "需求与页面必须在同一个项目"));
+        return Err(AppError::field("story_id", "需求与页面必须在同一个项目"));
     }
     Ok(w)
 }
@@ -872,7 +872,7 @@ pub async fn link_new_page(db: &mut PgConnection, c: &Caller, w: &Who, page_id: 
         .bind(w.uid())
         .execute(&mut *db)
         .await?;
-    audit::log(db, Some(w.org_id), &c.actor(), "requirement.link_add", "page", Some(w.page_id), json!({ "linked_page_id": page_id, "via": "publish" })).await?;
+    audit::log(db, Some(w.org_id), &c.actor(), "story.link_add", "page", Some(w.page_id), json!({ "linked_page_id": page_id, "via": "publish" })).await?;
     Ok(())
 }
 
@@ -951,7 +951,7 @@ fn bad_type() -> AppError {
     AppError::new(StatusCode::BAD_REQUEST, "file_type_not_allowed", "文件类型不在白名单，或文件内容与扩展名不符")
 }
 
-/// POST /requirements/{id}/files?name=原文件名：请求体为文件原始字节（不是 multipart）。参与者或项目 editor
+/// POST /stories/{id}/files?name=原文件名：请求体为文件原始字节（不是 multipart）。参与者或项目 editor
 pub async fn upload(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q): Q<UploadQuery>, body: Body) -> AppResult<(StatusCode, Json<Value>)> {
     let w = load_who(&st, &c, id, PUBLISH).await?;
     w.writable()?;
@@ -1024,7 +1024,7 @@ pub async fn upload(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, Q(q):
         .bind(w.uid())
         .execute(&mut *tx)
         .await?;
-        audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.file_upload", "page", Some(w.page_id), json!({ "file_id": fid, "name": name, "size": size, "content_type": ctype }))
+        audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.file_upload", "page", Some(w.page_id), json!({ "file_id": fid, "name": name, "size": size, "content_type": ctype }))
             .await?;
         tx.commit().await?;
         AppResult::Ok(())
@@ -1050,7 +1050,7 @@ pub struct DownloadQuery {
     inline: Option<String>,
 }
 
-/// GET /requirements/{id}/files/{file_id}：能看需求的人（含 PAT 任意 scope）。一律 attachment，只有安全 raster 图片 ?inline=1 时内联；nosniff + CSP sandbox
+/// GET /stories/{id}/files/{file_id}：能看需求的人（含 PAT 任意 scope）。一律 attachment，只有安全 raster 图片 ?inline=1 时内联；nosniff + CSP sandbox
 pub async fn download(State(st): State<AppState>, c: Caller, P((id, fid)): P<(Uuid, Uuid)>, Q(q): Q<DownloadQuery>) -> AppResult<Response> {
     let w = load_who(&st, &c, id, ANY_SCOPE).await?;
     let f: FileRow = sqlx::query_as(&format!("{FILE_SELECT} WHERE f.org_id = $1 AND f.page_id = $2 AND f.id = $3"))
@@ -1107,7 +1107,7 @@ pub async fn delete_file(State(st): State<AppState>, c: Caller, P((id, fid)): P<
         return Err(AppError::forbidden());
     }
     sqlx::query("DELETE FROM requirement_files WHERE org_id = $1 AND id = $2").bind(w.org_id).bind(fid).execute(&mut *tx).await?;
-    audit::log(&mut tx, Some(w.org_id), &c.actor(), "requirement.file_delete", "page", Some(w.page_id), json!({ "file_id": fid })).await?;
+    audit::log(&mut tx, Some(w.org_id), &c.actor(), "story.file_delete", "page", Some(w.page_id), json!({ "file_id": fid })).await?;
     tx.commit().await?;
     // 提交后再删文件：删失败只留孤儿文件，不会出现「记录在、文件没了」
     if let Err(e) = tokio::fs::remove_file(path_of(&st, &key)).await

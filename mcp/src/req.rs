@@ -1,4 +1,4 @@
-//! 需求（page_type=requirement，docs/api.md §7.8、§14）：MCP 工具实现 + `tkanban req list / pull`。
+//! 需求（page_type=requirement，docs/api.md §7.8、§14）：MCP 工具实现 + `tkanban story list / pull`。
 
 use std::{
     collections::HashSet,
@@ -20,14 +20,14 @@ const UPLOAD_MAX: u64 = 50 << 20;
 const BODY_MAX: u64 = 256 << 10;
 
 pub const REQ_GUIDE: &str = "\
-## 需求（requirement）：产品经理提需求，被指派者在本地分析
-- 产品经理在网页（或你代他用 create_requirement）提需求：标题、Markdown 正文、优先级 P0–P3、期望完成时间、指派成员/群组；编号形如 REQ-12（项目内递增）。
+## 需求（Story）：产品经理提需求，被指派者在本地分析
+- 产品经理在网页（或你代他用 create_story）提需求：标题、Markdown 正文、优先级 P0–P3、期望完成时间、指派成员/群组；编号形如 STORY-12（项目内递增）。
 - 状态：open 待认领 → analyzing 分析中 → developing 开发中 → in_review 待验收 → done 已完成（只有发起人或项目管理员能验收）；另有 rejected 已拒绝、on_hold 搁置。
-- 被指派给你（令牌所属账号或你所在群组）的需求：list_requirements(mine=true) 查看；get_requirement 拉正文、补充说明、附件（下载地址）、关联页面与历史；\
-用户想在本地看时让他执行 `tkanban req pull REQ-12`（写到 ./requirements/REQ-12/）。
-- 开始做时 claim_requirement 认领：状态变为分析中，并自动创建需求群组（成员 = 认领人 + 被指派者 + 被指派群组成员 + 发起人）。
-- **做需求相关的分析 / 设计 / 接口文档 / 任务拆解时，publish_page 带上 requirement=\"REQ-12\"**：页面自动发到需求群组（visibility=groups），并挂到需求的「关联页面」下；不要再另选群组。
-- 进度：update_requirement_status(status=developing / in_review, note=…)；拒绝或验收不通过必须写 note。追加文字说明用 add_requirement_doc，上传本地文件用 upload_requirement_file（≤50 MB，白名单：pdf/office/图片/压缩包/txt/md/csv/json）。
+- 被指派给你（令牌所属账号或你所在群组）的需求：list_stories(mine=true) 查看；get_story 拉正文、补充说明、附件（下载地址）、关联页面与历史；\
+用户想在本地看时让他执行 `tkanban story pull STORY-12`（写到 ./stories/STORY-12/）。
+- 开始做时 claim_story 认领：状态变为分析中，并自动创建需求群组（成员 = 认领人 + 被指派者 + 被指派群组成员 + 发起人）。
+- **做需求相关的分析 / 设计 / 接口文档 / 任务拆解时，publish_page 带上 story=\"STORY-12\"**：页面自动发到需求群组（visibility=groups），并挂到需求的「关联页面」下；不要再另选群组。
+- 进度：update_story_status(status=developing / in_review, note=…)；拒绝或验收不通过必须写 note。追加文字说明用 add_story_doc，上传本地文件用 upload_story_file（≤50 MB，白名单：pdf/office/图片/压缩包/txt/md/csv/json）。
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -70,10 +70,10 @@ pub fn status_label(s: &str) -> &str {
     }
 }
 
-/// "REQ-12" / "req-12" / "12" → 12
+/// "STORY-12" / "story-12" / "12" → 12
 pub fn parse_code(r: &str) -> Option<i64> {
     let t = r.trim();
-    let n = t.get(..4).filter(|p| p.eq_ignore_ascii_case("REQ-")).map_or(t, |_| &t[4..]);
+    let n = t.get(..6).filter(|p| p.eq_ignore_ascii_case("STORY-")).map_or(t, |_| &t[6..]);
     n.parse::<i64>().ok().filter(|n| *n >= 1)
 }
 
@@ -87,7 +87,7 @@ pub fn clean_name(raw: &str) -> String {
 
 /// 列表里的一条需求（compact）
 fn brief(p: &Value) -> Value {
-    let r = &p["requirement"];
+    let r = &p["story"];
     json!({
         "id": p["id"], "code": r["code"], "title": p["title"], "status": r["status"], "status_label": status_label(r["status"].as_str().unwrap_or_default()),
         "priority": r["priority"], "due_at": r["due_at"], "assignees": r["assignees"], "assigned_to_me": r["mine"], "acceptor": r["acceptor"],
@@ -115,8 +115,8 @@ pub struct ListReqArgs {
 pub struct ReqRef {
     /// 服务器（profile 名）
     pub server: Option<String>,
-    /// 需求编号（如 "REQ-12"）或页面 UUID
-    pub requirement: String,
+    /// 需求编号（如 "STORY-12"）或页面 UUID
+    pub story: String,
     /// 编号在多个项目里重名时用来消歧：项目 UUID、"org_slug/project_slug"、slug 或名称
     pub project: Option<String>,
     /// 组织 slug/UUID/名称
@@ -126,12 +126,12 @@ pub struct ReqRef {
 #[derive(Deserialize, JsonSchema)]
 pub struct ReqStatusArgs {
     pub server: Option<String>,
-    /// 需求编号（如 "REQ-12"）或页面 UUID
-    pub requirement: String,
+    /// 需求编号（如 "STORY-12"）或页面 UUID
+    pub story: String,
     pub project: Option<String>,
     pub org: Option<String>,
     /// 目标状态：developing 开发中 / in_review 提交验收 / done 验收通过（仅发起人或项目管理员）/ rejected 拒绝 / on_hold 搁置 / open 退回待认领 / analyzing。
-    /// 待认领 → 分析中请用 claim_requirement
+    /// 待认领 → 分析中请用 claim_story
     pub status: ReqStatus,
     /// 说明，≤2000 字符；rejected、验收不通过（in_review → developing）必填
     pub note: Option<String>,
@@ -140,8 +140,8 @@ pub struct ReqStatusArgs {
 #[derive(Deserialize, JsonSchema)]
 pub struct ReqDocArgs {
     pub server: Option<String>,
-    /// 需求编号（如 "REQ-12"）或页面 UUID
-    pub requirement: String,
+    /// 需求编号（如 "STORY-12"）或页面 UUID
+    pub story: String,
     pub project: Option<String>,
     pub org: Option<String>,
     /// 标题，1..200 字符
@@ -155,8 +155,8 @@ pub struct ReqDocArgs {
 #[derive(Deserialize, JsonSchema)]
 pub struct ReqUploadArgs {
     pub server: Option<String>,
-    /// 需求编号（如 "REQ-12"）或页面 UUID
-    pub requirement: String,
+    /// 需求编号（如 "STORY-12"）或页面 UUID
+    pub story: String,
     pub project: Option<String>,
     pub org: Option<String>,
     /// 本地文件路径（≤50 MB；类型白名单：pdf、doc/docx、xls/xlsx、ppt/pptx、png/jpg/gif/webp/svg、zip/7z/rar/gz、txt/md/csv/json）
@@ -211,18 +211,18 @@ impl Kanban {
         if is_uuid(r.trim()) {
             return Ok(r.trim().to_ascii_lowercase());
         }
-        let n = parse_code(r).ok_or("invalid_argument: requirement 必须是需求编号（如 REQ-12）或 UUID")?;
+        let n = parse_code(r).ok_or("invalid_argument: story 必须是需求编号（如 STORY-12）或 UUID")?;
         let (items, _) = self.req_pages(s, org, project).await?;
-        let mut hits: Vec<Value> = items.into_iter().filter(|p| p["requirement"]["number"].as_i64() == Some(n)).collect();
+        let mut hits: Vec<Value> = items.into_iter().filter(|p| p["story"]["number"].as_i64() == Some(n)).collect();
         match hits.len() {
-            0 => Err(format!("not_found: 服务器 {} 上找不到你能看到的需求 REQ-{n}（用 list_requirements 查看）", s.name)),
+            0 => Err(format!("not_found: 服务器 {} 上找不到你能看到的需求 STORY-{n}（用 list_stories 查看）", s.name)),
             1 => Ok(hits.remove(0)["id"].as_str().unwrap_or_default().to_string()),
             _ => Err(choose("project", json!(hits.iter().map(brief).collect::<Vec<_>>()))),
         }
     }
 
     pub async fn req_get(&self, s: &Srv, id: &str) -> R<Value> {
-        self.get(s, &format!("/api/requirements/{}", uuid_arg("requirement", id)?), &[]).await
+        self.get(s, &format!("/api/stories/{}", uuid_arg("story", id)?), &[]).await
     }
 
     pub async fn req_list(&self, a: ListReqArgs) -> R<String> {
@@ -231,12 +231,12 @@ impl Kanban {
         let want: Option<Vec<Value>> = a.status.map(|v| v.iter().map(|x| json!(x)).collect());
         let items: Vec<Value> = items
             .iter()
-            .filter(|p| want.as_ref().is_none_or(|w| w.contains(&p["requirement"]["status"])))
-            .filter(|p| a.mine != Some(true) || p["requirement"]["mine"] == true)
+            .filter(|p| want.as_ref().is_none_or(|w| w.contains(&p["story"]["status"])))
+            .filter(|p| a.mine != Some(true) || p["story"]["mine"] == true)
             .map(brief)
             .collect();
-        let mut out = json!({ "server": s.name, "count": items.len(), "requirements": items,
-            "next_step": "get_requirement 拉详情；开始做时 claim_requirement；相关文档 publish_page(requirement=编号)。" });
+        let mut out = json!({ "server": s.name, "count": items.len(), "stories": items,
+            "next_step": "get_story 拉详情；开始做时 claim_story；相关文档 publish_page(story=编号)。" });
         if truncated {
             out["truncated"] = true.into();
         }
@@ -245,7 +245,7 @@ impl Kanban {
 
     async fn req_ctx(&self, a: &ReqRef) -> R<(Srv, String)> {
         let s = pick_server(a.server.as_deref())?;
-        let id = self.resolve_req(&s, &a.requirement, a.org.as_deref(), a.project.as_deref()).await?;
+        let id = self.resolve_req(&s, &a.story, a.org.as_deref(), a.project.as_deref()).await?;
         Ok((s, id))
     }
 
@@ -255,7 +255,7 @@ impl Kanban {
         d["server"] = s.name.clone().into();
         d["status_label"] = status_label(d["status"].as_str().unwrap_or_default()).into();
         d["next_step"] = format!(
-            "附件用 download_url 下载（需带令牌），或让用户执行 `tkanban req pull {}` 落到本地；开始做时 claim_requirement；相关文档 publish_page(requirement=\"{}\")。",
+            "附件用 download_url 下载（需带令牌），或让用户执行 `tkanban story pull {}` 落到本地；开始做时 claim_story；相关文档 publish_page(story=\"{}\")。",
             d["code"].as_str().unwrap_or_default(),
             d["code"].as_str().unwrap_or_default()
         )
@@ -265,20 +265,20 @@ impl Kanban {
 
     pub async fn req_claim(&self, a: ReqRef) -> R<String> {
         let (s, id) = self.req_ctx(&a).await?;
-        let d = self.api(&s, Method::POST, &format!("/api/requirements/{id}/claim"), &[], None, None).await?;
+        let d = self.api(&s, Method::POST, &format!("/api/stories/{id}/claim"), &[], None, None).await?;
         let code = d["code"].as_str().unwrap_or_default();
         Ok(pretty(&json!({
             "server": s.name, "id": d["id"], "code": code, "status": d["status"], "group": d["group"], "url": d["url"],
-            "next_step": format!("已认领，需求群组「{}」已就绪。之后做这个需求的分析 / 设计 / 接口文档时 publish_page(requirement=\"{code}\")，\
-页面会自动发到需求群组并挂到需求下；进入开发用 update_requirement_status(status=developing)。", d["group"]["name"].as_str().unwrap_or_default()),
+            "next_step": format!("已认领，需求群组「{}」已就绪。之后做这个需求的分析 / 设计 / 接口文档时 publish_page(story=\"{code}\")，\
+页面会自动发到需求群组并挂到需求下；进入开发用 update_story_status(status=developing)。", d["group"]["name"].as_str().unwrap_or_default()),
         })))
     }
 
     pub async fn req_status(&self, a: ReqStatusArgs) -> R<String> {
-        let r = ReqRef { server: a.server, requirement: a.requirement, project: a.project, org: a.org };
+        let r = ReqRef { server: a.server, story: a.story, project: a.project, org: a.org };
         let (s, id) = self.req_ctx(&r).await?;
         let d = self
-            .api(&s, Method::POST, &format!("/api/requirements/{id}/status"), &[], Some(json!({ "status": a.status, "note": a.note })), None)
+            .api(&s, Method::POST, &format!("/api/stories/{id}/status"), &[], Some(json!({ "status": a.status, "note": a.note })), None)
             .await?;
         Ok(pretty(&json!({ "server": s.name, "id": d["id"], "code": d["code"], "status": d["status"],
             "status_label": status_label(d["status"].as_str().unwrap_or_default()), "transitions": d["me"]["transitions"] })))
@@ -290,12 +290,12 @@ impl Kanban {
             (None, Some(p)) => read_file(&p, BODY_MAX)?,
             _ => return Err("invalid_argument: body 与 file_path 恰好给一个".into()),
         };
-        let r = ReqRef { server: a.server, requirement: a.requirement, project: a.project, org: a.org };
+        let r = ReqRef { server: a.server, story: a.story, project: a.project, org: a.org };
         let (s, id) = self.req_ctx(&r).await?;
         let d = self
-            .api(&s, Method::POST, &format!("/api/requirements/{id}/docs"), &[], Some(json!({ "title": a.title, "body": body })), None)
+            .api(&s, Method::POST, &format!("/api/stories/{id}/docs"), &[], Some(json!({ "title": a.title, "body": body })), None)
             .await?;
-        Ok(pretty(&json!({ "server": s.name, "requirement_id": id, "doc": d })))
+        Ok(pretty(&json!({ "server": s.name, "story_id": id, "doc": d })))
     }
 
     pub async fn req_upload(&self, a: ReqUploadArgs) -> R<String> {
@@ -309,18 +309,18 @@ impl Kanban {
         }
         let name = clean_name(a.name.as_deref().unwrap_or_else(|| path.file_name().and_then(|n| n.to_str()).unwrap_or("file")));
         let bytes = std::fs::read(path).map_err(|e| format!("file_error: 读取 {} 失败：{e}", a.file_path))?;
-        let r = ReqRef { server: a.server, requirement: a.requirement, project: a.project, org: a.org };
+        let r = ReqRef { server: a.server, story: a.story, project: a.project, org: a.org };
         let (s, id) = self.req_ctx(&r).await?;
         let req = self
             .http
-            .post(self.url(&s, &format!("/api/requirements/{id}/files"))?)
+            .post(self.url(&s, &format!("/api/stories/{id}/files"))?)
             .bearer_auth(&s.p.token)
             .query(&[("name", &name)])
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .timeout(Duration::from_secs(600))
             .body(bytes);
         let f: Value = self.send(req).await?.json().await.map_err(|e| format!("bad_response: {e}"))?;
-        Ok(pretty(&json!({ "server": s.name, "requirement_id": id, "file": f })))
+        Ok(pretty(&json!({ "server": s.name, "story_id": id, "file": f })))
     }
 
     pub async fn req_create(&self, a: CreateReqArgs) -> R<String> {
@@ -343,13 +343,13 @@ impl Kanban {
                 Some(json!({
                     "project_id": p["id"], "title": a.title, "kind": "openui", "page_type": "requirement",
                     "visibility": a.visibility.map_or(json!("project"), |v| json!(v)), "model": a.model, "summary": a.summary,
-                    "requirement": { "body": body, "priority": a.priority, "due_at": a.due_at,
+                    "story": { "body": body, "priority": a.priority, "due_at": a.due_at,
                                      "assignees": { "users": a.assignees.unwrap_or_default(), "groups": group_ids } },
                 })),
                 None,
             )
             .await?;
-        let r = &page["requirement"];
+        let r = &page["story"];
         Ok(pretty(&json!({
             "server": s.name, "id": page["id"], "code": r["code"], "url": page["url"], "status": r["status"], "assignees": r["assignees"],
             "next_step": "把 url 发给用户；被指派者会在首页「等我处理」看到它，认领后自动建需求群组。",
@@ -387,7 +387,7 @@ fn readme(d: &Value) -> String {
     for (k, v) in rows {
         out += &format!("| {k} | {} |\n", md_cell(if v.is_empty() { "—" } else { &v }));
     }
-    out += "\n> 由 `tkanban req pull` 生成，重复拉取会覆盖本文件、docs/、attachments/ 下的同名文件和 links.md，不会删除你自己加的文件。\n\n---\n\n";
+    out += "\n> 由 `tkanban story pull` 生成，重复拉取会覆盖本文件、docs/、attachments/ 下的同名文件和 links.md，不会删除你自己加的文件。\n\n---\n\n";
     out += d["body"].as_str().unwrap_or_default();
     out.push('\n');
     out
@@ -428,10 +428,10 @@ fn write(path: &Path, data: &[u8]) -> R<()> {
     std::fs::write(path, data).map_err(|e| format!("file_error: 写入 {} 失败：{e}", path.display()))
 }
 
-/// 拉到 <dir>/<REQ-12>/：README.md、docs/*.md、attachments/*、links.md。返回目录与文件数
+/// 拉到 <dir>/<STORY-12>/：README.md、docs/*.md、attachments/*、links.md。返回目录与文件数
 pub async fn pull(k: &Kanban, s: &Srv, id: &str, dir: &Path) -> R<(PathBuf, usize)> {
     let d = k.req_get(s, id).await?;
-    let code = d["code"].as_str().filter(|c| parse_code(c).is_some() && c.starts_with("REQ-")).map(str::to_string).unwrap_or_else(|| id.to_string());
+    let code = d["code"].as_str().filter(|c| parse_code(c).is_some() && c.starts_with("STORY-")).map(str::to_string).unwrap_or_else(|| id.to_string());
     let root = dir.join(&code);
     for sub in ["docs", "attachments"] {
         std::fs::create_dir_all(root.join(sub)).map_err(|e| format!("file_error: 创建 {} 失败：{e}", root.join(sub).display()))?;
@@ -460,7 +460,7 @@ pub async fn pull(k: &Kanban, s: &Srv, id: &str, dir: &Path) -> R<(PathBuf, usiz
         // 下载地址按 profile 的服务器拼，不用响应里的绝对地址（令牌只发给配置的服务器）
         let req = k
             .http
-            .request(Method::GET, k.url(s, &format!("/api/requirements/{}/files/{fid}", uuid_arg("requirement", &rid)?))?)
+            .request(Method::GET, k.url(s, &format!("/api/stories/{}/files/{fid}", uuid_arg("story", &rid)?))?)
             .bearer_auth(&s.p.token)
             .timeout(Duration::from_secs(600));
         let bytes = k.send(req).await?.bytes().await.map_err(|e| format!("network_error: {e}"))?;
@@ -474,10 +474,10 @@ pub async fn pull(k: &Kanban, s: &Srv, id: &str, dir: &Path) -> R<(PathBuf, usiz
 // ---------------------------------------------------------------- CLI
 
 pub const CLI_HELP: &str = "\
-  tkanban req list [--server 名称] [--project 项目] [--status 状态] [--mine]
+  tkanban story list [--server 名称] [--project 项目] [--status 状态] [--mine]
       列出能看到的需求（--mine 只看指派给我或我所在群组的；状态 open/analyzing/developing/in_review/done/rejected/on_hold）
-  tkanban req pull <REQ-12|UUID> [--dir ./requirements] [--server 名称] [--project 项目]
-      把需求拉到本地 <dir>/REQ-12/：README.md（元数据 + 正文）、docs/*.md（补充说明）、attachments/（附件）、links.md（关联页面）。
+  tkanban story pull <STORY-12|UUID> [--dir ./stories] [--server 名称] [--project 项目]
+      把需求拉到本地 <dir>/STORY-12/：README.md（元数据 + 正文）、docs/*.md（补充说明）、attachments/（附件）、links.md（关联页面）。
       重复拉取覆盖同名文件，不删除你自己加的文件；文件名会清洗，不会写到目录外。
 ";
 
@@ -533,10 +533,10 @@ pub async fn cli(rest: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("pull") => {
-            let [r] = pos.as_slice() else { return Err("用法：tkanban req pull <REQ-12|UUID> [--dir ./requirements]".into()) };
+            let [r] = pos.as_slice() else { return Err("用法：tkanban story pull <STORY-12|UUID> [--dir ./stories]".into()) };
             let s = pick_server(server.as_deref()).map_err(|e| if e.starts_with('{') { "有多个服务器，请用 --server 指定".into() } else { e })?;
             let id = k.resolve_req(&s, r, None, project.as_deref()).await.map_err(cli_err)?;
-            let (root, n) = pull(&k, &s, &id, Path::new(dir.as_deref().unwrap_or("requirements"))).await?;
+            let (root, n) = pull(&k, &s, &id, Path::new(dir.as_deref().unwrap_or("stories"))).await?;
             println!("已拉取到 {}（{n} 个文件）", root.display());
             Ok(())
         }
@@ -565,11 +565,11 @@ mod tests {
 
     #[test]
     fn code_and_names() {
-        assert_eq!(parse_code("REQ-12"), Some(12));
-        assert_eq!(parse_code("req-3"), Some(3));
+        assert_eq!(parse_code("STORY-12"), Some(12));
+        assert_eq!(parse_code("story-3"), Some(3));
         assert_eq!(parse_code("7"), Some(7));
-        assert_eq!(parse_code("REQ-0"), None);
-        assert_eq!(parse_code("REQ-x"), None);
+        assert_eq!(parse_code("STORY-0"), None);
+        assert_eq!(parse_code("STORY-x"), None);
         assert_eq!(clean_name("../../etc/passwd"), "passwd");
         assert_eq!(clean_name("..\\..\\a b.pdf"), "a b.pdf");
         assert_eq!(clean_name(".."), "file");

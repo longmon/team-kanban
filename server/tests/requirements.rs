@@ -1,4 +1,4 @@
-//! 需求页面：创建权限、编号并发唯一、指派与「等我处理」、认领自动建群组、状态流转、附件安全、补充说明、关联页面、publish 带 requirement、旧数据不变
+//! 需求页面：创建权限、编号并发唯一、指派与「等我处理」、认领自动建群组、状态流转、附件安全、补充说明、关联页面、publish 带 story_id、旧数据不变
 mod common;
 
 use common::*;
@@ -45,7 +45,7 @@ async fn world(h: &H) -> W {
 
 fn req_body(w: &W, title: &str) -> Value {
     json!({ "project_id": w.proj, "title": title, "kind": "openui", "page_type": "requirement", "visibility": "project",
-        "requirement": { "body": "## 背景\n需要支持退款", "priority": "P1", "due_at": "2026-12-01T18:00:00+08:00",
+        "story": { "body": "## 背景\n需要支持退款", "priority": "P1", "due_at": "2026-12-01T18:00:00+08:00",
                          "assignees": { "users": ["dev@example.com"], "groups": [w.grp] } } })
 }
 
@@ -54,7 +54,7 @@ async fn create_req(h: &H, w: &W, title: &str) -> String {
 }
 
 async fn detail(h: &H, c: &C, id: &str) -> Value {
-    h.req(c, "GET", &format!("/api/requirements/{id}"), None).await.ok(200)
+    h.req(c, "GET", &format!("/api/stories/{id}"), None).await.ok(200)
 }
 
 async fn listed(h: &H, c: &C, id: &str) -> Value {
@@ -71,12 +71,12 @@ async fn create_permissions_and_numbering() {
     let p = h.req(&w.pm, "POST", "/api/pages", Some(req_body(&w, "支付退款"))).await.ok(201);
     assert_eq!(p["category"], "collab");
     assert_eq!(p["accept_responses"], false);
-    assert_eq!(p["requirement"]["code"], "REQ-1");
-    assert_eq!(p["requirement"]["status"], "open");
-    assert_eq!(p["requirement"]["priority"], "P1");
-    assert_eq!(p["requirement"]["acceptor"], true);
-    assert_eq!(p["requirement"]["assignees"].as_array().unwrap().len(), 2);
-    // 校验：正文不能走 content、可见范围只能 project/org、kind 只能 openui、非需求页不能带 requirement
+    assert_eq!(p["story"]["code"], "STORY-1");
+    assert_eq!(p["story"]["status"], "open");
+    assert_eq!(p["story"]["priority"], "P1");
+    assert_eq!(p["story"]["acceptor"], true);
+    assert_eq!(p["story"]["assignees"].as_array().unwrap().len(), 2);
+    // 校验：正文不能走 content、可见范围只能 project/org、kind 只能 openui、非需求页不能带 story
     let mut b = req_body(&w, "x");
     b["content"] = json!("root = Stack([])x");
     assert_eq!(h.req(&w.pm, "POST", "/api/pages", Some(b)).await.status, 400);
@@ -87,33 +87,33 @@ async fn create_permissions_and_numbering() {
     b["kind"] = json!("html");
     assert_eq!(h.req(&w.pm, "POST", "/api/pages", Some(b)).await.status, 400);
     let mut b = req_body(&w, "x");
-    b["requirement"]["priority"] = json!("P9");
+    b["story"]["priority"] = json!("P9");
     assert_eq!(h.req(&w.pm, "POST", "/api/pages", Some(b)).await.status, 400);
     let r = h
         .req(&w.pm, "POST", "/api/pages", Some(json!({ "project_id": w.proj, "title": "r", "kind": "openui", "content": "root = Stack([])",
-            "page_type": "report", "visibility": "project", "requirement": { "body": "x" } })))
+            "page_type": "report", "visibility": "project", "story": { "body": "x" } })))
         .await;
     assert_eq!(r.status, 400);
     // 指派对象必须能看到需求：不在项目里的成员、没授权给项目的群组 → 400
     let mut b = req_body(&w, "x");
-    b["requirement"]["assignees"] = json!({ "users": ["stranger@example.com"] });
+    b["story"]["assignees"] = json!({ "users": ["stranger@example.com"] });
     assert!(h.req(&w.pm, "POST", "/api/pages", Some(b)).await.text().contains("不是本项目成员"));
     let lone = create_group(&h, &w.owner, &w.org, "没授权的组").await;
     let mut b = req_body(&w, "x");
-    b["requirement"]["assignees"] = json!({ "groups": [lone] });
+    b["story"]["assignees"] = json!({ "groups": [lone] });
     assert_eq!(h.req(&w.pm, "POST", "/api/pages", Some(b)).await.status, 400);
     // PAT publish scope 可以代产品经理建需求；read_responses 不行
     let (pat, _) = create_pat(&h, &w.pm, &["publish"], None, None).await;
     let p2 = h.req(&pat, "POST", "/api/pages", Some(req_body(&w, "第二个"))).await.ok(201);
-    assert_eq!(p2["requirement"]["code"], "REQ-2");
+    assert_eq!(p2["story"]["code"], "STORY-2");
     let (ro, _) = create_pat(&h, &w.pm, &["read_responses"], None, None).await;
     assert_eq!(h.req(&ro, "POST", "/api/pages", Some(req_body(&w, "x"))).await.status, 403);
     // 其他项目编号从 1 开始
     let proj2 = create_project(&h, &w.owner, &w.org, "p2").await;
     let mut b = req_body(&w, "别的项目");
     b["project_id"] = json!(proj2);
-    b["requirement"]["assignees"] = json!({});
-    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(b)).await.ok(201)["requirement"]["number"], 1);
+    b["story"]["assignees"] = json!({});
+    assert_eq!(h.req(&w.owner, "POST", "/api/pages", Some(b)).await.ok(201)["story"]["number"], 1);
 }
 
 #[tokio::test]
@@ -128,7 +128,7 @@ async fn numbering_is_unique_under_concurrency() {
             let res = app.oneshot(req).await.unwrap();
             assert_eq!(res.status(), 201);
             let b = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-            serde_json::from_slice::<Value>(&b).unwrap()["requirement"]["number"].as_i64().unwrap()
+            serde_json::from_slice::<Value>(&b).unwrap()["story"]["number"].as_i64().unwrap()
         }));
     }
     let mut nums = vec![];
@@ -145,24 +145,24 @@ async fn assignment_and_todo() {
     let w = world(&h).await;
     let id = create_req(&h, &w, "支付退款").await;
     // 被指派者（本人、群组成员）mine = true；无关的人 false，但能看（visibility=project）
-    assert_eq!(listed(&h, &w.dev, &id).await["requirement"]["mine"], true);
-    assert_eq!(listed(&h, &w.team, &id).await["requirement"]["mine"], true);
-    assert_eq!(listed(&h, &w.viewer, &id).await["requirement"]["mine"], false);
-    assert_eq!(listed(&h, &w.viewer, &id).await["requirement"]["acceptor"], false);
+    assert_eq!(listed(&h, &w.dev, &id).await["story"]["mine"], true);
+    assert_eq!(listed(&h, &w.team, &id).await["story"]["mine"], true);
+    assert_eq!(listed(&h, &w.viewer, &id).await["story"]["mine"], false);
+    assert_eq!(listed(&h, &w.viewer, &id).await["story"]["acceptor"], false);
     assert_eq!(listed(&h, &w.outsider, &id).await, Value::Null);
-    assert_eq!(h.req(&w.outsider, "GET", &format!("/api/requirements/{id}"), None).await.status, 404);
-    assert_eq!(h.req(&w.stranger, "GET", &format!("/api/requirements/{id}"), None).await.status, 404);
+    assert_eq!(h.req(&w.outsider, "GET", &format!("/api/stories/{id}"), None).await.status, 404);
+    assert_eq!(h.req(&w.stranger, "GET", &format!("/api/stories/{id}"), None).await.status, 404);
     // 改指派：只有项目 editor 及以上；改完 dev 不再是被指派者
-    assert_eq!(h.req(&w.dev, "PATCH", &format!("/api/requirements/{id}"), Some(json!({ "assignees": { "users": [] } }))).await.status, 403);
+    assert_eq!(h.req(&w.dev, "PATCH", &format!("/api/stories/{id}"), Some(json!({ "assignees": { "users": [] } }))).await.status, 403);
     let d = h
-        .req(&w.pm, "PATCH", &format!("/api/requirements/{id}"), Some(json!({ "assignees": { "users": ["viewer@example.com"] }, "priority": null, "title": "支付退款 v2" })))
+        .req(&w.pm, "PATCH", &format!("/api/stories/{id}"), Some(json!({ "assignees": { "users": ["viewer@example.com"] }, "priority": null, "title": "支付退款 v2" })))
         .await
         .ok(200);
     assert_eq!(d["assignees"]["users"][0]["display_name"], "viewer");
     assert_eq!(d["priority"], Value::Null);
     assert_eq!(d["title"], "支付退款 v2");
-    assert_eq!(listed(&h, &w.dev, &id).await["requirement"]["mine"], false);
-    assert_eq!(listed(&h, &w.viewer, &id).await["requirement"]["mine"], true);
+    assert_eq!(listed(&h, &w.dev, &id).await["story"]["mine"], false);
+    assert_eq!(listed(&h, &w.viewer, &id).await["story"]["mine"], true);
     let actions: Vec<&str> = d["events"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
     assert_eq!(actions, ["created", "edited", "assigned"]);
 }
@@ -173,14 +173,14 @@ async fn claim_creates_group() {
     let w = world(&h).await;
     let id = create_req(&h, &w, "支付退款").await;
     // 与需求无关的 viewer 不能认领；被指派群组成员可以（用 PAT 也行，需要 publish）
-    assert_eq!(h.req(&w.viewer, "POST", &format!("/api/requirements/{id}/claim"), None).await.status, 403);
+    assert_eq!(h.req(&w.viewer, "POST", &format!("/api/stories/{id}/claim"), None).await.status, 403);
     // 同名冲突：组织里已有同名的组织级群组 → 自动加 (2)
-    create_group(&h, &w.owner, &w.org, "REQ-1 支付退款").await;
+    create_group(&h, &w.owner, &w.org, "STORY-1 支付退款").await;
     let (pat, pat_id) = create_pat(&h, &w.team, &["publish"], None, None).await;
-    let d = h.req(&pat, "POST", &format!("/api/requirements/{id}/claim"), None).await.ok(200);
+    let d = h.req(&pat, "POST", &format!("/api/stories/{id}/claim"), None).await.ok(200);
     assert_eq!(d["status"], "analyzing");
     assert_eq!(d["claimed_by"]["display_name"], "team");
-    assert_eq!(d["group"]["name"], "REQ-1 支付退款 (2)");
+    assert_eq!(d["group"]["name"], "STORY-1 支付退款 (2)");
     let gid = s(&d["group"]["id"]);
     // 成员 = 认领人 + 被指派成员 + 被指派群组成员快照 + 发起人
     let mut members: Vec<String> = h
@@ -199,17 +199,17 @@ async fn claim_creates_group() {
     assert_eq!(role, "viewer");
     let pid: String = sqlx::query_scalar("SELECT project_id::text FROM groups WHERE id = $1::uuid").bind(&gid).fetch_one(&h.db).await.unwrap();
     assert_eq!(pid, w.proj);
-    // 审计：group.create（via=requirement、经哪个令牌）+ requirement.claim
+    // 审计：group.create（via=story、经哪个令牌）+ story.claim
     let (actor_pat, meta): (Option<String>, Value) =
         sqlx::query_as("SELECT actor_pat_id::text, meta FROM audit_log WHERE action = 'group.create' AND target_id = $1::uuid").bind(&gid).fetch_one(&h.db).await.unwrap();
     assert_eq!(actor_pat.as_deref(), Some(pat_id.as_str()));
-    assert_eq!(meta["via"], "requirement");
-    assert_eq!(meta["requirement_id"], json!(id));
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'requirement.claim'").fetch_one(&h.db).await.unwrap();
+    assert_eq!(meta["via"], "story");
+    assert_eq!(meta["story_id"], json!(id));
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_log WHERE action = 'story.claim'").fetch_one(&h.db).await.unwrap();
     assert_eq!(n, 1);
     // 重复认领 409；已有群组时手动建群组 409
-    assert_eq!(h.req(&w.dev, "POST", &format!("/api/requirements/{id}/claim"), None).await.code(), "not_claimable");
-    assert_eq!(h.req(&w.dev, "POST", &format!("/api/requirements/{id}/group"), None).await.code(), "group_exists");
+    assert_eq!(h.req(&w.dev, "POST", &format!("/api/stories/{id}/claim"), None).await.code(), "not_claimable");
+    assert_eq!(h.req(&w.dev, "POST", &format!("/api/stories/{id}/group"), None).await.code(), "group_exists");
     // 历史
     let actions: Vec<&str> = d["events"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
     assert_eq!(actions, ["created", "claimed", "group_created"]);
@@ -218,15 +218,15 @@ async fn claim_creates_group() {
     // 不认领时手动建群组；read_responses 令牌不能写
     let id2 = create_req(&h, &w, "导出报表").await;
     let (ro, _) = create_pat(&h, &w.dev, &["read_responses"], None, None).await;
-    assert_eq!(h.req(&ro, "POST", &format!("/api/requirements/{id2}/group"), None).await.status, 403);
-    assert_eq!(h.req(&ro, "GET", &format!("/api/requirements/{id2}"), None).await.status, 200);
-    let d2 = h.req(&w.dev, "POST", &format!("/api/requirements/{id2}/group"), None).await.ok(201);
-    assert_eq!(d2["group"]["name"], "REQ-2 导出报表");
+    assert_eq!(h.req(&ro, "POST", &format!("/api/stories/{id2}/group"), None).await.status, 403);
+    assert_eq!(h.req(&ro, "GET", &format!("/api/stories/{id2}"), None).await.status, 200);
+    let d2 = h.req(&w.dev, "POST", &format!("/api/stories/{id2}/group"), None).await.ok(201);
+    assert_eq!(d2["group"]["name"], "STORY-2 导出报表");
     assert_eq!(d2["status"], "open");
 }
 
 async fn status(h: &H, c: &C, id: &str, to: &str, note: Option<&str>) -> R {
-    h.req(c, "POST", &format!("/api/requirements/{id}/status"), Some(json!({ "status": to, "note": note }))).await
+    h.req(c, "POST", &format!("/api/stories/{id}/status"), Some(json!({ "status": to, "note": note }))).await
 }
 
 #[tokio::test]
@@ -236,7 +236,7 @@ async fn status_flow_and_acceptance() {
     let id = create_req(&h, &w, "支付退款").await;
     // 待认领 → 分析中只能经认领
     assert_eq!(status(&h, &w.dev, &id, "analyzing", None).await.code(), "use_claim");
-    h.req(&w.dev, "POST", &format!("/api/requirements/{id}/claim"), None).await.ok(200);
+    h.req(&w.dev, "POST", &format!("/api/stories/{id}/claim"), None).await.ok(200);
     assert_eq!(status(&h, &w.viewer, &id, "developing", None).await.status, 403);
     assert_eq!(status(&h, &w.dev, &id, "developing", None).await.ok(200)["status"], "developing");
     // 被指派者不能直接完成、也不能验收
@@ -244,7 +244,7 @@ async fn status_flow_and_acceptance() {
     let d = status(&h, &w.dev, &id, "in_review", Some("做完了")).await.ok(200);
     assert_eq!(d["me"]["transitions"], json!([]));
     assert_eq!(status(&h, &w.team, &id, "done", None).await.status, 403);
-    assert_eq!(listed(&h, &w.pm, &id).await["requirement"]["status"], "in_review");
+    assert_eq!(listed(&h, &w.pm, &id).await["story"]["status"], "in_review");
     // 验收不通过必须写原因
     assert_eq!(status(&h, &w.pm, &id, "developing", None).await.status, 400);
     status(&h, &w.pm, &id, "developing", Some("缺少退款对账")).await.ok(200);
@@ -283,7 +283,7 @@ fn png() -> Vec<u8> {
 }
 
 async fn upload(h: &H, c: &C, id: &str, name: &str, body: Vec<u8>) -> R {
-    h.bytes(c, "POST", &format!("/api/requirements/{id}/files?name={}", name.replace('/', "%2F").replace(' ', "%20")), body).await
+    h.bytes(c, "POST", &format!("/api/stories/{id}/files?name={}", name.replace('/', "%2F").replace(' ', "%20")), body).await
 }
 
 #[tokio::test]
@@ -309,7 +309,7 @@ async fn attachments() {
     assert!(!files[0].contains("pdf") && !files[0].contains('.') && files[0].len() >= 40);
     // 下载：attachment + nosniff + CSP sandbox，RFC 5987 文件名
     let fid = s(&f["id"]);
-    let r = h.req(&w.viewer, "GET", &format!("/api/requirements/{id}/files/{fid}"), None).await;
+    let r = h.req(&w.viewer, "GET", &format!("/api/stories/{id}/files/{fid}"), None).await;
     assert_eq!(r.status, 200);
     assert_eq!(r.body, pdf());
     assert!(r.header("content-disposition").starts_with("attachment;"), "{}", r.header("content-disposition"));
@@ -318,34 +318,34 @@ async fn attachments() {
     assert_eq!(r.header("x-content-type-options"), "nosniff");
     assert!(r.header("content-security-policy").contains("sandbox"));
     // inline 只对 raster 图片生效
-    assert!(h.req(&w.viewer, "GET", &format!("/api/requirements/{id}/files/{fid}?inline=1"), None).await.header("content-disposition").starts_with("attachment"));
+    assert!(h.req(&w.viewer, "GET", &format!("/api/stories/{id}/files/{fid}?inline=1"), None).await.header("content-disposition").starts_with("attachment"));
     let img = upload(&h, &w.dev, &id, "shot.png", png()).await.ok(201);
-    let r = h.req(&w.viewer, "GET", &format!("/api/requirements/{}/files/{}?inline=1", id, s(&img["id"])), None).await;
+    let r = h.req(&w.viewer, "GET", &format!("/api/stories/{}/files/{}?inline=1", id, s(&img["id"])), None).await;
     assert!(r.header("content-disposition").starts_with("inline"));
     assert_eq!(r.header("content-type"), "image/png");
     let svg = upload(&h, &w.dev, &id, "logo.svg", b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_vec()).await.ok(201);
     assert_eq!(svg["inline_url"], Value::Null);
-    let r = h.req(&w.viewer, "GET", &format!("/api/requirements/{}/files/{}?inline=1", id, s(&svg["id"])), None).await;
+    let r = h.req(&w.viewer, "GET", &format!("/api/stories/{}/files/{}?inline=1", id, s(&svg["id"])), None).await;
     assert!(r.header("content-disposition").starts_with("attachment"));
     assert_eq!(r.header("content-type"), "application/octet-stream");
     // 看不到需求的人 404（含 PAT 越界、跨组织）；PAT 任意 scope 能下载
-    assert_eq!(h.req(&w.outsider, "GET", &format!("/api/requirements/{id}/files/{fid}"), None).await.status, 404);
-    assert_eq!(h.req(&w.stranger, "GET", &format!("/api/requirements/{id}/files/{fid}"), None).await.status, 404);
+    assert_eq!(h.req(&w.outsider, "GET", &format!("/api/stories/{id}/files/{fid}"), None).await.status, 404);
+    assert_eq!(h.req(&w.stranger, "GET", &format!("/api/stories/{id}/files/{fid}"), None).await.status, 404);
     let (ro, _) = create_pat(&h, &w.dev, &["read_responses"], None, None).await;
-    assert_eq!(h.req(&ro, "GET", &format!("/api/requirements/{id}/files/{fid}"), None).await.status, 200);
+    assert_eq!(h.req(&ro, "GET", &format!("/api/stories/{id}/files/{fid}"), None).await.status, 200);
     // 文件 id 换到别的需求下不可下载
     let id2 = create_req(&h, &w, "另一个").await;
-    assert_eq!(h.req(&w.pm, "GET", &format!("/api/requirements/{id2}/files/{fid}"), None).await.status, 404);
+    assert_eq!(h.req(&w.pm, "GET", &format!("/api/stories/{id2}/files/{fid}"), None).await.status, 404);
     // 删除：上传者以外的普通参与者不能删；删后文件也没了
-    assert_eq!(h.req(&w.team, "DELETE", &format!("/api/requirements/{id}/files/{fid}"), None).await.status, 403);
-    h.req(&w.pm, "DELETE", &format!("/api/requirements/{}/files/{}", id, s(&img["id"])), None).await;
+    assert_eq!(h.req(&w.team, "DELETE", &format!("/api/stories/{id}/files/{fid}"), None).await.status, 403);
+    h.req(&w.pm, "DELETE", &format!("/api/stories/{}/files/{}", id, s(&img["id"])), None).await;
     let n = std::fs::read_dir(&h.uploads).unwrap().count();
     assert_eq!(n, 2);
     // 关闭页面后：无关成员不可下载；发布者仍可
     h.req(&w.pm, "POST", &format!("/api/pages/{id}/close"), None).await.ok(200);
-    assert_eq!(h.req(&w.viewer, "GET", &format!("/api/requirements/{id}/files/{fid}"), None).await.status, 404);
-    assert_eq!(h.req(&w.dev, "GET", &format!("/api/requirements/{id}/files/{fid}"), None).await.status, 404);
-    assert_eq!(h.req(&w.pm, "GET", &format!("/api/requirements/{id}/files/{fid}"), None).await.status, 200);
+    assert_eq!(h.req(&w.viewer, "GET", &format!("/api/stories/{id}/files/{fid}"), None).await.status, 404);
+    assert_eq!(h.req(&w.dev, "GET", &format!("/api/stories/{id}/files/{fid}"), None).await.status, 404);
+    assert_eq!(h.req(&w.pm, "GET", &format!("/api/stories/{id}/files/{fid}"), None).await.status, 200);
     assert_eq!(upload(&h, &w.pm, &id, "a.pdf", pdf()).await.code(), "page_closed");
     // 需求页面不支持临时链接
     assert_eq!(h.req(&w.pm, "POST", &format!("/api/pages/{id2}/share-links"), Some(json!({ "expires_in": 3600 }))).await.status, 400);
@@ -357,14 +357,14 @@ async fn docs_and_links() {
     let w = world(&h).await;
     let id = create_req(&h, &w, "支付退款").await;
     // 补充说明：被指派者可加，无关 viewer 不行
-    assert_eq!(h.req(&w.viewer, "POST", &format!("/api/requirements/{id}/docs"), Some(json!({ "title": "x", "body": "y" }))).await.status, 403);
-    let doc = h.req(&w.dev, "POST", &format!("/api/requirements/{id}/docs"), Some(json!({ "title": "接口草案", "body": "- POST /refund" }))).await.ok(201);
-    assert_eq!(h.req(&w.dev, "POST", &format!("/api/requirements/{id}/docs"), Some(json!({ "title": "x", "body": "  " }))).await.status, 400);
+    assert_eq!(h.req(&w.viewer, "POST", &format!("/api/stories/{id}/docs"), Some(json!({ "title": "x", "body": "y" }))).await.status, 403);
+    let doc = h.req(&w.dev, "POST", &format!("/api/stories/{id}/docs"), Some(json!({ "title": "接口草案", "body": "- POST /refund" }))).await.ok(201);
+    assert_eq!(h.req(&w.dev, "POST", &format!("/api/stories/{id}/docs"), Some(json!({ "title": "x", "body": "  " }))).await.status, 400);
     let d = detail(&h, &w.viewer, &id).await;
     assert_eq!(d["docs"][0]["title"], "接口草案");
     assert_eq!(d["docs"][0]["created_by"]["display_name"], "dev");
     assert_eq!(d["docs"][0]["can_delete"], false);
-    assert_eq!(h.req(&w.team, "DELETE", &format!("/api/requirements/{}/docs/{}", id, s(&doc["id"])), None).await.status, 403);
+    assert_eq!(h.req(&w.team, "DELETE", &format!("/api/stories/{}/docs/{}", id, s(&doc["id"])), None).await.status, 403);
 
     // 关联页面：同组织且自己能看到的才能挂
     let report = publish(&h, &w.pm, &w.proj, "project", &[]).await;
@@ -373,12 +373,12 @@ async fn docs_and_links() {
         "page_type": "report", "visibility": "groups", "group_ids": [hidden_grp] })).await;
     let foreign_proj = s(&h.req(&w.outsider, "GET", "/api/me/projects", None).await.ok(200)["items"][0]["id"]);
     let foreign = publish(&h, &w.outsider, &foreign_proj, "project", &[]).await;
-    assert_eq!(h.req(&w.dev, "POST", &format!("/api/requirements/{id}/links"), Some(json!({ "page_id": foreign }))).await.status, 404);
-    assert_eq!(h.req(&w.dev, "POST", &format!("/api/requirements/{id}/links"), Some(json!({ "page_id": secret }))).await.status, 404);
-    assert_eq!(h.req(&w.viewer, "POST", &format!("/api/requirements/{id}/links"), Some(json!({ "page_id": report }))).await.status, 403);
-    h.req(&w.dev, "POST", &format!("/api/requirements/{id}/links"), Some(json!({ "page_id": report }))).await.ok(200);
+    assert_eq!(h.req(&w.dev, "POST", &format!("/api/stories/{id}/links"), Some(json!({ "page_id": foreign }))).await.status, 404);
+    assert_eq!(h.req(&w.dev, "POST", &format!("/api/stories/{id}/links"), Some(json!({ "page_id": secret }))).await.status, 404);
+    assert_eq!(h.req(&w.viewer, "POST", &format!("/api/stories/{id}/links"), Some(json!({ "page_id": report }))).await.status, 403);
+    h.req(&w.dev, "POST", &format!("/api/stories/{id}/links"), Some(json!({ "page_id": report }))).await.ok(200);
     // 项目管理员（能看保密页）挂上；看不到的人只得到占位，不泄露标题
-    h.req(&w.owner, "POST", &format!("/api/requirements/{id}/links"), Some(json!({ "page_id": secret }))).await.ok(200);
+    h.req(&w.owner, "POST", &format!("/api/stories/{id}/links"), Some(json!({ "page_id": secret }))).await.ok(200);
     let d = detail(&h, &w.dev, &id).await;
     let links = d["links"].as_array().unwrap();
     assert_eq!(links.len(), 2);
@@ -388,8 +388,8 @@ async fn docs_and_links() {
     assert!(!d.to_string().contains("绝密方案"));
     assert_eq!(detail(&h, &w.owner, &id).await["links"][1]["title"], "绝密方案");
     // 取消关联
-    assert_eq!(h.req(&w.dev, "DELETE", &format!("/api/requirements/{id}/links/{report}"), None).await.status, 204);
-    assert_eq!(h.req(&w.dev, "DELETE", &format!("/api/requirements/{id}/links/{report}"), None).await.status, 404);
+    assert_eq!(h.req(&w.dev, "DELETE", &format!("/api/stories/{id}/links/{report}"), None).await.status, 204);
+    assert_eq!(h.req(&w.dev, "DELETE", &format!("/api/stories/{id}/links/{report}"), None).await.status, 404);
 }
 
 #[tokio::test]
@@ -397,12 +397,12 @@ async fn publish_with_requirement_links_to_group() {
     let h = H::new().await;
     let w = world(&h).await;
     let id = create_req(&h, &w, "支付退款").await;
-    let gid = s(&h.req(&w.dev, "POST", &format!("/api/requirements/{id}/claim"), None).await.ok(200)["group"]["id"]);
+    let gid = s(&h.req(&w.dev, "POST", &format!("/api/stories/{id}/claim"), None).await.ok(200)["group"]["id"]);
     // agent（产品经理的令牌）发分析文档：发到需求群组并自动挂到需求下
     let (pat, _) = create_pat(&h, &w.pm, &["publish"], None, None).await;
     let page = h
         .req(&pat, "POST", "/api/pages", Some(json!({ "project_id": w.proj, "title": "退款接口设计", "kind": "openui", "content": "root = Stack([])",
-            "page_type": "knowledge", "visibility": "groups", "group_ids": [gid], "requirement_id": id })))
+            "page_type": "knowledge", "visibility": "groups", "group_ids": [gid], "story_id": id })))
         .await
         .ok(201);
     let d = detail(&h, &w.dev, &id).await;
@@ -414,10 +414,10 @@ async fn publish_with_requirement_links_to_group() {
     // 需求在别的项目 → 400；看不到的需求 → 400（不泄露）
     let proj2 = create_project(&h, &w.owner, &w.org, "p2").await;
     let r = h.req(&w.owner, "POST", "/api/pages", Some(json!({ "project_id": proj2, "title": "x", "kind": "openui", "content": "root = Stack([])",
-        "page_type": "report", "visibility": "project", "requirement_id": id }))).await;
+        "page_type": "report", "visibility": "project", "story_id": id }))).await;
     assert_eq!(r.status, 400, "{}", r.text());
     let r = h.req(&w.outsider, "POST", "/api/pages", Some(json!({ "project_id": w.proj, "title": "x", "kind": "openui", "content": "root = Stack([])",
-        "page_type": "report", "visibility": "project", "requirement_id": id }))).await;
+        "page_type": "report", "visibility": "project", "story_id": id }))).await;
     assert_eq!(r.status, 404);
 }
 
@@ -431,7 +431,7 @@ async fn old_data_unchanged() {
     let id = create_req(&h, &w, "支付退款").await;
     let after = h.req(&w.pm, "GET", &format!("/api/pages/{page}"), None).await.ok(200);
     assert_eq!(before, after);
-    assert_eq!(after["requirement"], Value::Null);
+    assert_eq!(after["story"], Value::Null);
     let groups_after: i64 = sqlx::query_scalar("SELECT count(*) FROM groups").fetch_one(&h.db).await.unwrap();
     assert_eq!(groups_before, groups_after, "建需求不建群组，认领时才建");
     // 需求页 PATCH /pages 不能改正文、不能改成公开
@@ -439,5 +439,5 @@ async fn old_data_unchanged() {
     assert_eq!(h.req(&w.pm, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "visibility": "public" }))).await.status, 400);
     h.req(&w.pm, "PATCH", &format!("/api/pages/{id}"), Some(json!({ "visibility": "org" }))).await.ok(200);
     // 组织成员（非项目成员）在 org 可见时能看需求
-    assert_eq!(h.req(&w.stranger, "GET", &format!("/api/requirements/{id}"), None).await.status, 200);
+    assert_eq!(h.req(&w.stranger, "GET", &format!("/api/stories/{id}"), None).await.status, 200);
 }

@@ -45,8 +45,8 @@ export type Page = {
   closed_at?: string | null;
   /** 能否关闭/重新打开（发布者或项目管理员；旧后端无） */
   can_close?: boolean;
-  /** 需求页面的编号、状态、指派（其它类型为 null；旧后端无） */
-  requirement?: ReqBrief | null;
+  /** 需求（Story）页面的编号、状态、指派（其它类型为 null；旧后端无） */
+  story?: ReqBrief | null;
 };
 export type ReqStatus = "open" | "analyzing" | "developing" | "in_review" | "done" | "rejected" | "on_hold";
 /** 页面列表里的需求摘要：mine = 指派给我（含我所在群组）；acceptor = 我是发起人或项目管理员（可验收） */
@@ -54,7 +54,7 @@ export type ReqBrief = {
   number: number; code: string; status: ReqStatus; priority: string | null; due_at: string | null; group_id: string | null;
   assignees: { type: "user" | "group"; id: string; name: string }[]; mine: boolean; acceptor: boolean;
 };
-/** GET /api/requirements/{id}（api.md §7.8） */
+/** GET /api/stories/{id}（api.md §7.8，对外英文名 Story） */
 export type ReqFile = {
   id: string; name: string; content_type: string; size: number; sha256: string; uploaded_by: UserBrief; created_at: string;
   download_url: string; inline_url: string | null; can_delete: boolean;

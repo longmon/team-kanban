@@ -1,4 +1,4 @@
--- 0012 需求页面（page_type = requirement）。契约见 docs/api.md §7.8、docs/design.md §3.3「需求」。
+-- 0012 需求页面（对外英文名 Story，接口 /api/stories、编号 STORY-12；内部 page_type 与表名沿用 requirement）。契约见 docs/api.md §7.8、docs/design.md §3.3「需求」。
 -- 需求本身仍是一行 pages（kind = openui、content = 空 Stack，满足 0002 的 pages_collab_kind_check），扩展字段放在新表里。
 -- 只新建表与索引，不改任何已有表、不回填数据：旧页面、旧群组行为不变。
 -- 新表的外键引用 pages / projects / users / memberships / groups：CREATE TABLE 时对被引用表短暂持 SHARE ROW EXCLUSIVE 锁
@@ -22,7 +22,7 @@ CREATE TABLE requirements (
     page_id     uuid PRIMARY KEY,
     org_id      uuid NOT NULL,
     project_id  uuid NOT NULL,
-    number      integer NOT NULL,                 -- 项目内编号，显示为 REQ-<number>
+    number      integer NOT NULL,                 -- 项目内编号，显示为 STORY-<number>
     body        text NOT NULL DEFAULT '',         -- 正文 Markdown（图片引用本需求的附件地址）
     priority    text,                             -- P0..P3，可空
     due_at      timestamptz,                      -- 期望完成时间，可空

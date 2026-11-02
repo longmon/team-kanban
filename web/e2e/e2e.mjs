@@ -979,7 +979,7 @@ await step("task-tree-review", async () => {
 // 需求：产品经理（demo）在独立页面建需求（上传附件、写正文、指派群组）→ 追加补充说明、关联页面 → 被指派群组成员首页「等我处理」看到 →
 // 认领自动建需求群组 → 开始开发 → 提交验收 → 发起人验收完成
 let REQ_ID = null;
-await step("requirement-flow", async () => {
+await step("story-flow", async () => {
   // 被指派者用 member（注册有每小时限额）：新建「需求组」并授权给项目，前面的权限场景已跑完
   const team = await call(demo, "POST", `/orgs/${org.id}/groups`, { name: "需求组" });
   await call(demo, "POST", `/groups/${team.id}/members`, { user_id: member.user.id });
@@ -992,7 +992,7 @@ await step("requirement-flow", async () => {
   watch(pd);
   try {
     await login(pm, "demo@example.com");
-    await pm.goto(BASE + `/requirements/new?project=${project.id}`);
+    await pm.goto(BASE + `/stories/new?project=${project.id}`);
     await pm.getByRole("heading", { name: "新建需求" }).waitFor();
     await pm.getByLabel("标题").fill("支持订单部分退款");
     await pm.getByLabel("正文").fill("## 背景\n用户希望**部分退款**。\n\n## 验收标准\n- 后台可以按金额退款\n- 退款记录可查");
@@ -1001,11 +1001,11 @@ await step("requirement-flow", async () => {
     await pm.locator("[data-req-assign]").getByText("需求组").click();
     const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
     await pm.locator("input[type=file]").setInputFiles([{ name: "原型图.png", mimeType: "image/png", buffer: png }, { name: "../需求说明.txt", mimeType: "text/plain", buffer: Buffer.from("部分退款说明") }]);
-    await pm.screenshot({ path: `${OUT}/requirement-new.png`, fullPage: true });
+    await pm.screenshot({ path: `${OUT}/story-new.png`, fullPage: true });
     await pm.getByRole("button", { name: "创建需求" }).click();
     await pm.waitForURL(/\/pages\/[0-9a-f-]{36}$/);
     REQ_ID = pm.url().split("/").pop();
-    await pm.locator("[data-req-code]").getByText("REQ-1").waitFor();
+    await pm.locator("[data-req-code]").getByText("STORY-1").waitFor();
     const files = pm.getByRole("region", { name: "附件" });
     await files.getByText("原型图.png").waitFor();
     await files.getByText("需求说明.txt", { exact: true }).waitFor();
@@ -1033,15 +1033,15 @@ await step("requirement-flow", async () => {
     await pd.goto(BASE + "/");
     const todo = pd.getByRole("region", { name: "等我处理" });
     await todo.getByText("支持订单部分退款").waitFor();
-    await todo.getByText("REQ-1", { exact: false }).first().waitFor();
+    await todo.getByText("STORY-1", { exact: false }).first().waitFor();
     await pd.locator("article.tile", { hasText: "支持订单部分退款" }).getByText("待你认领").waitFor();
     await pd.getByRole("group", { name: "筛选" }).getByRole("button", { name: /需求/ }).click();
     await pd.waitForTimeout(500);
-    await pd.screenshot({ path: `${OUT}/requirement-home.png` });
+    await pd.screenshot({ path: `${OUT}/story-home.png` });
     await todo.getByRole("link", { name: "去认领" }).click();
     await pd.getByRole("button", { name: "认领", exact: true }).click();
     await toast2(pd, "已认领");
-    await pd.getByRole("region", { name: "需求群组" }).getByRole("link", { name: "REQ-1 支持订单部分退款" }).waitFor();
+    await pd.getByRole("region", { name: "需求群组" }).getByRole("link", { name: "STORY-1 支持订单部分退款" }).waitFor();
     await pd.locator("[data-req-status=analyzing]").waitFor();
     const go = async (btn, status) => {
       await pd.getByRole("button", { name: btn }).click();
@@ -1065,7 +1065,7 @@ await step("requirement-flow", async () => {
     const hist = pm.locator("[data-req-history]");
     await hist.getByText("退款接口与后台页面已完成").waitFor();
     await hist.getByText("创建了需求群组").waitFor();
-    await pm.screenshot({ path: `${OUT}/requirement-detail.png`, fullPage: true });
+    await pm.screenshot({ path: `${OUT}/story-detail.png`, fullPage: true });
   } finally { await cm.close(); await cd.close(); }
 });
 await step("mobile-dark", async () => {
@@ -1155,9 +1155,9 @@ await step("classic-theme", async () => {
     if (await p.locator("html[data-skin], .cl-desk").count()) throw new Error("skin not reset to default");
   } finally { await c2.close(); }
 });
-await step("requirement-classic", async () => {
+await step("story-classic", async () => {
   // 经典主题下需求详情：属性对话框 + 分组框 + 附件详细信息列表
-  if (!REQ_ID) throw new Error("requirement-flow failed");
+  if (!REQ_ID) throw new Error("story-flow failed");
   const c2 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const p = await c2.newPage();
   watch(p);
@@ -1165,10 +1165,10 @@ await step("requirement-classic", async () => {
     await p.addInitScript(() => localStorage.setItem("tk-skin", "classic"));
     await login(p, "demo@example.com");
     await p.goto(BASE + "/pages/" + REQ_ID);
-    const sheet = p.getByRole("region", { name: "REQ-1 支持订单部分退款 - 属性" });
+    const sheet = p.getByRole("region", { name: "STORY-1 支持订单部分退款 - 属性" });
     await sheet.getByRole("region", { name: "附件" }).locator(".cl-list table").getByText("原型图.png").waitFor();
     await sheet.getByRole("region", { name: "需求正文" }).getByText("部分退款").first().waitFor();
-    await p.screenshot({ path: `${OUT}/requirement-classic.png`, fullPage: true });
+    await p.screenshot({ path: `${OUT}/story-classic.png`, fullPage: true });
     await p.goto(BASE + "/");
     await p.locator(".cl-list tr", { hasText: "支持订单部分退款" }).getByText("已完成").waitFor();
   } finally { await c2.close(); }

@@ -49,7 +49,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - uploads:/data/uploads # requirement attachments
+      - uploads:/data/uploads # story (需求) attachments
     restart: unless-stopped
 
 volumes:
@@ -149,7 +149,7 @@ Behind Cloudflare (orange cloud), use SSL mode **Full (strict)**. The repository
 | `ALLOW_SIGNUP` | `1` | `0` = invite-only |
 | `SUPERADMIN_EMAILS` | empty | Comma-separated emails; on start, those already registered become super admins (grant only, see [First super admin](#first-super-admin)) |
 | `SMTP_URL` / `SMTP_FROM` | empty | e.g. `smtps://user:pass@smtp.example.com:465` / `Team Kanban <noreply@example.com>`. Without SMTP, emails are only written to the log |
-| `UPLOAD_DIR` | `/data/uploads` | Where requirement attachments are stored. Mount a volume here (see [Attachment volume](#attachment-volume)) |
+| `UPLOAD_DIR` | `/data/uploads` | Where story (需求) attachments are stored. Mount a volume here (see [Attachment volume](#attachment-volume)) |
 | `UPLOAD_MAX_MB` | `50` | Max size of one attachment, 1..1024 |
 | `BIND` | `0.0.0.0:8080` | Listen address |
 | `RUST_LOG` | `info` | Log level |
@@ -179,7 +179,7 @@ Requirements (产品需求) can carry uploaded attachments (PDF, Office, images,
 - **Every compose file must mount a volume there**, including compose files you maintain yourself (e.g. an intranet deployment that is not generated from this README). Add to the `mcp-server` service `volumes: - uploads:/data/uploads` and `uploads:` under the top-level `volumes:`, then `docker compose up -d mcp-server`. Without it, attachments live in the container layer and are **lost when the container is recreated**.
 - The image creates `/data/uploads` owned by uid 10001, so a new named volume inherits a writable owner. If you bind-mount a host directory instead, `chown 10001 <dir>` first.
 - **Backup**: back up the volume together with the database dump, e.g. `docker run --rm -v <project>_uploads:/u -v "$PWD":/b alpine tar czf /b/uploads-$(date +%F).tgz -C /u .`
-- Deleting an attachment removes its file immediately; attachments of a deleted requirement are purged 7 days later.
+- Deleting an attachment removes its file immediately; attachments of a deleted story are purged 7 days later.
 
 ---
 

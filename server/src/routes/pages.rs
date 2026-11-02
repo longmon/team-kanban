@@ -55,7 +55,7 @@ struct PageListRow {
     respondent_count: i64,
     eligible_count: Option<i64>,
     task_stats: Option<Value>,
-    requirement: Option<Value>,
+    story: Option<Value>,
 }
 
 /// $1 = 调用者 user_id
@@ -128,7 +128,7 @@ impl PageListRow {
             "my_submitted": self.my_submitted,
             "closes_at": ts_opt(&self.closes_at), "closed_at": ts_opt(&self.closed_at), "summary": self.summary, "highlights": self.highlights,
             "respondent_count": self.respondent_count, "eligible_count": self.eligible_count,
-            "task_stats": self.task_stats, "requirement": self.requirement,
+            "task_stats": self.task_stats, "story": self.story,
         })
     }
 }
@@ -498,10 +498,10 @@ pub struct CreateReq {
     tasks: Option<Vec<tasks::TaskInput>>,
     /// 仅 task_tree：评审人
     reviewers: Option<tasks::ReviewersInput>,
-    /// 仅 requirement：正文、优先级、期望完成时间、指派
-    requirement: Option<requirements::ReqInput>,
+    /// 仅 page_type=requirement（Story）：正文、优先级、期望完成时间、指派
+    story: Option<requirements::ReqInput>,
     /// 任意类型：发布后挂到该需求的关联页面下（需求与页面同项目，调用者是需求参与者或项目 editor）
-    requirement_id: Option<Uuid>,
+    story_id: Option<Uuid>,
 }
 
 /// task_tree 省略说明区时的 OpenUI 内容
@@ -539,16 +539,16 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     }
     if requirement {
         if r.kind != "openui" {
-            return Err(AppError::field("kind", "需求页面只支持 openui（正文放在 requirement.body）"));
+            return Err(AppError::field("kind", "需求页面只支持 openui（正文放在 story.body）"));
         }
         if r.content.as_deref().is_some_and(|c| !c.is_empty()) {
-            return Err(AppError::field("content", "需求页面的正文放在 requirement.body，不要给 content"));
+            return Err(AppError::field("content", "需求页面的正文放在 story.body，不要给 content"));
         }
         requirements::check_visibility(&r.visibility)?;
-    } else if r.requirement.is_some() {
-        return Err(AppError::field("requirement", "仅需求页面（page_type=requirement）可用"));
+    } else if r.story.is_some() {
+        return Err(AppError::field("story", "仅需求页面（page_type=requirement）可用"));
     }
-    let req_link = match r.requirement_id {
+    let req_link = match r.story_id {
         Some(rid) => Some(requirements::check_publish_link(&st, &c, rid, ctx.project_id()).await?),
         None => None,
     };
@@ -602,7 +602,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
         tasks::sync_tree(&mut tx, ctx.org_id(), id, (ctx.user_id(), c.p.pat().map(|p| p.id)), tree).await?;
     }
     if requirement {
-        requirements::create_ext(&mut tx, &c, ctx.org_id(), ctx.project_id(), id, ctx.user_id(), &r.requirement.unwrap_or_default()).await?;
+        requirements::create_ext(&mut tx, &c, ctx.org_id(), ctx.project_id(), id, ctx.user_id(), &r.story.unwrap_or_default()).await?;
     }
     if let Some(w) = &req_link {
         requirements::link_new_page(&mut tx, &c, w, id).await?;
@@ -616,7 +616,7 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
         "page",
         Some(id),
         json!({ "project_id": ctx.project_id(), "kind": r.kind, "page_type": page_type, "model": model, "visibility": r.visibility, "group_ids": groups,
-                "requirement_id": r.requirement_id }),
+                "story_id": r.story_id }),
     )
     .await?;
     tx.commit().await?;
@@ -708,7 +708,7 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     }
     if page_type == "requirement" {
         if r.content.is_some() {
-            return Err(AppError::field("content", "需求正文请用 PATCH /requirements/{id} 修改"));
+            return Err(AppError::field("content", "需求正文请用 PATCH /stories/{id} 修改"));
         }
         if let Some(v) = &r.visibility {
             requirements::check_visibility(v)?;

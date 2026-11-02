@@ -105,7 +105,7 @@ Dockerfile docker-compose.yml Caddyfile.example
 
 **pages** — `id`、`org_id`、`project_id`（FK `(org_id, project_id)`）、`title(1..200)`、`kind ∈ {openui, html}`（创建后不可改）、`content text`（openui ≤ 512 KiB，html ≤ 5 MiB，CHECK 兜底）、`version int`（content 变更 +1）、`visibility ∈ {public, org, project, groups}`、`accept_responses bool`、`results_visible_to ∈ {managers, viewers}`、`response_seq bigint`（最后分配的序号 = 提交总数）、`created_by`、`created_via_pat uuid?`、时间戳、`deleted_at?`。索引 `(project_id, id DESC) WHERE deleted_at IS NULL`。
 
-**页面类型**（0002）— `pages.page_type text NOT NULL DEFAULT 'general'`，CHECK 取值 ∈ {general, report, knowledge, flowchart, architecture, vote, requirement, task, task_tree}；与 `kind` 正交，创建后不可改。大类不入库，由代码里的纯函数 `page_category(page_type)` 推导：read = report/knowledge/flowchart/architecture（只读，CHECK `pages_read_only_check` 强制 `accept_responses = false`）；collect = vote/general；collab = requirement/task/task_tree（CHECK `pages_collab_kind_check` 要求 `kind='openui'`；task_tree 已开放（0009，见下「任务树」），requirement/task 仍未开放，创建时应用层 400）。旧页面全部为 general，行为不变；旧客户端不传 page_type 时也是 general。
+**页面类型**（0002）— `pages.page_type text NOT NULL DEFAULT 'general'`，CHECK 取值 ∈ {general, report, knowledge, flowchart, architecture, vote, requirement, task, task_tree}；与 `kind` 正交，创建后不可改。大类不入库，由代码里的纯函数 `page_category(page_type)` 推导：read = report/knowledge/flowchart/architecture（只读，CHECK `pages_read_only_check` 强制 `accept_responses = false`）；collect = vote/general；collab = requirement/task/task_tree（CHECK `pages_collab_kind_check` 要求 `kind='openui'`；task_tree 已开放（0009，见下「任务树」），requirement 已开放（0012，见下「需求」），task 仍未开放，创建时应用层 400）。旧页面全部为 general，行为不变；旧客户端不传 page_type 时也是 general。
 **接口文档**（0008）— 新增 `page_type='api_doc'`（read 类）与 `kind='api'`（content 存规范化 JSON，≤512 KiB），CHECK `pages_api_doc_kind_check` 要求两者同时出现；`page_versions.kind` 同步放宽。结构与校验见 api.md §7.5（`server/src/apidoc.rs`，MCP 以 `#[path]` 共用）。
 迁移只做 `ADD COLUMN … DEFAULT 常量`（PG11+ 只改元数据，不重写表）+ 三个 CHECK（校验扫一遍 pages 主表，大字段在 TOAST 不读），文件内 `SET LOCAL lock_timeout = '5s'`，拿不到锁即失败退出、不长时间阻塞。0002 上线后回退到旧镜像会因 sqlx 报版本缺失而起不来，确需回退时先停 app 再执行：
 ```sql
@@ -143,7 +143,7 @@ DELETE FROM _sqlx_migrations WHERE version = 9;
 COMMIT;
 ```
 
-**需求**（`page_type = requirement`，0012；接口见 api.md §7.8）——页面行照旧（kind openui、content 空 Stack，不改 0002 的约束），扩展字段放新表，全部复合外键 `(org_id, …)` 保证同组织：
+**需求**（对外英文名 **Story**：接口 `/api/stories`、编号 `STORY-12`、MCP 工具 `*_story`、命令 `tkanban story`、JSON 字段 `story` / `story_id`；内部名沿用 requirement：`page_type = requirement`（0002 的 CHECK 已含该值，改名要动 0002，所以不改）、表 `requirement_*`、服务端模块 `routes/requirements.rs`、前端 `pages/requirement.tsx`。0012；接口见 api.md §7.8）——页面行照旧（kind openui、content 空 Stack，不改 0002 的约束），扩展字段放新表，全部复合外键 `(org_id, …)` 保证同组织：
 - `requirement_counters (project_id PK, org_id, last_no)`：编号分配 `INSERT … ON CONFLICT (project_id) DO UPDATE SET last_no = last_no + 1 RETURNING last_no`，行锁串行化同项目并发创建；事务回滚会空号（可接受）。
 - `requirements (page_id PK, org_id, project_id, number, body, priority, due_at, status, group_id?, claimed_by?, claimed_at?)`：`UNIQUE (project_id, number)`；`group_id` FK groups `ON DELETE SET NULL (group_id)`；状态 CHECK 七选一。
 - `requirement_assignees (page_id, user_id | group_id)`：恰好一个非空；部分唯一索引防重复，`(user_id, page_id)` / `(group_id, page_id)` 部分索引供「指派给我」反查。首页列表按页 PK 探测（`requirements` 主键 + `requirement_assignees` 前缀 page_id + `group_members` 主键），不扫表。
@@ -366,7 +366,7 @@ SSE（`/responses/stream`）：先按 §5.3 判定查看权限，再要求 `can_
 
 - 可见 / 下载 = 页面可见性（§5.3，含关闭规则、PAT 范围）；需求页面只允许 visibility = project / org，指派时校验被指派成员有项目角色、被指派群组已授权给项目，保证「被指派者一定看得到」。
 - 参与者（认领、改状态、建需求群组）= 被指派成员 ∪ 被指派群组成员 ∪ 发起人 ∪ 项目 admin；验收人（待验收 → 已完成、重新打开）= 发起人 ∪ 项目 admin；贡献者（附件、补充说明、关联页面）= 参与者 ∪ 项目 editor；编辑需求 / 改指派 = 项目 editor+。
-- 需求群组由服务端创建，不走 `POST /projects/{id}/groups` 的「项目 admin + manage scope」：认领人通常只是 viewer。安全边界：① 只能在需求自己的项目里建、每个需求同时只有一个（行锁）；② 只授 viewer（不扩大任何人的发布权，成员本来就看得到需求 → 都是项目内可见者）；③ 成员名单由服务端从指派关系计算，调用者不能指定；④ 记 `group.create` 审计（`via=requirement`、操作人与 PAT）。群组之后按普通项目群组管理（项目 admin 可改名、增删成员、删除）。
+- 需求群组由服务端创建，不走 `POST /projects/{id}/groups` 的「项目 admin + manage scope」：认领人通常只是 viewer。安全边界：① 只能在需求自己的项目里建、每个需求同时只有一个（行锁）；② 只授 viewer（不扩大任何人的发布权，成员本来就看得到需求 → 都是项目内可见者）；③ 成员名单由服务端从指派关系计算，调用者不能指定；④ 记 `group.create` 审计（`via=story`、操作人与 PAT）。群组之后按普通项目群组管理（项目 admin 可改名、增删成员、删除）。
 - 关联页面：只能挂调用者能看到的同组织页面；展示时按查看者重新判定（列表可见性 SQL，一次查询），看不到的只给 `visible: false` 占位。
 - 附件：存储路径不可控（服务端随机 key），下载强制 attachment + nosniff + sandbox CSP，svg 永不内联（见 api.md §7.8）；`lib.rs host_guard` 不覆盖响应自带的 CSP。
 
@@ -423,8 +423,8 @@ project_group.grant  project_group.revoke
 group.create  group.update  group.delete  group_member.add  group_member.remove
 invite.create  invite.revoke  invite.accept
 page.publish  page.update(meta 含变更字段，visibility/groups 变更时记录旧→新)  page.delete  page.close  page.reopen
-requirement.update  requirement.claim  requirement.status(meta: from/to)  requirement.doc_add  requirement.doc_delete  requirement.link_add  requirement.link_remove
-requirement.file_upload(meta: name/size/content_type)  requirement.file_delete  （需求群组另写 group.create，meta.via=requirement、system=true）
+story.update  story.claim  story.status(meta: from/to)  story.doc_add  story.doc_delete  story.link_add  story.link_remove
+story.file_upload(meta: name/size/content_type)  story.file_delete  （需求群组另写 group.create，meta.via=story、system=true）
 share_link.create  share_link.revoke
 pat.create  pat.revoke
 admin.user_create  admin.user_update  admin.user_disable(meta: sessions_revoked)  admin.user_enable  admin.superadmin_grant  admin.superadmin_revoke

@@ -1,5 +1,5 @@
-// 需求页面（api.md §7.8）：/pages/:id 上 page_type=requirement 时的详情（题头 + 状态条与操作、正文、补充文档三区：附件 / 补充说明 / 关联页面；
-// 右栏指派、需求群组、信息、状态历史）；/requirements/new 与 /requirements/:id/edit 是独立的新建 / 编辑页（复杂表单）；
+// 需求页面（对外英文名 Story，api.md §7.8）：/pages/:id 上 page_type=requirement 时的详情（题头 + 状态条与操作、正文、补充文档三区：附件 / 补充说明 / 关联页面；
+// 右栏指派、需求群组、信息、状态历史）；/stories/new 与 /stories/:id/edit 是独立的新建 / 编辑页（复杂表单）；
 // 追加补充说明、关联页面、改指派、改状态（写说明）用弹窗。正文与说明走 react-markdown（不渲染原始 HTML、过滤 javascript: 链接）。
 // 经典主题：外层 ClassicSheet，分区用 data-box，附件用「详细信息」列表（.cl-list）。
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -67,7 +67,7 @@ type Dlg = { kind: "status"; to: ReqStatus } | { kind: "doc" } | { kind: "link" 
 export default function RequirementView({ id }: { id: string }) {
   const now = useNow();
   const classic = useClassic();
-  const q = useLoad(() => get<Requirement>(`/requirements/${id}`), [id]);
+  const q = useLoad(() => get<Requirement>(`/stories/${id}`), [id]);
   const r = q.data;
   useOwnOrg(r?.org.id);
   useActiveProject(r?.project.id);
@@ -100,7 +100,7 @@ export default function RequirementView({ id }: { id: string }) {
         toast.err(`${f.name} 超过 ${fmtSize(r.limits.max_file_bytes)} 上限`);
         continue;
       }
-      await act(() => post(`/requirements/${id}/files${qs({ name: f.name })}`, f), `已上传 ${f.name}`);
+      await act(() => post(`/stories/${id}/files${qs({ name: f.name })}`, f), `已上传 ${f.name}`);
     }
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -147,17 +147,17 @@ export default function RequirementView({ id }: { id: string }) {
             </ol>
             {terminal && <p className="mb-3 text-[13px] text-muted-foreground">当前：<b className="text-foreground">{REQ_STATUS_LABEL[r.status]}</b></p>}
             <div className="flex flex-wrap gap-2">
-              {me.can_claim && <Button loading={busy} disabled={busy} onClick={() => act(() => post(`/requirements/${id}/claim`), "已认领，需求群组已就绪")}>认领</Button>}
+              {me.can_claim && <Button loading={busy} disabled={busy} onClick={() => act(() => post(`/stories/${id}/claim`), "已认领，需求群组已就绪")}>认领</Button>}
               {me.transitions.map((to) => (
                 <Button key={to} variant={to === "done" || to === "in_review" ? "default" : "outline"} disabled={busy} onClick={() => setDlg({ kind: "status", to })}>{actionLabel(r.status, to)}</Button>
               ))}
               {me.can_create_group && !me.can_claim && (
-                <Button variant="outline" disabled={busy} onClick={() => act(() => post(`/requirements/${id}/group`), "已创建需求群组")}><Users />创建需求群组</Button>
+                <Button variant="outline" disabled={busy} onClick={() => act(() => post(`/stories/${id}/group`), "已创建需求群组")}><Users />创建需求群组</Button>
               )}
               {me.can_create_group && me.can_claim && (
-                <Button variant="ghost" disabled={busy} onClick={() => act(() => post(`/requirements/${id}/group`), "已创建需求群组")}>只建群组不认领</Button>
+                <Button variant="ghost" disabled={busy} onClick={() => act(() => post(`/stories/${id}/group`), "已创建需求群组")}>只建群组不认领</Button>
               )}
-              {me.can_edit && <Button variant="ghost" asChild><Link to={`/requirements/${id}/edit`}><Pencil />编辑需求</Link></Button>}
+              {me.can_edit && <Button variant="ghost" asChild><Link to={`/stories/${id}/edit`}><Pencil />编辑需求</Link></Button>}
               {!me.can_claim && !me.transitions.length && !me.can_edit && <span className="text-[13px] text-muted-foreground">你可以查看这个需求；被指派者、发起人和项目管理员可以推进状态。</span>}
             </div>
           </section>
@@ -182,16 +182,16 @@ export default function RequirementView({ id }: { id: string }) {
                         <td className="max-w-0 py-1.5 pr-2">
                           <span className="nm flex min-w-0 items-center gap-2">
                             {f.inline_url ? <img src={f.inline_url} alt="" className="size-7 shrink-0 rounded-[4px] border object-cover" /> : <Paperclip className="size-4 shrink-0 text-faint" />}
-                            <a href={`/api/requirements/${id}/files/${f.id}`} download={f.name} className="truncate hover:underline">{f.name}</a>
+                            <a href={`/api/stories/${id}/files/${f.id}`} download={f.name} className="truncate hover:underline">{f.name}</a>
                           </span>
                         </td>
                         <td className="pr-2 whitespace-nowrap tabular-nums">{fmtSize(f.size)}</td>
                         <td className="pr-2 whitespace-nowrap max-sm:hidden">{f.uploaded_by.display_name}</td>
                         <td className="pr-2 whitespace-nowrap max-sm:hidden">{fmtRel(f.created_at, new Date(now))}</td>
                         <td className="text-right whitespace-nowrap">
-                          <Button size="icon" variant="ghost" asChild><a href={`/api/requirements/${id}/files/${f.id}`} download={f.name} aria-label={`下载 ${f.name}`}><Download /></a></Button>
+                          <Button size="icon" variant="ghost" asChild><a href={`/api/stories/${id}/files/${f.id}`} download={f.name} aria-label={`下载 ${f.name}`}><Download /></a></Button>
                           {f.can_delete && <Button size="icon" variant="ghost" aria-label={`删除 ${f.name}`} disabled={busy}
-                            onClick={() => confirm(`删除附件「${f.name}」？`) && act(() => del(`/requirements/${id}/files/${f.id}`), "已删除附件")}><Trash2 /></Button>}
+                            onClick={() => confirm(`删除附件「${f.name}」？`) && act(() => del(`/stories/${id}/files/${f.id}`), "已删除附件")}><Trash2 /></Button>}
                         </td>
                       </tr>
                     ))}
@@ -211,7 +211,7 @@ export default function RequirementView({ id }: { id: string }) {
                       <h4 className="min-w-0 flex-1 truncate text-[14px] font-semibold">{d.title}</h4>
                       <small className="shrink-0 text-[12px] text-faint">{d.created_by.display_name} · {fmtRel(d.created_at, new Date(now))}</small>
                       {d.can_delete && <Button size="icon" variant="ghost" aria-label={`删除说明 ${d.title}`} disabled={busy}
-                        onClick={() => confirm(`删除补充说明「${d.title}」？`) && act(() => del(`/requirements/${id}/docs/${d.id}`), "已删除")}><Trash2 /></Button>}
+                        onClick={() => confirm(`删除补充说明「${d.title}」？`) && act(() => del(`/stories/${id}/docs/${d.id}`), "已删除")}><Trash2 /></Button>}
                     </header>
                     <Md text={d.body} />
                   </article>
@@ -222,7 +222,7 @@ export default function RequirementView({ id }: { id: string }) {
           {/* 补充文档：关联页面 */}
           <Box title={<><Link2 className="size-4" />关联页面</>} note={r.links.length ? `${r.links.length} 个` : undefined} label="关联页面"
             actions={me.can_contribute && <Button size="sm" variant="outline" onClick={() => setDlg({ kind: "link" })}><Plus />关联页面</Button>}>
-            {r.links.length === 0 ? <p className="text-[13px] text-muted-foreground">还没有关联页面。agent 发布时带 requirement={r.code} 会自动挂到这里，也可以手动关联报告、知识库、接口文档、流程图、任务树等。</p> : (
+            {r.links.length === 0 ? <p className="text-[13px] text-muted-foreground">还没有关联页面。agent 发布时带 story={r.code} 会自动挂到这里，也可以手动关联报告、知识库、接口文档、流程图、任务树等。</p> : (
               <ul className="grid gap-2 sm:grid-cols-2">
                 {r.links.map((l) => (
                   <li key={l.page_id} className="flex min-w-0 items-center gap-2.5 rounded-[12px] border bg-background px-3 py-2.5">
@@ -238,7 +238,7 @@ export default function RequirementView({ id }: { id: string }) {
                       <span className="flex min-w-0 flex-1 items-center gap-2 text-[13px] text-muted-foreground"><Lock className="size-4 shrink-0" />无权限查看</span>
                     )}
                     {me.can_contribute && <Button size="icon" variant="ghost" aria-label="取消关联" disabled={busy}
-                      onClick={() => act(() => del(`/requirements/${id}/links/${l.page_id}`), "已取消关联")}><Trash2 /></Button>}
+                      onClick={() => act(() => del(`/stories/${id}/links/${l.page_id}`), "已取消关联")}><Trash2 /></Button>}
                   </li>
                 ))}
               </ul>
@@ -257,7 +257,7 @@ export default function RequirementView({ id }: { id: string }) {
           <Box title="需求群组" label="需求群组">
             {r.group ? (
               <p className="text-[13px]"><Link to={`/o/${r.org.slug}/groups/${r.group.id}`} className="link font-medium">{r.group.name}</Link>
-                <span className="mt-1 block text-faint">相关文档发到这个群组；agent 发布时带 requirement={r.code}。</span></p>
+                <span className="mt-1 block text-faint">相关文档发到这个群组；agent 发布时带 story={r.code}。</span></p>
             ) : <p className="text-[13px] text-muted-foreground">认领时自动创建；也可以不认领先创建。</p>}
           </Box>
           <Box title="需求信息" label="需求信息">
@@ -270,7 +270,7 @@ export default function RequirementView({ id }: { id: string }) {
               <dt>期望完成</dt><dd>{r.due_at ? fmtTime(r.due_at) : "—"}</dd>
               <dt>可见范围</dt><dd>{VIS_LABEL[r.visibility]}</dd>
             </dl>
-            <p className="mt-3 rounded-[10px] bg-muted px-3 py-2 font-mono text-[12px] text-muted-foreground">tkanban req pull {r.code}</p>
+            <p className="mt-3 rounded-[10px] bg-muted px-3 py-2 font-mono text-[12px] text-muted-foreground">tkanban story pull {r.code}</p>
           </Box>
           <Box title={<><History className="size-4" />状态历史</>} label="状态历史">
             <ol className="relative grid gap-3 border-l pl-4 text-[13px]" data-req-history="">
@@ -299,7 +299,7 @@ export default function RequirementView({ id }: { id: string }) {
   const up = () => (history.length > 1 ? history.back() : navigate("/"));
   return (
     <ClassicSheet title={`${r.code} ${r.title}`} icon="tasks" onClose={up}
-      tabs={[{ label: "需求", on: true }, ...(me.can_edit ? [{ label: "编辑", onClick: () => navigate(`/requirements/${id}/edit`) }] : [])]}>
+      tabs={[{ label: "需求", on: true }, ...(me.can_edit ? [{ label: "编辑", onClick: () => navigate(`/stories/${id}/edit`) }] : [])]}>
       {body}
     </ClassicSheet>
   );
@@ -312,7 +312,7 @@ function StatusDialog({ r, to, onClose, onDone }: { r: Requirement; to: ReqStatu
   const submit = (e: FormEvent) => {
     e.preventDefault();
     a.run(async () => {
-      await post(`/requirements/${r.id}/status`, { status: to, note: note.trim() || null });
+      await post(`/stories/${r.id}/status`, { status: to, note: note.trim() || null });
       toast.ok(`已改为「${REQ_STATUS_LABEL[to]}」`);
       onDone();
       onClose();
@@ -340,7 +340,7 @@ function DocDialog({ id, onClose, onDone }: { id: string; onClose: () => void; o
   const submit = (e: FormEvent) => {
     e.preventDefault();
     a.run(async () => {
-      await post(`/requirements/${id}/docs`, { title, body: text });
+      await post(`/stories/${id}/docs`, { title, body: text });
       toast.ok("已追加补充说明");
       onDone();
       onClose();
@@ -374,7 +374,7 @@ function LinkDialog({ r, onClose, onDone }: { r: Requirement; onClose: () => voi
     const pid = pick.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0];
     a.run(async () => {
       if (!pid) throw new Error("请选择页面，或粘贴页面链接");
-      await post(`/requirements/${r.id}/links`, { page_id: pid });
+      await post(`/stories/${r.id}/links`, { page_id: pid });
       toast.ok("已关联");
       onDone();
       onClose();
@@ -441,7 +441,7 @@ function AssignDialog({ r, onClose, onDone }: { r: Requirement; onClose: () => v
   const submit = (e: FormEvent) => {
     e.preventDefault();
     a.run(async () => {
-      await patch(`/requirements/${r.id}`, { assignees: { users, groups } });
+      await patch(`/stories/${r.id}`, { assignees: { users, groups } });
       toast.ok("已更新指派");
       onDone();
       onClose();
@@ -471,7 +471,7 @@ const fromLocal = (v: string) => (v ? new Date(v).toISOString() : null);
 export function RequirementEdit({ id }: { id?: string }) {
   const projects = useMyProjects();
   const qp = useQuery("project");
-  const existing = useLoad(() => (id ? get<Requirement>(`/requirements/${id}`) : Promise.resolve(null)), [id]);
+  const existing = useLoad(() => (id ? get<Requirement>(`/stories/${id}`) : Promise.resolve(null)), [id]);
   const publishable = useMemo(() => (projects.data ?? []).filter((p) => p.can_publish), [projects.data]);
   const [projectId, setProjectId] = useState("");
   const [title, setTitle] = useState("");
@@ -507,7 +507,7 @@ export function RequirementEdit({ id }: { id?: string }) {
   // 编辑时插入图片：先上传为附件，再把内联地址写进正文
   const insertImage = async (f: File | undefined) => {
     if (!f || !id) return;
-    const up = await a.run(() => post<{ inline_url: string | null; name: string }>(`/requirements/${id}/files${qs({ name: f.name })}`, f));
+    const up = await a.run(() => post<{ inline_url: string | null; name: string }>(`/stories/${id}/files${qs({ name: f.name })}`, f));
     if (imgRef.current) imgRef.current.value = "";
     if (!up) return;
     if (!up.inline_url) return toast.err("只有 PNG / JPG / GIF / WebP 能内联显示，已作为附件上传");
@@ -523,16 +523,16 @@ export function RequirementEdit({ id }: { id?: string }) {
     a.run(async () => {
       let pid = id;
       if (id) {
-        await patch(`/requirements/${id}`, { title, body: text, priority: priority || null, due_at: fromLocal(due), assignees: { users, groups } });
+        await patch(`/stories/${id}`, { title, body: text, priority: priority || null, due_at: fromLocal(due), assignees: { users, groups } });
       } else {
         const p = await post<Page>("/pages", {
           project_id: projectId, title, kind: "openui", page_type: "requirement", visibility, summary: summary.trim() || undefined,
-          requirement: { body: text, priority: priority || null, due_at: fromLocal(due), assignees: { users, groups } },
+          story: { body: text, priority: priority || null, due_at: fromLocal(due), assignees: { users, groups } },
         });
         pid = p.id;
         for (const f of files) {
           try {
-            await post(`/requirements/${pid}/files${qs({ name: f.name })}`, f);
+            await post(`/stories/${pid}/files${qs({ name: f.name })}`, f);
           } catch (err) {
             toast.err(`${f.name} 上传失败：${(err as Error).message}`);
           }
