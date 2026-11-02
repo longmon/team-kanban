@@ -102,7 +102,9 @@ function usePlace() {
   else if (path.startsWith("/admin")) segs = ["系统管理"];
   else segs = [on];
   const s = segs.filter(Boolean) as string[];
-  return { org, list, cur, path, view, segs: s, up };
+  // 有任一可发需求的项目（editor 及以上）才给「新建需求」入口；当前项目可发则预选它
+  const newStory = (projects.data ?? []).some((p) => p.can_publish) ? `/stories/new${cur?.can_publish ? `?project=${cur.id}` : ""}` : null;
+  return { org, list, cur, path, view, segs: s, up, newStory };
 }
 
 // ---------- 左侧文件夹树 ----------
@@ -143,6 +145,7 @@ function Tree() {
               <li><Row icon="logo" to="/" sel={home && !pl.view}>工作台</Row></li>
               <li><Row icon="inbox" to="/?view=todo" sel={home && pl.view === "todo"} badge={!!stats.todo && <span className="badge" data-testid="todo-count">{stats.todo}</span>}>等我处理</Row></li>
               <li><Row icon="send" to="/?view=mine" sel={home && pl.view === "mine"} cnt={stats.mine != null ? `(${stats.mine})` : null}>我发布的</Row></li>
+              {pl.newStory && <li><Row icon="publish" to={pl.newStory} sel={pl.path === "/stories/new"}>新建需求</Row></li>}
               {pl.list.length > 0 && (
                 <Node id="projects" closed={closed} toggle={toggle} row={<Row icon="folder-open" to={`/o/${o.slug}`}>项目</Row>}>
                   {pl.list.map((p) => {
@@ -183,9 +186,11 @@ function Menu({ label, k, children }: { label: string; k: string; children: Reac
 function MenuBar({ onSearch }: { onSearch: () => void }) {
   const act = useShellActions();
   const { me } = useSession();
+  const { newStory } = usePlace();
   return (
     <nav aria-label="菜单栏" className="cl-menubar">
       <Menu label="文件" k="F">
+        {newStory && <DropdownMenuItem onSelect={() => navigate(newStory)}>新建需求…</DropdownMenuItem>}
         <DropdownMenuItem onSelect={() => navigate("/settings/tokens")}>新建令牌…</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => navigate("/orgs")}>组织…</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => navigate("/settings/account")}>账号设置</DropdownMenuItem>
@@ -238,6 +243,7 @@ function StartMenu({ close, onSearch }: { close: () => void; onSearch: () => voi
         <Item icon="logo" onClick={go("/")}>工作台</Item>
         <Item icon="inbox" onClick={go("/?view=todo")}>等我处理</Item>
         <Item icon="send" onClick={go("/?view=mine")}>我发布的</Item>
+        {pl.newStory && <Item icon="publish" onClick={go(pl.newStory)}>新建需求…</Item>}
         {pl.list.length > 0 && <li className="hd">项目</li>}
         {pl.list.map((p) => <Item key={p.id} sm icon="folder" onClick={go(`/o/${p.org.slug}/p/${p.slug}`)}>{p.name}</Item>)}
         {orgs.length > 1 && <li className="hd">切换组织</li>}

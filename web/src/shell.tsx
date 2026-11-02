@@ -1,7 +1,7 @@
 // 外壳（方向 A 长春花工作台）：登录后左侧固定导航（品牌、组织切换、工作台 / 等我处理 / 我发布的、项目列表、底部当前用户与设置）；
 // < 1024 收成顶部条 + 抽屉。搜索框（⌘K 命令栏）由各页面放在自己的标题行（SearchButton）。未登录时只有一条简单顶栏
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Building2, Check, ChevronDown, FileText, FolderKanban, Home, Inbox, KeyRound, LayoutGrid, LogOut, Menu, Monitor, Moon, Search, Send, Settings, ShieldCheck, Sun, UserPlus, UserRound, X } from "lucide-react";
+import { Building2, Check, ChevronDown, FilePlus, FileText, FolderKanban, Home, Inbox, KeyRound, LayoutGrid, LogOut, Menu, Monitor, Moon, Search, Send, Settings, ShieldCheck, Sun, UserPlus, UserRound, X } from "lucide-react";
 import { get, post, qs } from "./api";
 import { cn } from "@/lib/utils";
 import { Link, navigate, useLocation, useQuery } from "./router";
@@ -194,6 +194,8 @@ function SideNav() {
   const slug = path.match(/^\/o\/[^/]+\/p\/([^/]+)/)?.[1];
   const cur = list.find((p) => p.slug === slug || p.id === activeId);
   const home = path === "/";
+  // 有任一可发需求的项目（editor 及以上）才显示；当前项目可发则预选它
+  const newStory = (projects.data ?? []).some((p) => p.can_publish) ? `/stories/new${cur?.can_publish ? `?project=${cur.id}` : ""}` : null;
   return (
     <>
       <Link to="/" className="mb-3.5 flex items-center gap-2.5 rounded-md px-2 text-[16px] font-bold outline-none focus-visible:ring-[3px] focus-visible:ring-ring/80" aria-label="Team Kanban 首页">
@@ -207,6 +209,7 @@ function SideNav() {
           等我处理
         </NavLink>
         <NavLink to="/?view=mine" on={home && view === "mine"} icon={<Send />} count={stats.mine}>我发布的</NavLink>
+        {newStory && <NavLink to={newStory} on={path === "/stories/new"} icon={<FilePlus />}>新建需求</NavLink>}
       </nav>
       {list.length > 0 && (
         <nav aria-label="项目" className="flex min-h-0 flex-col gap-1 overflow-y-auto">

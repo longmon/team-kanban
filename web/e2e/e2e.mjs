@@ -978,10 +978,11 @@ await step("task-tree-review", async () => {
 });
 // 需求：产品经理（demo）在独立页面建需求（上传附件、写正文、指派群组）→ 追加补充说明、关联页面 → 被指派群组成员首页「等我处理」看到 →
 // 认领自动建需求群组 → 开始开发 → 提交验收 → 发起人验收完成
-let REQ_ID = null;
+let REQ_ID = null, TEAM_ID = null;
 await step("story-flow", async () => {
   // 被指派者用 member（注册有每小时限额）：新建「需求组」并授权给项目，前面的权限场景已跑完
   const team = await call(demo, "POST", `/orgs/${org.id}/groups`, { name: "需求组" });
+  TEAM_ID = team.id;
   await call(demo, "POST", `/groups/${team.id}/members`, { user_id: member.user.id });
   await call(demo, "PUT", `/projects/${project.id}/groups/${team.id}`, { role: "viewer" });
   const cm = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -1067,6 +1068,47 @@ await step("story-flow", async () => {
     await hist.getByText("创建了需求群组").waitFor();
     await pm.screenshot({ path: `${OUT}/story-detail.png`, fullPage: true });
   } finally { await cm.close(); await cd.close(); }
+});
+// 左侧菜单常驻「新建需求」：项目 editor 及以上可见（项目页带 ?project=），viewer 看不到；窄屏抽屉里同样有
+await step("story-nav-entry", async () => {
+  if (!TEAM_ID) throw new Error("story-flow failed");
+  const c2 = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const p = await c2.newPage();
+  watch(p);
+  const nav = () => p.getByRole("navigation", { name: "导航" }).getByRole("link", { name: "新建需求" });
+  try {
+    // member 此时经「需求组」是项目 viewer
+    await login(p, "member@example.com");
+    await p.goto(BASE + "/");
+    await p.getByRole("navigation", { name: "导航" }).getByRole("link", { name: /^等我处理/ }).waitFor();
+    await p.getByRole("navigation", { name: "项目" }).getByText("演示项目").waitFor();
+    if (await nav().count()) throw new Error("viewer should not see 新建需求");
+    // 升为 editor 后可见，点进新建页
+    await call(demo, "PUT", `/projects/${project.id}/groups/${TEAM_ID}`, { role: "editor" });
+    await p.reload();
+    await nav().click();
+    await p.waitForURL((u) => u.pathname === "/stories/new");
+    await p.getByRole("heading", { name: "新建需求" }).waitFor();
+    if ((await nav().getAttribute("aria-current")) !== "page") throw new Error("nav entry not current on /stories/new");
+    // 项目上下文：带 ?project=
+    await p.goto(BASE + "/o/demo/p/demo");
+    await p.getByRole("navigation", { name: "项目" }).getByRole("link", { name: /演示项目/ }).and(p.locator("[aria-current=page]")).waitFor();
+    if ((await nav().getAttribute("href")) !== `/stories/new?project=${project.id}`) throw new Error("nav entry missing ?project= : " + (await nav().getAttribute("href")));
+    await p.goto(BASE + "/");
+    await nav().waitFor();
+    await p.screenshot({ path: `${OUT}/nav-default.png` });
+    // 390 窄屏：抽屉里同样出现
+    await p.setViewportSize({ width: 390, height: 844 });
+    await p.getByRole("button", { name: "打开导航" }).click();
+    await nav().waitFor();
+    await p.waitForTimeout(500); // 等抽屉滑入动画结束再截图
+    await p.screenshot({ path: `${OUT}/nav-mobile-drawer.png` });
+    await nav().click();
+    await p.getByRole("heading", { name: "新建需求" }).waitFor();
+  } finally {
+    await call(demo, "PUT", `/projects/${project.id}/groups/${TEAM_ID}`, { role: "viewer" });
+    await c2.close();
+  }
 });
 await step("mobile-dark", async () => {
   await page.setViewportSize({ width: 375, height: 800 });
@@ -1171,6 +1213,20 @@ await step("story-classic", async () => {
     await p.screenshot({ path: `${OUT}/story-classic.png`, fullPage: true });
     await p.goto(BASE + "/");
     await p.locator(".cl-list tr", { hasText: "支持订单部分退款" }).getByText("已完成").waitFor();
+    // 「新建需求」入口：文件夹树、文件菜单、开始菜单
+    const tree = p.getByRole("navigation", { name: "文件夹" }).getByRole("link", { name: "新建需求" });
+    await tree.waitFor();
+    await p.screenshot({ path: `${OUT}/nav-classic-tree.png` });
+    await p.getByRole("button", { name: "文件(F)" }).click();
+    await p.getByRole("menuitem", { name: "新建需求…" }).waitFor();
+    await p.keyboard.press("Escape");
+    await p.getByRole("button", { name: "开始", exact: true }).click();
+    const start = p.getByRole("dialog", { name: "开始菜单" });
+    await start.getByRole("button", { name: "新建需求…" }).waitFor();
+    await p.screenshot({ path: `${OUT}/nav-classic-start.png` });
+    await start.getByRole("button", { name: "新建需求…" }).click();
+    await p.waitForURL((u) => u.pathname === "/stories/new");
+    await tree.and(p.locator("[aria-current=page]")).waitFor();
   } finally { await c2.close(); }
 });
 console.log("console errors:", errors.length ? errors : "none");
