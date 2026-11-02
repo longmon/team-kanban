@@ -17,14 +17,16 @@ type Opts = { headers?: Record<string, string>; signal?: AbortSignal };
 
 export async function api<T = unknown>(method: string, path: string, body?: unknown, opts: Opts = {}): Promise<T> {
   const headers: Record<string, string> = { ...opts.headers };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+  // Blob（需求附件）原样作为请求体，不是 multipart
+  const raw = body instanceof Blob;
+  if (body !== undefined) headers["Content-Type"] = raw ? "application/octet-stream" : "application/json";
   if (csrf && method !== "GET" && method !== "HEAD") headers["X-CSRF-Token"] = csrf;
   let res: globalThis.Response;
   try {
     res = await fetch("/api" + path, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : raw ? (body as Blob) : JSON.stringify(body),
       credentials: "same-origin",
       signal: opts.signal,
     });

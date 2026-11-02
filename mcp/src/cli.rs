@@ -28,10 +28,13 @@ tkanban —— Team Kanban 本机命令行 + MCP 服务器（发布页面、拉�
   tkanban default <名称>       设为默认服务器；tkanban default --clear 取消默认
   tkanban targets [名称]       实时列出可发布的组织、项目、群组（缺省列全部服务器）
   tkanban test [名称]          测试连通性和 token（缺省测全部服务器）
+  tkanban req list|pull …      需求：列出、拉到本地（见下）
   tkanban mcp                  启动 stdio MCP 服务器（给 Claude Code / Codex 注册用）；不带子命令时同样启动 MCP
   tkanban --help               显示本帮助
   tkanban --version            显示版本
 
+需求（产品经理在看板提的 REQ-12 这类）：
+{REQ_HELP}
 选择规则（MCP 工具照此执行）：
   - 用户在对话里指明了服务器 / 组织 / 项目 / 群组，就用指明的。
   - 没指明时，某一级只有一个候选就直接用；有多个候选，agent 会先问你发到哪个服务器、哪个项目或群组。
@@ -60,12 +63,12 @@ pub async fn run(args: Vec<String>) -> ExitCode {
     let r = match cmd {
         // 不带子命令：兼容旧注册方式直接跑 MCP；人在终端里敲则给帮助
         None if std::io::stdin().is_terminal() => {
-            print!("{HELP}");
+            print!("{}", HELP.replace("{REQ_HELP}", crate::req::CLI_HELP));
             return ExitCode::SUCCESS;
         }
         None | Some("mcp") => return serve().await,
         Some("-h" | "--help" | "help") => {
-            print!("{HELP}");
+            print!("{}", HELP.replace("{REQ_HELP}", crate::req::CLI_HELP));
             return ExitCode::SUCCESS;
         }
         Some("-V" | "--version") => {
@@ -78,6 +81,7 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         Some("default") => set_default(rest),
         Some("targets") => targets(rest.first().map(String::as_str)).await,
         Some("test") => test(rest.first().map(String::as_str)).await,
+        Some("req") => crate::req::cli(rest).await,
         Some(other) => Err(format!("未知子命令 {other}，见 tkanban --help")),
     };
     match r {

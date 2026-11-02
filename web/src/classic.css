@@ -460,3 +460,8 @@
 
 /* 顶部提示条（邮箱未验证等）：黄色提示底 */
 [data-skin=classic] .cl-content > div[class*=bg-warning] { background: var(--w-tip); border: 0; box-shadow: 0 0 0 1px #000; margin: 1px 1px 8px; padding: 4px 8px; }
+
+/* 需求详情（pages/requirement.tsx）：状态步骤条用凸起按钮面、当前步骤藏青；编号与状态胶囊去圆角 */
+[data-skin=classic] [data-req] ol[aria-label=状态流转] li { border-radius: 0; background: var(--w-face); color: #000; box-shadow: var(--w-raised); }
+[data-skin=classic] [data-req] ol[aria-label=状态流转] li[aria-current] { background: var(--w-navy); color: #fff; box-shadow: var(--w-sunken); }
+[data-skin=classic] :is([data-req-code], [data-req-status], [data-req-doc]) { border-radius: 0; }

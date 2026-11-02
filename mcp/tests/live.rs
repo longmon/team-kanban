@@ -187,6 +187,58 @@ async fn live_smoke() {
         eprintln!("跳过任务树冒烟：未设置 LIVE_TEAM_KANBAN_TOKEN2 / LIVE_REVIEWER_EMAIL");
     }
 
+    // 13. 需求：产品经理（令牌 1）create_requirement 指派给 bob → bob（令牌 2）list(mine) → claim（自动建需求群组）→ `tkanban req pull` 落到本地
+    // → 产品经理 publish_page(requirement=REQ-x) 自动进需求群组并出现在需求关联页面
+    if let (Ok(token2), Ok(bob)) = (std::env::var("LIVE_TEAM_KANBAN_TOKEN2"), std::env::var("LIVE_REVIEWER_EMAIL")) {
+        let r = ok_json(call(&c, "create_requirement", json!({ "project": slug, "title": "订单部分退款", "priority": "P1",
+            "body": "## 背景\n支持按金额部分退款", "assignees": [bob], "summary": "退款需求" })).await);
+        let code = r["code"].as_str().unwrap().to_string();
+        assert!(code.starts_with("REQ-"), "{r}");
+        ok_json(call(&c, "add_requirement_doc", json!({ "requirement": code, "project": slug, "title": "接口草案", "body": "- POST /refunds" })).await);
+        let tmp = std::env::temp_dir().join(format!("tkanban-live-{}.pdf", std::process::id()));
+        std::fs::write(&tmp, b"%PDF-1.4\n%%EOF").unwrap();
+        let f = ok_json(call(&c, "upload_requirement_file", json!({ "requirement": code, "project": slug, "file_path": tmp.to_str().unwrap(), "name": "退款规格.pdf" })).await);
+        assert_eq!(f["file"]["content_type"], "application/pdf");
+        std::fs::remove_file(&tmp).unwrap();
+        let c2 = client(&base, &token2).await;
+        let (e, t) = call(&c2, "list_requirements", json!({ "mine": true })).await;
+        assert!(!e && t.contains(&code), "{t}");
+        let cl = ok_json(call(&c2, "claim_requirement", json!({ "requirement": code })).await);
+        assert_eq!(cl["status"], "analyzing");
+        let group = cl["group"]["id"].as_str().unwrap().to_string();
+        assert!(cl["group"]["name"].as_str().unwrap().starts_with(&code), "{cl}");
+        // 本地拉取（bob 的令牌）
+        let dir = std::env::temp_dir().join(format!("tkanban-live-pull-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tkanban"))
+            .args(["req", "pull", &code, "--dir", dir.to_str().unwrap()])
+            .env("TEAM_KANBAN_URL", &base).env("TEAM_KANBAN_TOKEN", &token2)
+            .env("XDG_CONFIG_HOME", std::env::temp_dir().join("tkanban-live-noconf"))
+            .env_remove("http_proxy").env_remove("HTTP_PROXY").env_remove("https_proxy").env_remove("HTTPS_PROXY")
+            .output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let root = dir.join(&code);
+        let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+        assert!(readme.contains("分析中") && readme.contains("支持按金额部分退款") && readme.contains(&code), "{readme}");
+        assert_eq!(std::fs::read(root.join("attachments/退款规格.pdf")).unwrap(), b"%PDF-1.4\n%%EOF");
+        assert!(std::fs::read_to_string(root.join("docs/01-接口草案.md")).unwrap().contains("POST /refunds"));
+        if std::env::var("LIVE_KEEP_PULL").is_err() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        } else {
+            eprintln!("pull 目录保留在 {}", dir.display());
+        }
+        // 相关文档带 requirement 发布：自动进需求群组并挂到需求下
+        let pp = ok_json(call(&c, "publish_page", json!({ "page_type": "knowledge", "model": "Claude Opus 5.5", "title": "退款方案设计",
+            "spec": "root = Stack([t])\nt = TextContent(\"方案\")", "requirement": code, "summary": "退款方案" })).await);
+        assert_eq!((pp["visibility"].clone(), pp["requirement"]["code"].clone()), (json!("groups"), json!(code)));
+        let (_, t) = call(&c2, "get_requirement", json!({ "requirement": code })).await;
+        let d: Value = serde_json::from_str(t.split_once("\n\n").unwrap().1).unwrap();
+        assert_eq!(d["links"][0]["page_id"], pp["id"], "{d}");
+        assert_eq!(d["group"]["id"], json!(group));
+        eprintln!("需求冒烟：{code} 群组「{}」，关联页面「{}」", cl["group"]["name"].as_str().unwrap(), d["links"][0]["title"].as_str().unwrap());
+        c2.cancel().await.unwrap();
+    }
+
     // 12. 接口文档与任务树并存：发布 api_doc 仍正常（只读、带「接口 N 个」）
     let api = json!({ "title": "支付接口", "servers": [{ "name": "生产", "url": "https://pay.example.com" }],
         "groups": [{ "name": "订单", "endpoints": [{ "method": "post", "path": "/orders", "title": "下单" }, { "method": "get", "path": "/orders/query", "title": "查单" }] }] });

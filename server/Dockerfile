@@ -19,7 +19,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked && cp target/release/relay /relay
 
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates && adduser -D -H -u 10001 relay
+# /data/uploads：需求附件目录（UPLOAD_DIR 默认值），预建并归 relay，新命名卷首次挂载时继承属主
+RUN apk add --no-cache ca-certificates && adduser -D -H -u 10001 relay && mkdir -p /data/uploads && chown relay:relay /data/uploads
 COPY --from=server /relay /usr/local/bin/relay
 USER relay
 ENV BIND=0.0.0.0:8080

@@ -4,6 +4,7 @@ mod groups;
 mod invites;
 mod orgs;
 mod pages;
+mod requirements;
 mod responses;
 mod statics;
 mod tasks;
@@ -26,6 +27,7 @@ use crate::{
     util::ts,
 };
 
+pub use requirements::sweep_deleted_files;
 pub use statics::static_router;
 
 const PAGE_BODY_LIMIT: usize = 6 * 1024 * 1024;
@@ -100,6 +102,17 @@ pub fn api_router() -> Router<AppState> {
         .route("/tasks/{id}", patch(tasks::update_task))
         .route("/tasks/{id}/review", post(tasks::review_task))
         .route("/tasks/{id}/events", get(tasks::task_events))
+        // 需求（页面本身用 /pages 发布、改标题、关闭、删除）
+        .route("/requirements/{id}", get(requirements::get_requirement).patch(requirements::update_requirement).layer(DefaultBodyLimit::max(PAGE_BODY_LIMIT)))
+        .route("/requirements/{id}/claim", post(requirements::claim))
+        .route("/requirements/{id}/status", post(requirements::set_status))
+        .route("/requirements/{id}/group", post(requirements::create_group))
+        .route("/requirements/{id}/docs", post(requirements::add_doc).layer(DefaultBodyLimit::max(PAGE_BODY_LIMIT)))
+        .route("/requirements/{id}/docs/{doc_id}", delete(requirements::delete_doc))
+        .route("/requirements/{id}/links", post(requirements::add_link))
+        .route("/requirements/{id}/links/{page_id}", delete(requirements::delete_link))
+        .route("/requirements/{id}/files", post(requirements::upload))
+        .route("/requirements/{id}/files/{file_id}", get(requirements::download).delete(requirements::delete_file))
         // 提交与结果
         .route("/pages/{id}/responses", get(responses::poll).post(responses::submit_page))
         .route("/pages/{id}/responses/stream", get(responses::stream_page))

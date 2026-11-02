@@ -31,6 +31,7 @@ import type { Group, Page, Paged, PageView, Response } from "../types";
 
 const OpenUIView = lazy(() => import("./openui-view"));
 const ApiDocView = lazy(() => import("./apidoc-view"));
+const RequirementView = lazy(() => import("./requirement"));
 
 
 export type Source = { kind: "page"; id: string } | { kind: "share"; token: string };
@@ -181,6 +182,8 @@ function Viewer({ src }: { src: Source }) {
     return <AuthCard><ErrorBox error={error} /><Button variant="outline" onClick={load}>重试</Button></AuthCard>;
   }
   if (!view) return <ViewerSkeleton />;
+  // 需求页面：独立的详情（正文、状态流转、附件、补充说明、关联页面）
+  if (view.page.page_type === "requirement" && src.kind === "page") return <Suspense fallback={<ViewerSkeleton />}><RequirementView id={view.page.id} /></Suspense>;
 
   const pageId = view.page.id;
   const tone = toneOf(view.page.page_type, view.page.category);

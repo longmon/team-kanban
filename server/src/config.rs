@@ -14,6 +14,10 @@ pub struct Config {
     pub allow_signup: bool,
     pub smtp_url: Option<String>,
     pub smtp_from: Option<String>,
+    /// 需求附件存放目录（容器里挂命名卷），默认 /data/uploads
+    pub upload_dir: std::path::PathBuf,
+    /// 单个附件上限（字节），UPLOAD_MAX_MB 默认 50
+    pub upload_max_bytes: u64,
 }
 
 fn var(name: &str) -> Option<String> {
@@ -42,6 +46,14 @@ impl Config {
             allow_signup: flag("ALLOW_SIGNUP", true),
             smtp_url: var("SMTP_URL"),
             smtp_from: var("SMTP_FROM"),
+            upload_dir: var("UPLOAD_DIR").unwrap_or_else(|| "/data/uploads".into()).into(),
+            upload_max_bytes: match var("UPLOAD_MAX_MB") {
+                None => 50 << 20,
+                Some(v) => match v.parse::<u64>() {
+                    Ok(n) if (1..=1024).contains(&n) => n << 20,
+                    _ => return Err("UPLOAD_MAX_MB 必须是 1..1024 的整数".into()),
+                },
+            },
         })
     }
 

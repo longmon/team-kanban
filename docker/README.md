@@ -48,10 +48,13 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - uploads:/data/uploads # requirement attachments
     restart: unless-stopped
 
 volumes:
   pgdata:
+  uploads:
 ```
 
 Then:
@@ -146,6 +149,8 @@ Behind Cloudflare (orange cloud), use SSL mode **Full (strict)**. The repository
 | `ALLOW_SIGNUP` | `1` | `0` = invite-only |
 | `SUPERADMIN_EMAILS` | empty | Comma-separated emails; on start, those already registered become super admins (grant only, see [First super admin](#first-super-admin)) |
 | `SMTP_URL` / `SMTP_FROM` | empty | e.g. `smtps://user:pass@smtp.example.com:465` / `Team Kanban <noreply@example.com>`. Without SMTP, emails are only written to the log |
+| `UPLOAD_DIR` | `/data/uploads` | Where requirement attachments are stored. Mount a volume here (see [Attachment volume](#attachment-volume)) |
+| `UPLOAD_MAX_MB` | `50` | Max size of one attachment, 1..1024 |
 | `BIND` | `0.0.0.0:8080` | Listen address |
 | `RUST_LOG` | `info` | Log level |
 
@@ -166,6 +171,15 @@ Point `DATABASE_URL` at your database and drop the `pg` service. Requirements:
 - **Logs**: `docker compose logs -f mcp-server`
 - **Health check**: `GET /healthz` returns 200.
 - **Single instance only**: rate limiting and long-poll notifications are in-process. Run one `mcp-server` container per database.
+
+### Attachment volume
+
+Requirements (产品需求) can carry uploaded attachments (PDF, Office, images, archives). They are stored on disk under `UPLOAD_DIR` (default `/data/uploads`), with random file names; the database only keeps metadata.
+
+- **Every compose file must mount a volume there**, including compose files you maintain yourself (e.g. an intranet deployment that is not generated from this README). Add to the `mcp-server` service `volumes: - uploads:/data/uploads` and `uploads:` under the top-level `volumes:`, then `docker compose up -d mcp-server`. Without it, attachments live in the container layer and are **lost when the container is recreated**.
+- The image creates `/data/uploads` owned by uid 10001, so a new named volume inherits a writable owner. If you bind-mount a host directory instead, `chown 10001 <dir>` first.
+- **Backup**: back up the volume together with the database dump, e.g. `docker run --rm -v <project>_uploads:/u -v "$PWD":/b alpine tar czf /b/uploads-$(date +%F).tgz -C /u .`
+- Deleting an attachment removes its file immediately; attachments of a deleted requirement are purged 7 days later.
 
 ---
 
@@ -252,6 +266,8 @@ docker compose up -d
 | `ALLOW_SIGNUP` | `1` | `0` = 只能凭邀请注册 |
 | `SUPERADMIN_EMAILS` | 空 | 逗号分隔的邮箱；启动时把其中已注册的账号设为超级管理员（只授予不撤销，见上文「第一个超级管理员」） |
 | `SMTP_URL` / `SMTP_FROM` | 空 | 例如 `smtps://user:pass@smtp.example.com:465` / `Team Kanban <noreply@example.com>`；不配时邮件内容只写进日志 |
+| `UPLOAD_DIR` | `/data/uploads` | 需求附件存放目录，需要挂卷（见下文「附件卷」） |
+| `UPLOAD_MAX_MB` | `50` | 单个附件上限（MB），1..1024 |
 | `BIND` | `0.0.0.0:8080` | 监听地址 |
 | `RUST_LOG` | `info` | 日志级别 |
 
@@ -272,3 +288,12 @@ docker compose up -d
 - **日志**：`docker compose logs -f mcp-server`
 - **健康检查**：`GET /healthz` 返回 200。
 - **只能单实例**：限流和长轮询通知都在进程内，一个数据库只跑一个 `mcp-server` 容器。
+
+### 附件卷
+
+需求可以上传附件（PDF、Office、图片、压缩包等），文件存在 `UPLOAD_DIR`（默认 `/data/uploads`）下、文件名随机，数据库只存元数据。
+
+- **所有 compose 都要给它挂卷，包括你自己维护的 compose（例如不是从本文生成的内网部署）**：在 `mcp-server` 服务下加 `volumes: - uploads:/data/uploads`，顶层 `volumes:` 下加 `uploads:`，再 `docker compose up -d mcp-server`。不挂卷时附件写在容器层里，**重建容器就丢了**。
+- 镜像里已建好 `/data/uploads` 并归 uid 10001，新建的命名卷会继承可写属主；改用宿主机目录绑定挂载时先 `chown 10001 <目录>`。
+- **备份**：卷要和数据库一起备份，例如 `docker run --rm -v <项目名>_uploads:/u -v "$PWD":/b alpine tar czf /b/uploads-$(date +%F).tgz -C /u .`
+- 删附件立即删文件；需求页面删除 7 天后清理其附件。

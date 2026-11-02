@@ -143,6 +143,13 @@ DELETE FROM _sqlx_migrations WHERE version = 9;
 COMMIT;
 ```
 
+**需求**（`page_type = requirement`，0012；接口见 api.md §7.8）——页面行照旧（kind openui、content 空 Stack，不改 0002 的约束），扩展字段放新表，全部复合外键 `(org_id, …)` 保证同组织：
+- `requirement_counters (project_id PK, org_id, last_no)`：编号分配 `INSERT … ON CONFLICT (project_id) DO UPDATE SET last_no = last_no + 1 RETURNING last_no`，行锁串行化同项目并发创建；事务回滚会空号（可接受）。
+- `requirements (page_id PK, org_id, project_id, number, body, priority, due_at, status, group_id?, claimed_by?, claimed_at?)`：`UNIQUE (project_id, number)`；`group_id` FK groups `ON DELETE SET NULL (group_id)`；状态 CHECK 七选一。
+- `requirement_assignees (page_id, user_id | group_id)`：恰好一个非空；部分唯一索引防重复，`(user_id, page_id)` / `(group_id, page_id)` 部分索引供「指派给我」反查。首页列表按页 PK 探测（`requirements` 主键 + `requirement_assignees` 前缀 page_id + `group_members` 主键），不扫表。
+- `requirement_files`（storage_key 唯一且格式受 CHECK 约束）、`requirement_docs`、`requirement_links (page_id, linked_page_id) PK`（FK `(org_id, linked_page_id) → pages` 保证同组织）、`requirement_events`（只增不改）。
+- 回滚 0012：`DROP TABLE requirement_events, requirement_links, requirement_docs, requirement_files, requirement_assignees, requirements, requirement_counters` + 删 `_sqlx_migrations` 第 12 行；附件目录可整体删除（只有需求附件）；认领时建的需求群组是普通项目群组，不随回滚删除。
+
 **page_groups** — `visibility = 'groups'` 的受众。PK `(page_id, group_id)`，两条复合 FK。visibility 改成别的值时应用清空本表。
 
 **share_links** — `id`、`org_id`、`page_id`（FK `(org_id, page_id)`）、`token_hash UNIQUE`、`token_prefix`（前 6 字符，界面辨认）、`label`、`expires_at NOT NULL`、`max_uses int?`、`use_count int`（CHECK `use_count ≤ max_uses`）、`password_hash?`、`created_by`、`created_at`、`revoked_at?`；`UNIQUE (org_id, page_id, id)` 供 responses 复合外键。**token 只在创建时返回一次**（与 PAT 一致），丢了就新建一个。
@@ -355,6 +362,14 @@ SSE（`/responses/stream`）：先按 §5.3 判定查看权限，再要求 `can_
 - **首个超管**：`SUPERADMIN_EMAILS` 环境变量，启动时幂等授予已注册账号（`lib.rs bootstrap_superadmins`）。先注册、再配变量重启。
 - **禁用**：`users.disabled_at`。`auth.rs` 的 `load_session` / `load_pat` 都在原查询上 JOIN users 加 `disabled_at IS NULL`（按主键探测一行，无额外往返）；禁用时同事务删会话；登录在密码校验通过后才返回 `account_disabled`，不向猜密码的人暴露账号状态。PAT 不吊销，启用后未过期未吊销的自动恢复。
 
+### 5.6 需求的参与者与需求群组（api.md §7.8）
+
+- 可见 / 下载 = 页面可见性（§5.3，含关闭规则、PAT 范围）；需求页面只允许 visibility = project / org，指派时校验被指派成员有项目角色、被指派群组已授权给项目，保证「被指派者一定看得到」。
+- 参与者（认领、改状态、建需求群组）= 被指派成员 ∪ 被指派群组成员 ∪ 发起人 ∪ 项目 admin；验收人（待验收 → 已完成、重新打开）= 发起人 ∪ 项目 admin；贡献者（附件、补充说明、关联页面）= 参与者 ∪ 项目 editor；编辑需求 / 改指派 = 项目 editor+。
+- 需求群组由服务端创建，不走 `POST /projects/{id}/groups` 的「项目 admin + manage scope」：认领人通常只是 viewer。安全边界：① 只能在需求自己的项目里建、每个需求同时只有一个（行锁）；② 只授 viewer（不扩大任何人的发布权，成员本来就看得到需求 → 都是项目内可见者）；③ 成员名单由服务端从指派关系计算，调用者不能指定；④ 记 `group.create` 审计（`via=requirement`、操作人与 PAT）。群组之后按普通项目群组管理（项目 admin 可改名、增删成员、删除）。
+- 关联页面：只能挂调用者能看到的同组织页面；展示时按查看者重新判定（列表可见性 SQL，一次查询），看不到的只给 `visible: false` 占位。
+- 附件：存储路径不可控（服务端随机 key），下载强制 attachment + nosniff + sandbox CSP，svg 永不内联（见 api.md §7.8）；`lib.rs host_guard` 不覆盖响应自带的 CSP。
+
 ## 6. 会话、CSRF、限流、审计、PAGES_ORIGIN
 
 ### 6.1 会话
@@ -408,6 +423,8 @@ project_group.grant  project_group.revoke
 group.create  group.update  group.delete  group_member.add  group_member.remove
 invite.create  invite.revoke  invite.accept
 page.publish  page.update(meta 含变更字段，visibility/groups 变更时记录旧→新)  page.delete  page.close  page.reopen
+requirement.update  requirement.claim  requirement.status(meta: from/to)  requirement.doc_add  requirement.doc_delete  requirement.link_add  requirement.link_remove
+requirement.file_upload(meta: name/size/content_type)  requirement.file_delete  （需求群组另写 group.create，meta.via=requirement、system=true）
 share_link.create  share_link.revoke
 pat.create  pat.revoke
 admin.user_create  admin.user_update  admin.user_disable(meta: sessions_revoked)  admin.user_enable  admin.superadmin_grant  admin.superadmin_revoke
@@ -470,6 +487,8 @@ Strict-Transport-Security 由 Caddy 加
 | `TRUST_PROXY` | `0` | 在 Caddy 后面设 `1` |
 | `COOKIE_SECURE` | `1` | 仅本地 http 开发设 `0` |
 | `ALLOW_SIGNUP` | `1` | `0` 时只能凭邀请链接注册 |
+| `UPLOAD_DIR` | `/data/uploads` | 需求附件存放目录（容器里挂命名卷 `uploads`，运行用户 uid 10001 要可写） |
+| `UPLOAD_MAX_MB` | `50` | 单个附件上限（1..1024） |
 | `SUPERADMIN_EMAILS` | 空 | 逗号分隔的邮箱；每次启动把其中已注册的账号设为超级管理员（幂等，只授予不撤销，见 §5.5） |
 | `SMTP_URL` / `SMTP_FROM` | 空 | 见 §7.2 |
 | `RUST_LOG` | `info` | tracing 日志级别 |
@@ -485,7 +504,7 @@ Strict-Transport-Security 由 Caddy 加
 ### 7.5 部署
 
 - `Dockerfile` 三阶段：`node:22-alpine` 构建 web（`OPENUI_TELEMETRY_DISABLED=1 npm ci && npm run build`）→ `rust:1-alpine` 构建 server（rust-embed 嵌入 `web/dist`，`SQLX_OFFLINE=true` 用提交到仓库的 `.sqlx/`）→ `alpine` 运行（非 root，仅一个二进制）。
-- `docker-compose.yml`：`mcp-server`（容器名 team-kanban-mcp-server，端口只绑 127.0.0.1:8080）+ `pg`（postgres:17-alpine，命名卷，健康检查）；app 启动时自动跑迁移。
+- `docker-compose.yml`：`mcp-server`（容器名 team-kanban-mcp-server，端口只绑 127.0.0.1:8080，命名卷 `uploads` 挂 `/data/uploads` 存需求附件）+ `pg`（postgres:17-alpine，命名卷，健康检查）；app 启动时自动跑迁移。镜像里预建 `/data/uploads` 并归 uid 10001，新命名卷首次挂载时继承该属主。
 - 外网：Caddy 反代两个主机名到同一 app：
   ```
   relay.example.com { reverse_proxy 127.0.0.1:8080 }
@@ -533,6 +552,8 @@ Strict-Transport-Security 由 Caddy 加
 | 长轮询/SSE 每次唤醒查库 | 单页面数千并发 SSE 时库压力大 | 广播里带上记录本身 |
 | 提交按页面行锁分配 seq | 单页面提交约数百 TPS | 足够；真不够再用 sequence + 重排 |
 | 软删除不清理 | 数据只增 | 需要时加定期清理任务 |
+| 需求附件存本机磁盘卷、按需求页面软删 7 天后清理；项目硬删除不清磁盘 | 只能单实例；可能留孤儿文件 | 多实例换对象存储；需要时按 storage_key 对账清孤儿 |
+| 需求群组成员是认领时的快照 | 之后被指派群组加人不会同步 | 项目 admin 手动加成员；真需要再做同步 |
 | frame_url 不绑定查看者 | 拿到 URL 的人 10 分钟内可看 html 原文 | 与「能看页面」等价，可接受 |
 
 ## 10. 分阶段实现顺序

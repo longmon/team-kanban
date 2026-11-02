@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
 use uuid::Uuid;
 
-use super::{brief, list, require_any, tasks};
+use super::{brief, list, require_any, requirements, tasks};
 use crate::{
     AppState, apidoc, audit,
     auth::Caller,
@@ -55,10 +55,11 @@ struct PageListRow {
     respondent_count: i64,
     eligible_count: Option<i64>,
     task_stats: Option<Value>,
+    requirement: Option<Value>,
 }
 
 /// $1 = 调用者 user_id
-fn page_select() -> String {
+pub(super) fn page_select() -> String {
     format!(
         "SELECT p.id, p.org_id, p.project_id, p.title, p.kind, p.page_type, p.generated_by, p.version, p.visibility, p.accept_responses, p.results_visible_to,
                 p.response_seq, p.created_by, u.display_name AS creator_name, p.created_at, p.updated_at, p.closes_at, p.summary, p.highlights,
@@ -107,7 +108,7 @@ fn counts_sql(x: &str) -> String {
 
 /// list_pages / activity 共用的可见性条件（作用于 page_select 的输出列）。
 /// 已关闭页面只给项目 admin 与仍是 editor 的发布者（与 authz::PageRow::can_manage_closed 一致）
-const VISIBLE: &str = "((role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group)))
+pub(super) const VISIBLE: &str = "((role IN ('admin', 'editor') OR (role IS NOT NULL AND (visibility <> 'groups' OR in_group)))
     AND (closed_at IS NULL OR role = 'admin' OR (is_creator AND role = 'editor')))";
 
 impl PageListRow {
@@ -127,7 +128,7 @@ impl PageListRow {
             "my_submitted": self.my_submitted,
             "closes_at": ts_opt(&self.closes_at), "closed_at": ts_opt(&self.closed_at), "summary": self.summary, "highlights": self.highlights,
             "respondent_count": self.respondent_count, "eligible_count": self.eligible_count,
-            "task_stats": self.task_stats,
+            "task_stats": self.task_stats, "requirement": self.requirement,
         })
     }
 }
@@ -135,9 +136,10 @@ impl PageListRow {
 async fn page_by_id(st: &AppState, org_id: Uuid, page_id: Uuid, uid: Uuid) -> AppResult<Value> {
     let row: PageListRow =
         sqlx::query_as(&format!(
-            "SELECT x.*, {}, {} FROM ({} WHERE p.org_id = $2 AND p.id = $3 AND p.deleted_at IS NULL) x",
+            "SELECT x.*, {}, {}, {} FROM ({} WHERE p.org_id = $2 AND p.id = $3 AND p.deleted_at IS NULL) x",
             counts_sql("x"),
             tasks::task_stats_sql("x"),
+            requirements::req_sql("x"),
             page_select()
         ))
         .bind(uid)
@@ -173,7 +175,7 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
     // ponytail: 跨所有项目扫描再按角色过滤；单用户页面数很大时给 project_id 走索引
     // 计数只对 LIMIT 之后的当前页行计算
     let sql = format!(
-        "SELECT x.*, {}, {} FROM (SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
+        "SELECT x.*, {}, {}, {} FROM (SELECT * FROM ({} WHERE p.deleted_at IS NULL AND m.user_id IS NOT NULL
              AND ($2::uuid IS NULL OR p.org_id = $2) AND ($3::uuid IS NULL OR p.project_id = $3)
              AND ($4::uuid IS NULL OR p.project_id = $4) AND ($5::uuid IS NULL OR p.id < $5)
              AND ($7::text[] IS NULL OR p.page_type = ANY($7))
@@ -182,6 +184,7 @@ pub async fn list_pages(State(st): State<AppState>, c: Caller, Q(page): Q<PageQu
           ORDER BY id DESC LIMIT $6) x ORDER BY x.id DESC",
         counts_sql("x"),
         tasks::task_stats_sql("x"),
+        requirements::req_sql("x"),
         page_select()
     );
     let rows: Vec<PageListRow> = sqlx::query_as(&sql)
@@ -495,6 +498,10 @@ pub struct CreateReq {
     tasks: Option<Vec<tasks::TaskInput>>,
     /// 仅 task_tree：评审人
     reviewers: Option<tasks::ReviewersInput>,
+    /// 仅 requirement：正文、优先级、期望完成时间、指派
+    requirement: Option<requirements::ReqInput>,
+    /// 任意类型：发布后挂到该需求的关联页面下（需求与页面同项目，调用者是需求参与者或项目 editor）
+    requirement_id: Option<Uuid>,
 }
 
 /// task_tree 省略说明区时的 OpenUI 内容
@@ -516,8 +523,9 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     let summary = check_summary(r.summary.as_deref())?;
     let mut highlights = check_highlights(r.highlights.as_ref())?;
     let task_tree = page_type == "task_tree";
+    let requirement = page_type == "requirement";
     let read_only = match page_category(page_type) {
-        "collab" if !task_tree => return Err(AppError::field("page_type", "该类型尚未开放")),
+        "collab" if !task_tree && !requirement => return Err(AppError::field("page_type", "该类型尚未开放")),
         c => c != "collect",
     };
     if read_only && r.accept_responses == Some(true) {
@@ -529,10 +537,25 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     if !task_tree && (r.tasks.is_some() || r.reviewers.is_some()) {
         return Err(task_only(if r.tasks.is_some() { "tasks" } else { "reviewers" }));
     }
+    if requirement {
+        if r.kind != "openui" {
+            return Err(AppError::field("kind", "需求页面只支持 openui（正文放在 requirement.body）"));
+        }
+        if r.content.as_deref().is_some_and(|c| !c.is_empty()) {
+            return Err(AppError::field("content", "需求页面的正文放在 requirement.body，不要给 content"));
+        }
+        requirements::check_visibility(&r.visibility)?;
+    } else if r.requirement.is_some() {
+        return Err(AppError::field("requirement", "仅需求页面（page_type=requirement）可用"));
+    }
+    let req_link = match r.requirement_id {
+        Some(rid) => Some(requirements::check_publish_link(&st, &c, rid, ctx.project_id()).await?),
+        None => None,
+    };
     let tree = r.tasks.as_deref().map(tasks::parse_tree).transpose()?;
     let content = match r.content {
-        None if task_tree => EMPTY_SPEC.to_string(),
-        Some(c) if c.is_empty() && task_tree => EMPTY_SPEC.to_string(),
+        None if task_tree || requirement => EMPTY_SPEC.to_string(),
+        Some(c) if c.is_empty() && (task_tree || requirement) => EMPTY_SPEC.to_string(),
         c => c.unwrap_or_default(),
     };
     let content = match check_content(&r.kind, &content)? {
@@ -578,6 +601,12 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
     if let Some(tree) = tree {
         tasks::sync_tree(&mut tx, ctx.org_id(), id, (ctx.user_id(), c.p.pat().map(|p| p.id)), tree).await?;
     }
+    if requirement {
+        requirements::create_ext(&mut tx, &c, ctx.org_id(), ctx.project_id(), id, ctx.user_id(), &r.requirement.unwrap_or_default()).await?;
+    }
+    if let Some(w) = &req_link {
+        requirements::link_new_page(&mut tx, &c, w, id).await?;
+    }
     snapshot(&mut tx, ctx.org_id(), id, ctx.user_id()).await?;
     audit::log(
         &mut tx,
@@ -586,7 +615,8 @@ pub async fn create_page(State(st): State<AppState>, c: Caller, JsonBody(r): Jso
         "page.publish",
         "page",
         Some(id),
-        json!({ "project_id": ctx.project_id(), "kind": r.kind, "page_type": page_type, "model": model, "visibility": r.visibility, "group_ids": groups }),
+        json!({ "project_id": ctx.project_id(), "kind": r.kind, "page_type": page_type, "model": model, "visibility": r.visibility, "group_ids": groups,
+                "requirement_id": r.requirement_id }),
     )
     .await?;
     tx.commit().await?;
@@ -675,6 +705,14 @@ pub async fn update_page(State(st): State<AppState>, c: Caller, P(id): P<Uuid>, 
     }
     if page_type != "task_tree" && (tree.is_some() || r.reviewers.is_some()) {
         return Err(task_only(if tree.is_some() { "tasks" } else { "reviewers" }));
+    }
+    if page_type == "requirement" {
+        if r.content.is_some() {
+            return Err(AppError::field("content", "需求正文请用 PATCH /requirements/{id} 修改"));
+        }
+        if let Some(v) = &r.visibility {
+            requirements::check_visibility(v)?;
+        }
     }
     let old_groups = ctx.page_group_ids(&mut tx).await?;
     let new_vis = r.visibility.clone().unwrap_or_else(|| old_vis.clone());
@@ -1106,6 +1144,9 @@ pub async fn create_share_link(State(st): State<AppState>, c: Caller, P(id): P<U
     let ctx = require_page_manage(&st.db, &c, id, PUBLISH).await?;
     if ctx.page().closed_at.is_some() {
         return Err(page_closed());
+    }
+    if ctx.page().page_type == "requirement" {
+        return Err(AppError::field("page_id", "需求页面不支持临时链接（附件只给能看需求的成员下载）"));
     }
     if !(300..=7_776_000).contains(&r.expires_in) {
         return Err(AppError::field("expires_in", "范围 300..7776000 秒"));

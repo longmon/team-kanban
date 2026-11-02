@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { Link, useQuery } from "../router";
 import { picked, specLabels, type SpecLabels } from "../data";
 import {
-  dayBucket, ErrorBox, fmtDue, fmtLeft, fmtRel, Initial, isClosed, PAGE_TYPE_LABEL, REDUCED, toneOf, ToneIcon, useClassic, useCurrentOrgId, useMyProjects, useNow, useSession, type Tone,
+  dayBucket, ErrorBox, fmtDue, fmtLeft, fmtRel, Initial, isClosed, PAGE_TYPE_LABEL, REDUCED, REQ_STATUS_LABEL, toneOf, ToneIcon, useClassic, useCurrentOrgId, useMyProjects, useNow, useSession, type Tone,
 } from "../ui";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -93,16 +93,28 @@ export function useHomeStats(orgId: string | undefined) {
 // ---------- 分类 ----------
 /** 任务树页面里等我处理的项数：待我评审 + 分配给我的待办/进行中 */
 const taskTodo = (p: Page) => (p.task_stats ? p.task_stats.my_review + p.task_stats.my_todo : 0);
-/** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本；任务树里有待我评审或分配给我的未完成任务。已关闭页面不算 */
+/** 需求里等我处理的：指派给我（含我所在群组）且待认领/分析中；我是发起人或项目管理员且待验收 */
+const reqTodo = (p: Page) => {
+  const r = p.requirement;
+  return !!r && ((r.mine && (r.status === "open" || r.status === "analyzing")) || (r.acceptor && r.status === "in_review"));
+};
+/** 等我处理：收集类、仍接受提交、未截止、我还没交当前版本；任务树里有待我评审或分配给我的未完成任务；需求见 reqTodo。已关闭页面不算 */
 const isTodo = (p: Page, now = Date.now()) =>
-  !p.closed_at && ((p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now)) || taskTodo(p) > 0);
+  !p.closed_at && ((p.category === "collect" && p.accept_responses && !p.my_submitted && !isClosed(p.closes_at, now)) || taskTodo(p) > 0 || reqTodo(p));
+/** 需求卡片的状态文字：待我处理时说要做什么 */
+const reqChip = (p: Page) => {
+  const r = p.requirement!;
+  return reqTodo(p) ? (r.status === "in_review" ? "待你验收" : r.status === "open" ? "待你认领" : "你在分析") : REQ_STATUS_LABEL[r.status];
+};
+const reqAssignees = (p: Page) => p.requirement!.assignees.map((a) => a.name).join("、") || "未指派";
 /** 左导航「等我处理」计数：收集类每页算 1，任务树按项数算 */
 const todoWeight = (p: Page, now = Date.now()) => (p.closed_at ? 0 : p.task_stats ? taskTodo(p) : isTodo(p, now) ? 1 : 0);
-type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book" | "api" | "task" | "closed";
-const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"], ["api", "接口文档"], ["task", "任务"], ["closed", "已关闭"]];
+type Kind = "all" | "vote" | "report" | "diagram" | "form" | "book" | "api" | "task" | "req" | "closed";
+const KINDS: [Kind, string][] = [["all", "全部"], ["vote", "投票"], ["report", "报告"], ["diagram", "流程与架构"], ["form", "表单"], ["book", "知识库"], ["api", "接口文档"], ["task", "任务"], ["req", "需求"], ["closed", "已关闭"]];
 /** 已关闭页面只出现在「已关闭」分段（只有发布者与项目管理员能看到这类页面） */
 const kindOf = (p: Page): Kind => {
   if (p.closed_at) return "closed";
+  if (p.page_type === "requirement") return "req";
   const t = toneOf(p.page_type, p.category);
   return t === "flow" || t === "arch" ? "diagram" : t;
 };
@@ -187,6 +199,7 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
           {KINDS.filter(([v]) => v !== "closed" || counts.closed || kind === "closed").map(([v, label]) => (
             <button key={v} type="button" aria-pressed={kind === v} onClick={() => setKind(v)}>{label} ({counts[v] ?? 0})</button>
           ))}
+          {kind === "req" && <Button size="sm" variant="outline" asChild><Link to={`/requirements/new${projectId ? `?project=${projectId}` : ""}`}>新建需求</Link></Button>}
         </div>
         <div className="cl-tabpanel">
           <ErrorBox error={feed.error} />
@@ -210,6 +223,7 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
           </div>
           <SearchButton />
         </div>
+        <div className="flex flex-wrap items-center gap-3">
         <div role="group" aria-label="筛选" className="flex max-w-full gap-0.5 overflow-x-auto rounded-[11px] bg-muted p-[3px] [scrollbar-width:none] sm:inline-flex">
           {KINDS.filter(([v]) => v !== "closed" || counts.closed || kind === "closed").map(([v, label]) => (
             <button key={v} type="button" aria-pressed={kind === v} onClick={() => setKind(v)}
@@ -222,6 +236,8 @@ export function Wall({ projectId, title, empty }: { projectId?: string; title?: 
               <span className="relative tabular-nums">{counts[v] ?? 0}</span>
             </button>
           ))}
+        </div>
+        {kind === "req" && <Button size="sm" asChild><Link to={`/requirements/new${projectId ? `?project=${projectId}` : ""}`}>新建需求</Link></Button>}
         </div>
       </header>
       <div className="contents xl:col-start-2 xl:row-span-2 xl:row-start-1 xl:flex xl:min-w-0 xl:flex-col xl:gap-[18px]">
@@ -288,7 +304,9 @@ function Card({ p, todo, project, now, lazy }: { p: Page; todo: boolean; project
   const collect = p.category === "collect";
   const v = tone === "vote" ? "投" : "填";
   const ts = p.task_stats;
+  const rq = p.requirement;
   const chip = p.closed_at ? <Chip className="bg-secondary text-muted-foreground">已关闭</Chip>
+    : rq ? <Chip className={todo ? "bg-coral-soft text-coral-ink" : rq.status === "done" ? "bg-mint-soft text-mint-ink" : "bg-secondary text-muted-foreground"}>{reqChip(p)}</Chip>
     : ts ? (ts.my_review ? <Chip className="bg-coral-soft text-coral-ink">待你评审 {ts.my_review} 项</Chip>
       : ts.my_todo ? <Chip className="bg-coral-soft text-coral-ink">你有 {ts.my_todo} 项待办</Chip>
       : ts.total && ts.done === ts.total ? <Chip className="bg-mint-soft text-mint-ink">已全部完成</Chip> : null)
@@ -297,7 +315,7 @@ function Card({ p, todo, project, now, lazy }: { p: Page; todo: boolean; project
     : collect && (closed || !p.accept_responses) ? <Chip className="bg-secondary text-muted-foreground">已截止</Chip>
     : p.version > 1 ? <Chip className="bg-secondary text-muted-foreground">第 {p.version} 版</Chip>
     : null;
-  const right = ts ? `${ts.done} / ${ts.total} 项` : collect
+  const right = rq ? `${rq.code}${rq.priority ? ` · ${rq.priority}` : ""}` : ts ? `${ts.done} / ${ts.total} 项` : collect
     ? p.closes_at ? (closed ? `${fmtDue(p.closes_at, new Date(now))} 已截止` : `${n} ${unit(p)}，${fmtDue(p.closes_at, new Date(now))} 截止`) : `${n} ${unit(p)}`
     : null;
   return (
@@ -316,7 +334,13 @@ function Card({ p, todo, project, now, lazy }: { p: Page; todo: boolean; project
           {p.title}
         </Link>
       </h3>
-      <Preview p={p} n={n} tone={tone} lazy={lazy} />
+      {rq ? (
+        <div className="grid gap-1.5 text-[12px] text-muted-foreground" aria-label="需求信息">
+          <span className="truncate">指派：{reqAssignees(p)}</span>
+          {rq.due_at && <span className="truncate">期望 {fmtDue(rq.due_at, new Date(now))} 完成</span>}
+          {p.summary && <p className="line-clamp-2 text-[13px]">{p.summary}</p>}
+        </div>
+      ) : <Preview p={p} n={n} tone={tone} lazy={lazy} />}
       <div className="mt-auto flex min-w-0 items-center gap-2 text-[12px] text-faint">
         <span className="inline-flex min-w-0 items-center gap-1 truncate">
           {p.generated_by ? <span title={`由 ${p.generated_by} 生成`} className="inline-flex min-w-0 items-center gap-1"><Sparkles className="size-3.5 shrink-0" /><span className="truncate">{p.generated_by}</span></span> : collect ? (closed ? "已结束" : `${p.created_by.display_name} 发起`) : `${p.created_by.display_name} 发布`}
@@ -521,7 +545,9 @@ function TodoCard({ p, now, project }: { p: Page; now: number; project?: string 
   const urgent = end !== null && end - now < 2 * 864e5;
   const rest = p.eligible_count ? Math.max(0, p.eligible_count - n) : null;
   const ts = p.task_stats;
-  const meta = ts
+  const rq = p.requirement;
+  const meta = rq ? [project, rq.code, rq.priority, `指派：${reqAssignees(p)}`].filter(Boolean).join("，")
+    : ts
     ? [project, ts.my_review ? `待你评审 ${ts.my_review} 项` : null, ts.my_todo ? `你的待办 ${ts.my_todo} 项` : null].filter(Boolean).join("，")
     : [project, n ? `已有 ${n} ${unit(p)}` : `还没人${verb(p)}`, rest ? `还差 ${rest} 人` : null].filter(Boolean).join("，");
   return (
@@ -537,10 +563,10 @@ function TodoCard({ p, now, project }: { p: Page; now: number; project?: string 
       </div>
       <div className="mt-3 flex items-center justify-between gap-2.5">
         <span className={cn("min-w-0 text-[12px]", urgent ? "font-medium text-coral-ink" : "text-muted-foreground")}>
-          {ts ? `${ts.done} / ${ts.total} 项已完成` : p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left && urgent ? `，还剩 ${left}` : ""}` : "不限截止时间"}
+          {rq ? `${reqChip(p)}${rq.due_at ? `，期望 ${fmtDue(rq.due_at, new Date(now))} 完成` : ""}` : ts ? `${ts.done} / ${ts.total} 项已完成` : p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left && urgent ? `，还剩 ${left}` : ""}` : "不限截止时间"}
         </span>
         <Link to={`/pages/${p.id}`} className="inline-flex h-[34px] shrink-0 items-center rounded-[10px] bg-primary px-3.5 text-[13px] font-semibold text-primary-foreground outline-none transition-[filter] hover:brightness-[1.08] focus-visible:ring-[3px] focus-visible:ring-ring/80">
-          {ts ? (ts.my_review ? "去评审" : "去处理") : tone === "vote" ? "去投票" : "去填写"}
+          {rq ? (rq.status === "open" ? "去认领" : rq.status === "in_review" ? "去验收" : "去处理") : ts ? (ts.my_review ? "去评审" : "去处理") : tone === "vote" ? "去投票" : "去填写"}
         </Link>
       </div>
     </article>
@@ -551,7 +577,10 @@ function TodoCard({ p, now, project }: { p: Page; now: number; project?: string 
 function Ring({ p, now, urgent, n }: { p: Page; now: number; urgent: boolean; n: number }) {
   const C = 2 * Math.PI * 19;
   let frac = 0, label: string;
-  if (p.task_stats) {
+  if (p.requirement) {
+    frac = ["open", "analyzing", "developing", "in_review", "done"].indexOf(p.requirement.status) / 4;
+    label = p.requirement.priority ?? "需求";
+  } else if (p.task_stats) {
     frac = p.task_stats.total ? p.task_stats.done / p.task_stats.total : 0;
     label = `${p.task_stats.done}/${p.task_stats.total}`;
   } else if (p.closes_at) {
@@ -661,6 +690,7 @@ function statusOf(p: Page, now: number): [string, "red" | "ok" | "mute"] {
   const tone = toneOf(p.page_type, p.category);
   const ts = p.task_stats;
   if (p.closed_at) return ["已关闭", "mute"];
+  if (p.requirement) return [reqChip(p), isTodo(p, now) ? "red" : p.requirement.status === "done" ? "ok" : "mute"];
   if (ts) return ts.my_review ? [`待你评审 ${ts.my_review} 项`, "red"] : ts.my_todo ? [`你有 ${ts.my_todo} 项待办`, "red"]
     : ts.total && ts.done === ts.total ? ["已全部完成", "ok"] : ts.in_review ? [`${ts.in_review} 项待评审`, "mute"] : ["进行中", "mute"];
   if (isTodo(p, now)) return [`等你${tone === "vote" ? "投票" : "填写"}`, "red"];
@@ -694,7 +724,7 @@ function ClassicList({ groups, now, proj, loaded, empty }: {
                 const [st, c] = statusOf(p, now);
                 const n = p.respondent_count ?? p.response_count;
                 const ts = p.task_stats;
-                const prog = ts ? <Blocks value={ts.total ? ts.done / ts.total : 0} label={`${ts.done}/${ts.total}`} />
+                const prog = p.requirement ? `${p.requirement.code}${p.requirement.priority ? ` · ${p.requirement.priority}` : ""}` : ts ? <Blocks value={ts.total ? ts.done / ts.total : 0} label={`${ts.done}/${ts.total}`} />
                   : p.category === "collect" ? (p.eligible_count ? <Blocks value={n / p.eligible_count} label={`${n}/${p.eligible_count}`} /> : `${n} ${unit(p)}`)
                   : p.highlights?.[0] ? `${p.highlights[0].value} ${p.highlights[0].label}` : "—";
                 return (
@@ -728,7 +758,8 @@ function ClassicTodo({ todos, now, proj }: { todos: Page[]; now: number; proj?: 
           const n = p.respondent_count ?? p.response_count;
           const ts = p.task_stats;
           const rest = p.eligible_count ? Math.max(0, p.eligible_count - n) : null;
-          const meta = ts ? [proj?.(p.project_id), ts.my_review ? `待你评审 ${ts.my_review} 项` : null, ts.my_todo ? `你的待办 ${ts.my_todo} 项` : null]
+          const rq = p.requirement;
+          const meta = rq ? [proj?.(p.project_id), rq.code, rq.priority, `指派：${reqAssignees(p)}`] : ts ? [proj?.(p.project_id), ts.my_review ? `待你评审 ${ts.my_review} 项` : null, ts.my_todo ? `你的待办 ${ts.my_todo} 项` : null]
             : [proj?.(p.project_id), n ? `已有 ${n} ${unit(p)}` : `还没人${verb(p)}`, rest ? `还差 ${rest} 人` : null];
           const left = p.closes_at ? fmtLeft(p.closes_at, now) : null;
           return (
@@ -738,8 +769,8 @@ function ClassicTodo({ todos, now, proj }: { todos: Page[]; now: number; proj?: 
                 <b className="block truncate">{p.title}</b>
                 <small className="block truncate">{meta.filter(Boolean).join("，")}</small>
                 <div className="cl-todo-foot">
-                  <span className={p.closes_at ? "tag red" : undefined}>{ts ? `${ts.done} / ${ts.total} 项已完成` : p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left ? `（${left}）` : ""}` : "不限截止时间"}</span>
-                  <Button size="sm" variant="outline" asChild><Link to={`/pages/${p.id}`}>{ts ? (ts.my_review ? "去评审" : "去处理") : tone === "vote" ? "去投票" : "去填写"}</Link></Button>
+                  <span className={p.closes_at || rq ? "tag red" : undefined}>{rq ? reqChip(p) : ts ? `${ts.done} / ${ts.total} 项已完成` : p.closes_at ? `${fmtDue(p.closes_at, new Date(now))} 截止${left ? `（${left}）` : ""}` : "不限截止时间"}</span>
+                  <Button size="sm" variant="outline" asChild><Link to={`/pages/${p.id}`}>{rq ? (rq.status === "open" ? "去认领" : rq.status === "in_review" ? "去验收" : "去处理") : ts ? (ts.my_review ? "去评审" : "去处理") : tone === "vote" ? "去投票" : "去填写"}</Link></Button>
                 </div>
               </div>
             </li>

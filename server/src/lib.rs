@@ -97,14 +97,17 @@ async fn host_guard(State(st): State<AppState>, req: Request, next: Next) -> Res
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; \
              font-src 'self' data:; connect-src 'self'; frame-src {frame_src}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         );
-        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&csp).expect("csp"));
+        // 附件下载自带更严的 CSP（default-src 'none'; sandbox），不覆盖
+        if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+            h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_str(&csp).expect("csp"));
+        }
         h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
         h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     }
     res
 }
 
-/// 后台：每分钟清理限流表与通知表，每小时删除过期会话与邮件 token
+/// 后台：每分钟清理限流表与通知表，每小时删除过期会话与邮件 token、软删 7 天以上的需求附件
 pub fn spawn_background(st: AppState) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(60));
@@ -119,6 +122,7 @@ pub fn spawn_background(st: AppState) {
                         tracing::warn!("清理失败: {e}");
                     }
                 }
+                routes::sweep_deleted_files(&st).await;
             }
             n += 1;
         }

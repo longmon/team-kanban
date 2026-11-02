@@ -24,6 +24,7 @@ pub struct H {
     pub app: Router,
     pub db: PgPool,
     name: String,
+    pub uploads: std::path::PathBuf,
 }
 
 impl H {
@@ -51,10 +52,13 @@ impl H {
             allow_signup: true,
             smtp_url: None,
             smtp_from: None,
+            upload_dir: std::env::temp_dir().join(format!("relay_uploads_{}", Uuid::now_v7().simple())),
+            upload_max_bytes: 50 << 20,
         };
         f(&mut cfg);
+        let uploads = cfg.upload_dir.clone();
         let st = AppState::new(db.clone(), cfg).unwrap();
-        H { app: relay::app(st), db, name }
+        H { app: relay::app(st), db, name, uploads }
     }
 
     pub async fn req(&self, c: &C, method: &str, path: &str, body: Option<Value>) -> R {
@@ -88,10 +92,22 @@ impl H {
         let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec();
         R { status, headers, body }
     }
+
+    /// 二进制请求体（附件上传）
+    pub async fn bytes(&self, c: &C, method: &str, path: &str, body: Vec<u8>) -> R {
+        let mut req = self.build(c, method, path, None, &[("content-type", "application/octet-stream")]);
+        *req.body_mut() = Body::from(body);
+        let res = self.app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let headers = res.headers().clone();
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec();
+        R { status, headers, body }
+    }
 }
 
 impl Drop for H {
     fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.uploads);
         let name = self.name.clone();
         let _ = std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();

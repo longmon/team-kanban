@@ -45,6 +45,37 @@ export type Page = {
   closed_at?: string | null;
   /** 能否关闭/重新打开（发布者或项目管理员；旧后端无） */
   can_close?: boolean;
+  /** 需求页面的编号、状态、指派（其它类型为 null；旧后端无） */
+  requirement?: ReqBrief | null;
+};
+export type ReqStatus = "open" | "analyzing" | "developing" | "in_review" | "done" | "rejected" | "on_hold";
+/** 页面列表里的需求摘要：mine = 指派给我（含我所在群组）；acceptor = 我是发起人或项目管理员（可验收） */
+export type ReqBrief = {
+  number: number; code: string; status: ReqStatus; priority: string | null; due_at: string | null; group_id: string | null;
+  assignees: { type: "user" | "group"; id: string; name: string }[]; mine: boolean; acceptor: boolean;
+};
+/** GET /api/requirements/{id}（api.md §7.8） */
+export type ReqFile = {
+  id: string; name: string; content_type: string; size: number; sha256: string; uploaded_by: UserBrief; created_at: string;
+  download_url: string; inline_url: string | null; can_delete: boolean;
+};
+export type ReqLink = { page_id: string; visible: true; title: string; page_type: PageType; summary: string | null; url: string; linked_at: string; closed_at: string | null }
+  | { page_id: string; visible: false; linked_at: string };
+export type Requirement = {
+  id: string; number: number; code: string; title: string; url: string;
+  org: { id: string; name: string; slug: string }; project: { id: string; name: string };
+  status: ReqStatus; priority: string | null; due_at: string | null; body: string; visibility: Visibility;
+  created_by: UserBrief; created_at: string; updated_at: string; closed_at: string | null;
+  claimed_by: UserBrief | null; claimed_at: string | null;
+  assignees: { users: UserBrief[]; groups: { id: string; name: string }[] };
+  group: { id: string; name: string; url: string } | null;
+  docs: { id: string; title: string; body: string; created_by: UserBrief; created_at: string; can_delete: boolean }[];
+  files: ReqFile[];
+  links: ReqLink[];
+  events: { id: string; action: "created" | "claimed" | "status" | "group_created" | "assigned" | "edited"; from_status: ReqStatus | null; to_status: ReqStatus | null;
+    note: string | null; meta: Record<string, unknown> | null; at: string; actor: UserBrief | null; via_token: boolean }[];
+  me: { user_id: string; is_assignee: boolean; is_initiator: boolean; can_edit: boolean; can_claim: boolean; can_create_group: boolean; can_accept: boolean; can_contribute: boolean; transitions: ReqStatus[] };
+  limits: { max_files: number; max_file_bytes: number; max_links: number; max_docs: number };
 };
 export type TaskStats = { total: number; done: number; in_review: number; my_todo: number; my_review: number };
 export type TaskStatus = "todo" | "in_progress" | "in_review" | "done";

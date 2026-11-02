@@ -34,9 +34,12 @@ services:
       SUPERADMIN_EMAILS: ${SUPERADMIN_EMAILS:-}
       SMTP_URL: ${SMTP_URL:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-50}
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "127.0.0.1:8080:8080"
+    volumes:
+      - uploads:/data/uploads # 需求附件（UPLOAD_DIR 默认 /data/uploads）
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
       interval: 10s
@@ -68,5 +71,6 @@ services:
 
 volumes:
   pgdata:
+  uploads:
   caddy_data:
   caddy_config:

@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, type ReactNode } from "react";
+import { lazy, StrictMode, Suspense, useEffect, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource-variable/onest";
 import { AnimateUIProvider } from "@animate-ui/react/provider";
@@ -20,6 +20,9 @@ import { ResultsPage } from "./pages/results";
 import { LinksPage } from "./pages/links";
 import { AccountSettings, TokenSettings } from "./pages/settings";
 
+const RequirementEdit = lazy(() => import("./pages/requirement").then((m) => ({ default: m.RequirementEdit })));
+const reqEdit = (id?: string) => <Suspense fallback={<Page><Loading /></Page>}><RequirementEdit id={id} /></Suspense>;
+
 type Route = [pattern: string, render: (p: Record<string, string>) => ReactNode, auth: boolean];
 const routes: Route[] = [
   ["/", () => <Home />, true],
@@ -36,6 +39,8 @@ const routes: Route[] = [
   ["/admin", () => <AdminPage />, true],
   ["/admin/users/:id", (p) => <AdminUserPage id={p.id} />, true],
   ["/pages/:id", (p) => <PageViewRoute id={p.id} />, false],
+  ["/requirements/new", () => reqEdit(), true],
+  ["/requirements/:id/edit", (p) => reqEdit(p.id), true],
   ["/pages/:id/results", (p) => <ResultsPage id={p.id} />, true],
   ["/pages/:id/links", (p) => <LinksPage id={p.id} />, true],
   ["/s/:token", (p) => <ShareViewRoute token={p.token} />, false],

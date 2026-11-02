@@ -149,7 +149,7 @@ fn flatten(input: &[TaskInput]) -> AppResult<Vec<Flat>> {
 }
 
 /// user_id / 邮箱 / "me" → 组织成员 user_id；找不到 400（field 指明是哪个）
-async fn resolve_members(db: &mut PgConnection, org_id: Uuid, me: Uuid, field: &str, refs: &[String]) -> AppResult<HashMap<String, Uuid>> {
+pub(super) async fn resolve_members(db: &mut PgConnection, org_id: Uuid, me: Uuid, field: &str, refs: &[String]) -> AppResult<HashMap<String, Uuid>> {
     let mut out = HashMap::new();
     let mut ids = vec![];
     let mut emails = vec![];
